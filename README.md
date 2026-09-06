@@ -31,7 +31,8 @@ L'upload utilise les API cryptographiques disponibles sur localhost ou HTTPS.
    Attendre le statut « Prêt » avant de créer la room : la conversion peut être longue.
 3. Facultativement, ajouter des sous-titres externes SRT/VTT et renommer le film.
 4. Créer une room et transmettre le lien ou le code affiché à son invité.
-5. Chaque participant clique sur « Activer mon lecteur ». L'un lance la lecture.
+5. Chaque participant renseigne son pseudo dans la séance et clique sur Lecture.
+   Ce même bouton autorise le son et demande le départ commun, quand tous sont prêts.
 6. Chacun peut mettre en pause ou déplacer la position commune. Audio et sous-titres
    et version vidéo sont individuels. Un changement de piste ou de version met le
    groupe en pause ; relancer ensuite.
@@ -96,13 +97,18 @@ acquitté par tous avant son échéance.
   natif et décide de sa réserve ; les limites mémoire sont celles de l'appareil.
 - Blocage, dérive supérieure à 350 ms ou rapports absents pendant 3 secondes :
   pause du groupe et nouvelle préparation.
-- Petites dérives corrigées par une variation de vitesse limitée à ±4 %.
+- Lecture à vitesse fixe pour éviter les artefacts audio du changement de vitesse.
+  Les petits écarts sont tolérés ; au-delà de 350 ms, pause et réalignement commun.
 - Messages serveur absents pendant 1,5 seconde : pause locale de sécurité.
 - Une pause manuelle ou une déconnexion exige une reprise explicite.
 
 Les générations de position rejettent les rapports et déplacements retardés.
 Une commande de pause reste toujours effective. Garder la page au premier plan.
 Arrière-plan, AirPlay et Picture-in-Picture ne font pas partie du mode synchronisé.
+Les contrôles sont fournis par Plyr, avec sélection individuelle des pistes et
+versions sous la vidéo. La liste des participants affiche leurs pseudos (librement
+choisis, sans vérification d'identité). Un indicateur nomme les personnes attendues
+pendant la préparation du buffer. Les fichiers du lecteur sont servis localement.
 
 **Un décalage nul et une absence totale d'interruption ne sont pas garantis.**
 Les pauses se propagent avec la latence réseau. Le débit doit rester supérieur à
