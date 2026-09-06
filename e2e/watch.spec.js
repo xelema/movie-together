@@ -26,7 +26,7 @@ test('two viewers play, pause, seek, choose audio independently and stop when di
     await expect(host.getByText(/^À préparer \/ /)).toBeVisible({ timeout: 15_000 });
     await host.getByText(/^Gérer le film et les pistes \/ /).click();
     await host.getByRole('button', { name: 'Préparer les pistes sélectionnées' }).click();
-    await expect(host.getByRole('button', { name: 'Créer une room' })).toBeVisible({ timeout: 20_000 });
+    await expect(host.getByRole('button', { name: 'Créer une room' })).toBeVisible({ timeout: 60_000 });
     await host.getByText(/^Gérer le film et les pistes \/ /).click();
     await host.locator('#movies input[type=file]').setInputFiles({ name: 'test.srt', mimeType: 'text/plain',
       buffer: Buffer.from('1\n00:00:00,000 --> 00:00:49,000\nSubtitle test.\n') });
@@ -42,6 +42,9 @@ test('two viewers play, pause, seek, choose audio independently and stop when di
     await guest.route('**/*.m4s', async route => { await mediaGate; await route.continue().catch(() => {}); });
     await guest.goto(invite);
     await expect(guest.locator('#movie-title')).toHaveText('fixture');
+    await expect(host.locator('#quality')).toHaveValue('compatible');
+    await host.locator('#quality').selectOption('original');
+    await expect(guest.locator('#quality')).toHaveValue('compatible');
     await expect.poll(() => host.locator('video').evaluate(video => video.readyState)).toBeGreaterThanOrEqual(3);
     await host.getByRole('button', { name: 'Activer mon lecteur' }).click();
     await host.getByRole('button', { name: 'Lecture pour tous' }).click();
@@ -56,7 +59,11 @@ test('two viewers play, pause, seek, choose audio independently and stop when di
     await host.getByRole('button', { name: 'Lecture pour tous' }).click();
     await expect.poll(() => host.locator('video').evaluate(video => video.currentTime), { timeout: 15_000 }).toBeGreaterThan(2);
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
-    const drift = await Promise.all([host, guest].map(page => page.locator('video').evaluate(video => video.currentTime)));
+    const drift = await Promise.all([host, guest].map(async page => {
+      const version = await page.locator('#quality').inputValue();
+      const offset = latest.get(page).movie.renditions.find(item => item.id === version).timelineOffset;
+      return (await page.locator('video').evaluate(video => video.currentTime)) - offset;
+    }));
     expect(Math.abs(drift[0] - drift[1])).toBeLessThan(0.25);
     console.log(`Measured initial viewer difference: ${Math.round(Math.abs(drift[0] - drift[1]) * 1000)} ms`);
     await guest.getByRole('button', { name: 'Pause pour tous' }).click();
@@ -68,7 +75,8 @@ test('two viewers play, pause, seek, choose audio independently and stop when di
     await expect(host.locator('#subtitles')).toHaveValue('-1');
     await expect(guest.locator('#subtitles')).toHaveValue('0');
     await host.locator('#seek').fill('25'); await host.locator('#seek').dispatchEvent('change');
-    await expect.poll(() => guest.locator('video').evaluate(video => Math.abs(video.currentTime - 25))).toBeLessThan(0.15);
+    const guestOffset = latest.get(guest).movie.renditions.find(item => item.id === 'compatible').timelineOffset;
+    await expect.poll(() => guest.locator('video').evaluate((video, offset) => Math.abs(video.currentTime - offset - 25), guestOffset)).toBeLessThan(0.15);
     await host.getByRole('button', { name: 'Lecture pour tous' }).click();
     await expect.poll(() => host.locator('video').evaluate(video => video.currentTime), { timeout: 15_000 }).toBeGreaterThan(26);
     await expect.poll(() => guest.locator('video').evaluate(video => Array.from(video.textTracks)
