@@ -286,6 +286,9 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       await writeMaster(directory, movie.audio, subtitles, movie.renditions);
       movie.subtitles = subtitles; store.save(movie);
       await unlink(path.join(directory, track.filename)); await unlink(path.join(directory, `sub_${track.id}.m3u8`));
+      for (const rendition of movie.renditions ?? []) {
+        for (const ext of ['vtt', 'm3u8']) await rm(path.join(directory, `sub_${track.id}_${rendition.id}.${ext}`), { force: true });
+      }
       res.json(movie);
     } finally { mediaLocks.delete(movie.id); }
   });
@@ -311,7 +314,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     const session = sessionFor(request);
     const url = new URL(request.url, origin), room = rooms.get(url.searchParams.get('room'));
     if (url.pathname !== '/ws' || request.headers.origin !== origin || !session ||
-      !access({ session }, room) || room.expires <= Date.now() || room.clients.size >= 8) {
+      !access({ session }, room) || room.expires <= Date.now() || room.clients.size >= 8 ||
+      store.movies.get(room.movieId)?.status !== 'ready' || mediaLocks.has(room.movieId)) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
     }
     wss.handleUpgrade(request, socket, head, ws => {
