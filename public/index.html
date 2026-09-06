@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark"><title>Movie Night</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/vendor/hls.js" defer></script><script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header><a href="/">Movie Night</a><span>Votre séance, ensemble.</span><button id="logout" hidden>Déconnexion</button></header>
+  <main>
+    <p id="notice" role="status" aria-live="polite"></p>
+    <section id="entry">
+      <h1>On regarde quoi ce soir ?</h1><p>Une room privée. Le même instant. Vos langues au choix.</p>
+      <div class="columns">
+        <form id="join-form"><h2>Rejoindre une séance</h2><label>Code d’invitation<input name="code" required autocomplete="off" maxlength="16"></label><button>Rejoindre</button></form>
+        <form id="login-form"><h2>Administration</h2><label>Mot de passe<input name="password" type="password" required autocomplete="current-password"></label><button>Se connecter</button></form>
+      </div>
+    </section>
+    <section id="library" hidden>
+      <div class="heading"><h1>Bibliothèque</h1><button id="refresh">Actualiser</button></div>
+      <form id="upload-form" hidden><h2>Ajouter un film</h2><p>Original conservé. Aucun réencodage. Jusqu’à 20 Go par fichier.</p>
+        <label>Film MP4 ou MKV<input id="upload-file" type="file" accept=".mp4,.mkv,.mov,.m4v" required></label>
+        <button id="upload-button">Envoyer le film</button><progress id="upload-progress" value="0" max="100"></progress><span id="upload-status"></span>
+      </form>
+      <div id="pending-uploads"></div><div id="movies" class="columns"></div>
+      <section id="rooms-section" hidden><h2>Invitations actives</h2><div id="rooms"></div></section>
+    </section>
+    <section id="watch" hidden>
+      <div class="heading"><h1 id="movie-title">Séance</h1><button id="leave">Quitter la room</button></div>
+      <div id="screen"><video id="video" playsinline preload="auto" disablepictureinpicture></video></div>
+      <p id="playback-status" role="status">Connexion…</p>
+      <div class="controls">
+        <button id="activate">Activer mon lecteur</button><button id="play">Lecture pour tous</button><button id="pause">Pause pour tous</button>
+        <button id="fullscreen">Plein écran</button>
+      </div>
+      <label>Position commune<input id="seek" type="range" min="0" max="1" step="0.1" value="0"></label>
+      <div class="controls"><output id="time">0:00 / 0:00</output><label>Audio<select id="audio"></select></label>
+        <label>Sous-titres<select id="subtitles"><option value="-1">Désactivés</option></select></label>
+        <label>Volume<input id="volume" type="range" min="0" max="1" step="0.05" value="1"></label>
+      </div>
+      <p id="diagnostics" class="muted"></p><ul id="participants"></ul>
+      <form id="choose-film"><label>Changer de film pour la room<select id="room-movie"></select></label><button>Choisir</button></form>
+      <p class="muted">Gardez la page au premier plan. Un lecteur bloqué ou une connexion perdue met la séance en pause.</p>
+    </section>
+  </main>
+</body>
+</html>

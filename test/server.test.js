@@ -64,6 +64,11 @@ test('authenticated upload, real lossless packaging, private rooms and access co
   assert.equal(prepared.status, 'ready', prepared.error);
   const master = await (await request(`/media/${movie.id}/master.m3u8`, { cookie })).text();
   assert.equal((master.match(/TYPE=AUDIO/g) ?? []).length, 2);
+  assert.equal((await request(`/media/${movie.id}/init_0.mp4`, { cookie })).status, 200);
+  const hashStream = (input, stream) => run(process.env.FFMPEG_PATH || 'ffmpeg', ['-v', 'error', '-i', input, '-map', stream, '-c', 'copy', '-f', 'hash', '-hash', 'sha256', '-']);
+  const directory = path.join(instance.store.directory(movie.id), prepared.generation);
+  assert.equal(await hashStream(path.join(directory, 'stream_0.m3u8'), '0:v:0'), await hashStream(file, '0:v:0'));
+  assert.equal(await hashStream(path.join(directory, 'stream_1.m3u8'), '0:a:0'), await hashStream(file, '0:a:0'));
   assert.equal((await request(`/media/${movie.id}/master.m3u8`)).status, 401);
   const room = await (await request('/api/rooms', { cookie, method: 'POST', body: { movieId: movie.id } })).json();
   const joined = await request('/api/join', { method: 'POST', body: { code: room.code } });
