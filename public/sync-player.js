@@ -19,9 +19,10 @@ export function bufferEnd(video) {
 }
 
 export class SyncPlayer {
-  constructor({ video, roomId, onStatus, onState, onTracks, onActivation, onRendition = () => {} }) {
+  constructor({ video, roomId, name = '', onStatus, onState, onTracks, onActivation, onRendition = () => {} }) {
     Object.assign(this, { video, roomId, onStatus, onState, onTracks, onActivation, onRendition });
     this.offset = 0; this.audioChoice = 0; this.subtitleChoice = -1;
+    this.name = name;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
     this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.listeners = [];
     this.listen(video, 'waiting', () => { if (this.state?.phase === 'playing' && this.serverTime() >= this.state.startsAt) this.report(false); });
@@ -58,6 +59,7 @@ export class SyncPlayer {
     if (this.disposed) return;
     this.ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws?room=${this.roomId}`);
     this.ws.onopen = () => {
+      if (this.name) this.send({ type: 'identify', name: this.name });
       this.clock = new Clock(); this.lastMessage = performance.now(); this.sequence = 0;
       this.ping();
       this.initialPings = setInterval(() => { this.ping(); if (this.clock.ready) clearInterval(this.initialPings); }, 200);
@@ -134,13 +136,22 @@ export class SyncPlayer {
       // User gesture must reach play() even before metadata loads on mobile Safari.
       await this.video.play(); this.pauseLocal();
       if (!this.disposed && this.movie?.id === movieId) { this.activated = true; this.onActivation(true); }
-    } catch { this.activated = false; this.onStatus('Touchez à nouveau « Activer mon lecteur » pour autoriser la lecture.'); }
+    } catch { this.activated = false; this.onStatus('Appuyez sur Lecture pour autoriser le son. / 재생을 눌러 소리를 허용하세요.'); }
     finally { clearTimeout(timeout); this.activating = false; this.reconcile(); this.report(); }
   }
   command(command, position) {
     if (!this.state) return;
     if (command === 'pause' || command === 'seek') this.pauseLocal();
     this.send({ type: 'command', command, position, epoch: this.state.epoch });
+  }
+  async togglePlayback() {
+    if (this.activated && ['playing', 'buffering'].includes(this.state?.phase)) { this.command('pause'); return; }
+    if (!this.activated) await this.activate();
+    if (this.activated) this.command('play');
+  }
+  identify(name) {
+    this.name = name.trim().slice(0, 40);
+    if (this.name) this.send({ type: 'identify', name: this.name });
   }
   changeTrack(type, index) {
     this.command('pause');
@@ -187,9 +198,10 @@ export class SyncPlayer {
     }
     if (this.video.paused) return;
     const drift = target - this.video.currentTime;
-    // Large drift stops the group; small drift is corrected gradually without skipping frames.
+    // Keep audio at its native speed: repeated time stretching can create audible artifacts.
+    // Larger drift still pauses and realigns the entire room.
     if (Math.abs(drift) > 0.35) { this.pauseLocal(); this.report(false); }
-    else this.video.playbackRate = Math.abs(drift) > 0.04 ? 1 + Math.max(-0.04, Math.min(0.04, drift * 0.2)) : 1;
+    else if (this.video.playbackRate !== 1) this.video.playbackRate = 1;
   }
   async begin() {
     this.startTimer = null;
