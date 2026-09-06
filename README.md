@@ -1,55 +1,127 @@
 # Movie Night
 
-Bibliothèque privée de films et séances synchronisées en petits groupes.
+Bibliothèque privée de films, uploads reprenables et séances synchronisées.
+Un administrateur importe les films ; les invités rejoignent une room avec un
+code ou un lien temporaire, sans compte. Jusqu'à huit connexions par room.
 
-## État
+## Démarrage local
 
-Étape 1 : noyau de coordination des rooms, sans serveur ni lecteur pour le moment.
-Exécuter les tests avec Node.js 22 ou supérieur : `npm test`.
+Prérequis : Node.js 22.20 ou supérieur, FFmpeg et FFprobe 5.1 ou supérieur dans le PATH.
 
-## Principes
+```sh
+npm ci
+npm run setup
+npm start
+```
 
-- Le serveur possède la position de référence et ordonne les commandes.
-- Chaque participant peut mettre en pause. Audio et sous-titres restent individuels.
-- Une reprise attend la réserve de tous les participants et programme un départ futur commun.
-- Une réserve faible, un lecteur bloqué ou des rapports absents suspendent le groupe.
-- Chaque pause ou déplacement invalide les rapports précédents via une génération (`epoch`).
-- Un départ de participant met la séance en pause jusqu'à une reprise explicite.
-- Aucun réencodage audio ou vidéo : refuser les pistes incompatibles, autoriser le remuxage sans perte.
-- Films attendus : 5 à 15 Go. Un administrateur et des invités sans compte.
+Ouvrir <http://localhost:3000>. Le mot de passe administrateur est dans `.env`,
+créé par `npm run setup` et exclu de Git. Sur Windows, le script privilégie le
+FFprobe de Chocolatey quand il est installé. `FFMPEG_PATH` et `FFPROBE_PATH`
+permettent de choisir d'autres exécutables. Ne pas partager `.env`.
 
-L'absence totale de décalage ou d'interruption n'est pas garantie sur Internet.
-La précision réelle devra être mesurée sur PC, iOS et Android. Un débit durablement
-inférieur au débit du film nécessite une attente supplémentaire ou une autre source.
+Pour un autre appareil, utiliser une URL HTTPS commune configurée dans `APP_ORIGIN`.
+L'upload utilise les API cryptographiques disponibles sur localhost ou HTTPS.
 
-## Étapes suivantes
+## Utilisation
 
-1. Transport WebSocket, estimation du décalage des horloges, acquittements de
-   préparation et de démarrage, reconnexion et correction de dérive du lecteur.
-2. Import analysé par FFprobe, préparation HLS avec FFmpeg, pistes audio séparées
-   et sous-titres WebVTT, selon les formats et la politique de conversion retenus.
-3. Lecteur web : HLS natif sur Safari et lecteur compatible ailleurs, choix des
-   langues, rapports sur la plage tamponnée contiguë et pause préventive.
-4. Administration authentifiée, uploads reprenables, bibliothèque et invitations
-   révocables avec limitation des essais de codes.
-5. Déploiement Google Cloud et vérification avec deux appareils physiques.
+1. Se connecter à l'administration et envoyer un MP4 ou MKV (maximum 20 Go).
+2. Ouvrir « Gérer le film et les pistes », sélectionner les audios et sous-titres
+   embarqués puis lancer la préparation. L'original reste intact.
+3. Facultativement, ajouter des sous-titres externes SRT/VTT et renommer le film.
+4. Créer une room et transmettre le lien ou le code affiché à son invité.
+5. Chaque participant clique sur « Activer mon lecteur ». L'un lance la lecture.
+6. Chacun peut mettre en pause ou déplacer la position commune. Audio et sous-titres
+   sont individuels. Un changement de piste met le groupe en pause ; relancer ensuite.
 
-## Contraintes du futur adaptateur réseau
+Un upload interrompu reprend après sélection du même fichier. Une empreinte du début,
+de la fin et des métadonnées évite les confusions courantes de fichiers homonymes ;
+ce n'est pas une empreinte intégrale. Les blocs sont envoyés séquentiellement,
+avec vérification de leur position par le serveur.
 
-Le moteur est volontairement indépendant du transport. L'adaptateur devra appeler
-`tick()` régulièrement, diffuser chaque changement et authentifier les membres.
-Il devra convertir les horloges serveur/client, mesurer la latence, choisir une
-marge de départ adaptée et bloquer la reprise si un acquittement manque.
-Le délai et les seuils du noyau sont provisoires. Le lecteur devra signaler ses
-blocages, ses changements de pistes et ses déplacements, et arrêter localement
-la lecture s'il perd la connexion de coordination. `load()` est réservé au serveur.
+Les invitations expirent après 12 heures et peuvent être révoquées dans l'admin.
+Elles donnent accès à la liste des films prêts ; les médias accessibles aux invités
+sont ceux des rooms qu'ils ont rejointes. Chaque participant peut choisir un film
+de la bibliothèque pour sa room. Modifier un film en cours de visionnage est bloqué.
 
-## Hébergement envisagé
+## Formats : aucun réencodage audio ou vidéo
 
-Application conteneurisée, stockage privé des médias dans Cloud Storage et import
-dans un processus distinct. Le choix Compute Engine ou Cloud Run reste à fixer.
-Avec Cloud Run, les WebSockets ont une durée limitée et l'affinité est indicative :
-il faut prévoir reconnexion et coordination partagée avant plusieurs instances.
+La première version accepte une base conservatrice :
 
-Références : [HLS Apple](https://developer.apple.com/documentation/http-live-streaming/hls-authoring-specification-for-apple-devices/)
-et [WebSockets Cloud Run](https://docs.cloud.google.com/run/docs/triggering/websockets).
+| Élément | Formats pris en charge |
+| --- | --- |
+| Vidéo | H.264, 8 bits, YUV 4:2:0, profils Baseline/Main/High, niveau ≤ 4.2, maximum 1920 × 1080 |
+| Audio | AAC-LC, mono ou stéréo, 44,1 ou 48 kHz |
+| Sous-titres embarqués | SubRip, WebVTT, mov_text, ASS/SSA textuels |
+| Sous-titres externes | SRT ou VTT, maximum 2 Mo |
+
+Les flux vidéo/audio sélectionnés sont copiés (`-c copy`) vers HLS/fMP4 : aucune
+baisse de résolution ou de débit, aucune conversion DTS/AC3 vers AAC. Un film doit
+posséder au moins un audio compatible. Les pistes incompatibles restent dans
+l'original mais ne peuvent pas être sélectionnées pour la lecture.
+Les sous-titres sont convertis en WebVTT ; la mise en forme avancée ASS/SSA peut
+être perdue. Les sous-titres images PGS/VobSub et l'ajout d'audios provenant de
+fichiers externes ne sont pas pris en charge.
+
+## Synchronisation et buffer
+
+Le serveur possède la position de référence et une horloge monotone. Les clients
+estiment leur décalage d'horloge par WebSocket, en privilégiant les mesures les
+moins retardées. Le départ est programmé une seconde dans le futur et doit être
+acquitté par tous avant son échéance.
+
+- Rapports du lecteur toutes les 200 ms ; réserve mesurée dans la plage contiguë
+  contenant la position, sans compter les segments après un trou.
+- Au moins 8 secondes de réserve chez chacun avant reprise, pause préventive sous
+  3 secondes. Réglages : `MIN_BUFFER_SECONDS` / `LOW_BUFFER_SECONDS`.
+- Hls.js tente de charger 60 secondes en avance. Safari utilise son lecteur HLS
+  natif et décide de sa réserve ; les limites mémoire sont celles de l'appareil.
+- Blocage, dérive supérieure à 350 ms ou rapports absents pendant 3 secondes :
+  pause du groupe et nouvelle préparation.
+- Petites dérives corrigées par une variation de vitesse limitée à ±4 %.
+- Messages serveur absents pendant 1,5 seconde : pause locale de sécurité.
+- Une pause manuelle ou une déconnexion exige une reprise explicite.
+
+Les générations de position rejettent les rapports et déplacements retardés.
+Une commande de pause reste toujours effective. Garder la page au premier plan.
+Arrière-plan, AirPlay et Picture-in-Picture ne font pas partie du mode synchronisé.
+
+**Un décalage nul et une absence totale d'interruption ne sont pas garantis.**
+Les pauses se propagent avec la latence réseau. Le débit doit rester supérieur à
+celui du film à long terme : 15 Go sur deux heures représentent environ 16,7 Mbit/s
+en moyenne, avant marge pour les pointes. Le navigateur ne peut pas précharger
+sans limite 15 Go. Des images clés très espacées donnent des segments plus longs ;
+le remuxage ne peut pas créer de nouvelles images clés.
+
+## Vérifications
+
+```sh
+npm test
+npx playwright install chromium
+npm run test:e2e
+```
+
+Tests du moteur, horloges, trous de buffer, upload/reprise, accès privé, FFmpeg réel,
+empreintes des flux avant/après remuxage, sous-titres et deux navigateurs avec audio
+indépendant, pause, déplacement et coupure réseau. Les vidéos de test sont des mires
+synthétiques. Ces essais ne remplacent pas une séance sur iPhone et Android physiques :
+voir [docs/validation.md](docs/validation.md).
+
+## Hébergement et données
+
+[Guide Google Cloud](docs/deployment.md) : VM Compute Engine, Docker Compose, HTTPS
+avec Caddy et disque persistant. Aucune base externe ni bucket public. Le processus
+Node sert les segments sans compression HTTP.
+
+`data/movies` conserve les originaux, les pistes et les métadonnées JSON écrites
+par remplacement atomique ; `data/uploads` conserve les imports partiels. Prévoir
+environ deux fois la taille de la bibliothèque, plus une marge de travail et de
+sauvegarde. Un seul import est traité à la fois, dans un sous-processus FFmpeg.
+
+Les sessions et rooms sont en mémoire : un redémarrage les ferme, mais conserve
+films et uploads. Un import interrompu est signalé en échec. Ne pas lancer plusieurs
+instances sur le même répertoire. Une future montée en charge pourra séparer stockage,
+import et coordination ; cette version cible un petit groupe sur un serveur unique.
+
+Références : [HLS Apple](https://developer.apple.com/documentation/http-live-streaming/hls-authoring-specification-for-apple-devices/),
+[FFmpeg HLS](https://ffmpeg.org/ffmpeg-formats.html#hls),
+[Hls.js](https://github.com/video-dev/hls.js/blob/master/docs/API.md).
