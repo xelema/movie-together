@@ -24,7 +24,12 @@ export class SyncPlayer {
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
     this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.listeners = [];
     this.listen(video, 'waiting', () => { if (this.state?.phase === 'playing' && this.serverTime() >= this.state.startsAt) this.report(false); });
-    this.listen(video, 'error', () => { this.onStatus('Lecture impossible sur cet appareil.'); this.activated = false; this.report(false); });
+    this.listen(video, 'error', () => { this.failure = 'Lecture impossible sur cet appareil.'; this.onStatus(this.failure); this.activated = false; this.onActivation(false); this.report(false); });
+    this.listen(video, 'play', () => {
+      if (this.activating) return;
+      if (this.state?.phase !== 'playing') { this.pauseLocal(); this.command('play'); }
+      else if (this.serverTime() < this.state.startsAt) this.pauseLocal();
+    });
     this.listen(video, 'pause', () => {
       if (performance.now() > this.internalUntil && this.state?.phase === 'playing' && this.serverTime() > this.state.startsAt) this.command('pause');
     });
@@ -79,7 +84,7 @@ export class SyncPlayer {
   seekLocal(position) { this.internalUntil = performance.now() + 500; this.video.currentTime = position; }
   load(movie) {
     this.pauseLocal(); this.hls?.destroy(); this.hls = null;
-    this.movie = movie; this.activated = false; this.onActivation(false);
+    this.movie = movie; this.failure = null; this.activated = false; this.onActivation(false);
     this.video.removeAttribute('src'); this.video.load();
     if (!movie) return;
     const url = `/media/${movie.id}/master.m3u8`;
@@ -96,7 +101,7 @@ export class SyncPlayer {
       this.hls.loadSource(url); this.hls.attachMedia(this.video);
       for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) this.hls.on(window.Hls.Events[name], () => this.tracks());
       this.hls.on(window.Hls.Events.ERROR, (event, data) => {
-        if (data.fatal) { this.activated = false; this.onActivation(false); this.pauseLocal(); this.report(false); this.onStatus('Chargement interrompu. Rechargez la page pour réessayer.'); }
+        if (data.fatal) { this.failure = 'Chargement interrompu. Rechargez la page pour réessayer.'; this.activated = false; this.onActivation(false); this.pauseLocal(); this.report(false); this.onStatus(this.failure); }
       });
     } else this.onStatus('Ce navigateur ne permet pas la lecture HLS.');
   }
@@ -108,11 +113,17 @@ export class SyncPlayer {
     this.onTracks(audio, subtitles);
   }
   async activate() {
-    if (!this.movie || this.video.readyState < 1) { this.onStatus('Le film charge encore. Réessayez dans un instant.'); return; }
+    if (!this.movie || this.activating) return;
+    this.activating = true; this.failure = null;
+    const movieId = this.movie.id;
+    const timeout = setTimeout(() => this.pauseLocal(), 15_000);
     this.internalUntil = performance.now() + 1500;
     try {
-      await this.video.play(); this.pauseLocal(); this.activated = true; this.onActivation(true); this.reconcile(); this.report();
+      // User gesture must reach play() even before metadata loads on mobile Safari.
+      await this.video.play(); this.pauseLocal();
+      if (!this.disposed && this.movie?.id === movieId) { this.activated = true; this.onActivation(true); }
     } catch { this.activated = false; this.onStatus('Touchez à nouveau « Activer mon lecteur » pour autoriser la lecture.'); }
+    finally { clearTimeout(timeout); this.activating = false; this.reconcile(); this.report(); }
   }
   command(command, position) {
     if (!this.state) return;
@@ -129,6 +140,7 @@ export class SyncPlayer {
     this.onStatus('Piste changée pour vous. Relancez la séance quand vous êtes prêt.');
   }
   reconcile() {
+    if (this.activating) return;
     if (!this.state || !this.clock.ready || document.hidden || performance.now() - this.lastMessage > 1500) { this.pauseLocal(); return; }
     const target = this.target();
     if (this.state.phase !== 'playing' || this.serverTime() < this.state.startsAt) {
@@ -154,6 +166,9 @@ export class SyncPlayer {
     this.startTimer = null;
     if (!this.state || this.state.phase !== 'playing' || this.state.startsAt !== this.scheduled || !this.activated ||
       document.hidden || performance.now() - this.lastMessage > 1500) return;
+    if (this.serverTime() < this.state.startsAt) {
+      this.startTimer = setTimeout(() => this.begin(), Math.ceil(this.state.startsAt - this.serverTime())); return;
+    }
     try { await this.video.play(); }
     catch { this.activated = false; this.onActivation(false); this.report(false); }
   }

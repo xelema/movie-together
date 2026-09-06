@@ -68,6 +68,9 @@ function movieCard(movie) {
   const details = element('details'); details.append(element('summary', 'Gérer le film et les pistes'));
   const titleLabel = element('label', 'Titre'); const title = element('input'); title.value = movie.title; title.maxLength = 150; titleLabel.append(title);
   details.append(titleLabel, button('Enregistrer le titre', async () => { await api(`/api/movies/${movie.id}`, { method: 'PATCH', body: { title: title.value } }); await refresh(); }));
+  if (movie.status === 'failed' && !movie.probe) details.append(button('Réanalyser le fichier', async () => {
+    await api(`/api/movies/${movie.id}/probe`, { method: 'POST', body: {} }); await refresh();
+  }));
   if (movie.probe) {
     details.append(element('p', `Vidéo : ${movie.probe.video?.codec ?? 'absente'} · ${movie.probe.video?.width ?? '?'} × ${movie.probe.video?.height ?? '?'}`));
     const audio = [], subtitles = [];
@@ -114,8 +117,11 @@ async function upload(file) {
   uploadBusy = true; $('upload-button').disabled = true;
   try {
     const pending = await api('/api/uploads');
-    let info = pending.find(item => item.name === file.name && item.size === file.size);
-    if (!info) info = await api('/api/uploads', { method: 'POST', body: { name: file.name, size: file.size } });
+    // Check both ends plus metadata before resuming; never confuse two same-size filenames.
+    const sample = new Blob([file.slice(0, 1024 ** 2), file.slice(Math.max(0, file.size - 1024 ** 2)), `${file.name}:${file.size}:${file.lastModified}`]);
+    const fingerprint = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await sample.arrayBuffer())), byte => byte.toString(16).padStart(2, '0')).join('');
+    let info = pending.find(item => item.name === file.name && item.size === file.size && item.fingerprint === fingerprint);
+    if (!info) info = await api('/api/uploads', { method: 'POST', body: { name: file.name, size: file.size, fingerprint } });
     let offset = info.offset, retries = 0;
     while (offset < file.size) {
       try {
@@ -158,9 +164,9 @@ async function enterRoom(id) {
       $('movie-title').textContent = message.movie?.title ?? 'Séance';
       $('room-movie').value = message.movie?.id ?? '';
       const phase = message.state.phase;
-      $('playback-status').textContent = !controller.activated ? 'Activez votre lecteur, puis lancez la séance.' :
+      $('playback-status').textContent = controller.failure || (!controller.activated ? 'Activez votre lecteur, puis lancez la séance.' :
         !controller.clock.ready ? 'Mesure de la connexion…' : phase === 'buffering' ? 'Préparation commune : attente du buffer de chaque participant…' :
-          phase === 'playing' ? controller.serverTime() < message.state.startsAt ? 'Départ synchronisé…' : 'Lecture synchronisée' : 'En pause';
+          phase === 'playing' ? controller.serverTime() < message.state.startsAt ? 'Départ synchronisé…' : 'Lecture synchronisée' : 'En pause');
       const position = controller.target();
       if (document.activeElement !== $('seek')) $('seek').value = position;
       $('seek').max = message.state.duration || 1;
