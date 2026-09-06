@@ -136,7 +136,9 @@ export function compatibleFilter(video) {
   }
   if (video.hdr && base !== 2) {
     const transfer = base === 1 ? 'smpte2084' : base === 4 ? 'arib-std-b67' : video.transfer;
-    const input = `zscale=pin=${video.primaries === 'bt2020' || dovi ? 'bt2020' : 'bt2020'}:tin=${transfer}:min=bt2020nc:t=linear:npl=100`;
+    const primaries = !video.primaries || video.primaries === 'unknown' ? 'bt2020' : video.primaries;
+    const matrix = !video.colorSpace || video.colorSpace === 'unknown' ? 'bt2020nc' : video.colorSpace;
+    const input = `zscale=pin=${primaries}:tin=${transfer}:min=${matrix}:t=linear:npl=100`;
     return { vulkan: false, filter: `${input},format=gbrpf32le,${scale},tonemap=mobius:desat=2,zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p,setsar=1` };
   }
   return { vulkan: false, filter: `${scale},format=yuv420p,setsar=1` };
@@ -163,7 +165,8 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   const renditions = [];
   if (video.direct) renditions.push({ id: 'original', manifest: 'master_original.m3u8', streamIndex: 0,
     codec: video.codec, width: video.width, height: video.height, hdr: video.hdr,
-    videoRange: video.transfer === 'arib-std-b67' ? 'HLG' : video.hdr ? 'PQ' : 'SDR', compatible: video.baseline });
+    videoRange: video.dolbyVision?.dv_bl_signal_compatibility_id === 2 ? 'SDR' :
+      video.transfer === 'arib-std-b67' || video.dolbyVision?.dv_bl_signal_compatibility_id === 4 ? 'HLG' : video.hdr ? 'PQ' : 'SDR', compatible: video.baseline });
   if (compatible) renditions.push({ id: 'compatible', manifest: 'master_compatible.m3u8', streamIndex: renditions.length,
     codec: 'h264', hdr: false, videoRange: 'SDR', compatible: true });
   const disk = await statfs(store.root);
