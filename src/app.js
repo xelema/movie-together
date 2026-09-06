@@ -18,7 +18,7 @@ const CHUNK = 8 * 1024 * 1024;
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const publicMovie = movie => ({ id: movie.id, title: movie.title, status: movie.status,
   duration: movie.duration, audio: movie.audio, subtitles: movie.subtitles,
-  maxSegmentSeconds: movie.maxSegmentSeconds, bitrate: movie.probe?.bitrate });
+  maxSegmentSeconds: movie.maxSegmentSeconds, bitrate: movie.probe?.bitrate, renditions: movie.renditions, generation: movie.generation });
 
 export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   origin = 'http://localhost:3000', secure = false, trustProxy = false, syncOptions = {} } = {}) {
@@ -223,10 +223,19 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.post('/api/movies/:id/prepare', admin, async (req, res) => {
     const movie = idleMovie(req.params.id);
     if (processing) throw fail(409, 'Un import est déjà en cours.');
+    if (req.body.compatible !== undefined && typeof req.body.compatible !== 'boolean') throw fail(400, 'Option de préparation invalide.');
     processing = true; movie.status = 'processing'; movie.error = null; store.save(movie);
     res.status(202).json({ ok: true });
     try {
-      Object.assign(movie, await prepareMovie(store, movie, req.body.audio, req.body.subtitles));
+      movie.progress = { stage: 'analysis', percent: 0 }; store.save(movie);
+      let lastProgress = 0;
+      Object.assign(movie, await prepareMovie(store, movie, req.body.audio, req.body.subtitles, {
+        compatible: req.body.compatible,
+        onProgress(progress) {
+          movie.progress = progress;
+          if (Date.now() - lastProgress > 1000) { store.save(movie); lastProgress = Date.now(); }
+        },
+      }));
       movie.status = 'ready';
       // No active viewer can reference previous generations while a movie is prepared.
       for (const entry of await readdir(store.directory(movie.id), { withFileTypes: true })) {
@@ -235,7 +244,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         }
       }
     } catch (error) { movie.status = 'failed'; movie.error = error.message; }
-    finally { store.save(movie); processing = false; }
+    finally { delete movie.progress; store.save(movie); processing = false; }
   });
   app.patch('/api/movies/:id', admin, (req, res) => {
     const movie = idleMovie(req.params.id);
@@ -260,7 +269,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       await writeFile(input, req.body);
       const track = await addSubtitle(directory, input, { label: req.query.label || 'Sous-titres',
         language: req.query.language || 'und', duration: movie.duration });
-      movie.subtitles.push(track); await writeMaster(directory, movie.audio, movie.subtitles); store.save(movie);
+      track.external = true;
+      movie.subtitles.push(track); await writeMaster(directory, movie.audio, movie.subtitles, movie.renditions); store.save(movie);
       res.json(movie);
     } finally { await unlink(input).catch(() => {}); processing = false; mediaLocks.delete(movie.id); }
   });
@@ -273,7 +283,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     try {
       const subtitles = movie.subtitles.filter(item => item !== track);
       const directory = path.join(store.directory(movie.id), movie.generation);
-      await writeMaster(directory, movie.audio, subtitles);
+      await writeMaster(directory, movie.audio, subtitles, movie.renditions);
       movie.subtitles = subtitles; store.save(movie);
       await unlink(path.join(directory, track.filename)); await unlink(path.join(directory, `sub_${track.id}.m3u8`));
       res.json(movie);
@@ -282,7 +292,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.get('/media/:id/:file', authenticated, (req, res, next) => {
     const movie = getMovie(req.params.id);
     if (!req.session.admin && ![...req.session.rooms].some(id => rooms.get(id)?.movieId === movie.id)) throw fail(403, 'Accès au film refusé.');
-    if (movie.status !== 'ready' || !/^(master|stream_\d+|sub_[a-f0-9-]+)\.m3u8$|^(init_\d+\.mp4|segment_\d+_\d+\.m4s|sub_[a-f0-9-]+\.vtt)$/.test(req.params.file)) throw fail(404, 'Média introuvable.');
+    if (movie.status !== 'ready' || !/^(master(?:_original|_compatible)?|stream_\d+|sub_[a-f0-9-]+(?:_original|_compatible)?)\.m3u8$|^(init_\d+\.mp4|segment_\d+_\d+\.m4s|sub_[a-f0-9-]+(?:_original|_compatible)?\.vtt)$/.test(req.params.file)) throw fail(404, 'Média introuvable.');
     res.set('Cache-Control', 'private, no-store');
     const ext = path.extname(req.params.file);
     res.type(({ '.m3u8': 'application/vnd.apple.mpegurl', '.m4s': 'video/mp4', '.vtt': 'text/vtt', '.mp4': 'video/mp4' })[ext]);
