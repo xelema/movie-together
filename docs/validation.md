@@ -8,7 +8,9 @@
   empreintes des flux, accès aux segments, sous-titres et révocation d'invitation.
 - Deux contextes Chromium : import par l'interface, invité dont les segments sont
   retardés, différence initiale inférieure à 250 ms, pause par l'invité, audio
-  indépendant, déplacement et réseau coupé.
+  indépendant, versions originale/compatible différentes, déplacement et réseau coupé.
+- Préparation réelle d'une mire HEVC 4K HDR et AC3 multicanal : vidéo originale
+  inchangée, copie H.264 SDR et audio AAC stéréo partagé.
 
 L'écart testé est une mesure locale ponctuelle, pas une garantie sur Internet.
 Le diagnostic compare les positions des lecteurs à une horloge commune ; il ne
@@ -30,6 +32,9 @@ Sur le serveur HTTPS, avec un film représentatif de 5 à 15 Go :
 3. Alterner pause/reprise et déplacements de plusieurs minutes depuis chaque appareil.
 4. Choisir VO/VF et sous-titres différents. Vérifier les voix réellement entendues,
    les phrases et leur alignement après plusieurs déplacements.
+   Choisir aussi original sur un appareil et compatible sur l'autre, puis inverser.
+   Sur Safari natif, vérifier particulièrement l'alignement après le changement
+   de version : son origine temporelle n'est pas celle du lecteur Hls.js.
 5. Réduire ou couper le débit d'un participant : vérifier pause locale, pause du
    groupe et reprise commune après retour du buffer.
 6. Passer en arrière-plan, verrouiller le téléphone puis revenir : le groupe doit
