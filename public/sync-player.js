@@ -26,6 +26,11 @@ export class SyncPlayer {
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
     this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.listeners = [];
     this.listen(video, 'waiting', () => { if (this.state?.phase === 'playing' && this.serverTime() >= this.state.startsAt) this.report(false); });
+    this.listen(video, 'canplay', () => {
+      if (!this.activated && !this.activating && !this.autoActivationTried) {
+        this.autoActivationTried = true; this.activate();
+      }
+    });
     this.listen(video, 'error', () => { this.failure = 'Lecture impossible sur cet appareil.'; this.onStatus(this.failure); this.activated = false; this.onActivation(false); this.report(false); });
     this.listen(video, 'play', () => {
       if (this.activating) return;
@@ -92,7 +97,7 @@ export class SyncPlayer {
     if (!sameMovie) { this.audioChoice = 0; this.subtitleChoice = -1; }
     clearTimeout(this.startTimer); this.scheduled = null;
     this.pauseLocal(); this.hls?.destroy(); this.hls = null;
-    this.movie = movie; this.failure = null; this.activated = activated; this.onActivation(activated);
+    this.movie = movie; this.failure = null; this.activated = activated; this.autoActivationTried = false; this.activationBlocked = false; this.onActivation(activated);
     this.video.removeAttribute('src'); this.video.load();
     if (!movie) return;
     const versions = movie.renditions?.length ? movie.renditions : [{ id: 'original', manifest: 'master.m3u8', timelineOffset: 0 }];
@@ -135,8 +140,11 @@ export class SyncPlayer {
     try {
       // User gesture must reach play() even before metadata loads on mobile Safari.
       await this.video.play(); this.pauseLocal();
-      if (!this.disposed && this.movie?.id === movieId) { this.activated = true; this.onActivation(true); }
-    } catch { this.activated = false; this.onStatus('Appuyez sur Lecture pour autoriser le son. / 재생을 눌러 소리를 허용하세요.'); }
+      if (!this.disposed && this.movie?.id === movieId) { this.activated = true; this.activationBlocked = false; this.onActivation(true); }
+    } catch (error) {
+      this.activated = false; this.activationBlocked = error.name === 'NotAllowedError';
+      this.onActivation(false); this.onStatus('Autorisez le son pour rejoindre la séance. / 함께 시청하려면 소리를 허용하세요.');
+    }
     finally { clearTimeout(timeout); this.activating = false; this.reconcile(); this.report(); }
   }
   command(command, position) {
@@ -189,7 +197,7 @@ export class SyncPlayer {
       const start = this.video.buffered.length ? this.video.buffered.start(0) : 0;
       const seekTarget = start > target && start - target <= 0.1 ? start + 0.00001 : target;
       if (this.video.readyState >= 1 && !this.video.seeking &&
-        (Math.abs(this.video.currentTime - seekTarget) > 0.1 || (Math.abs(start - seekTarget) <= 0.1 && this.video.currentTime < start))) this.seekLocal(Math.max(seekTarget, start));
+        (Math.abs(this.video.currentTime - seekTarget) > 0.1 || (Math.abs(start - seekTarget) <= 0.1 && this.video.currentTime < start))) this.seekLocal(seekTarget);
       if (this.state.phase === 'playing' && this.activated && this.scheduled !== this.state.startsAt) {
         clearTimeout(this.startTimer); this.scheduled = this.state.startsAt;
         this.startTimer = setTimeout(() => this.begin(), Math.max(0, this.state.startsAt - this.serverTime()));
@@ -211,7 +219,7 @@ export class SyncPlayer {
       this.startTimer = setTimeout(() => this.begin(), Math.ceil(this.state.startsAt - this.serverTime())); return;
     }
     try { await this.video.play(); }
-    catch { this.activated = false; this.onActivation(false); this.report(false); }
+    catch (error) { this.activated = false; this.activationBlocked = error.name === 'NotAllowedError'; this.onActivation(false); this.report(false); }
   }
   report(force) {
     if (!this.state) return;
