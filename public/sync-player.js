@@ -19,8 +19,9 @@ export function bufferEnd(video) {
 }
 
 export class SyncPlayer {
-  constructor({ video, roomId, onStatus, onState, onTracks, onActivation }) {
-    Object.assign(this, { video, roomId, onStatus, onState, onTracks, onActivation });
+  constructor({ video, roomId, onStatus, onState, onTracks, onActivation, onRendition = () => {} }) {
+    Object.assign(this, { video, roomId, onStatus, onState, onTracks, onActivation, onRendition });
+    this.offset = 0; this.audioChoice = 0; this.subtitleChoice = -1;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
     this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.listeners = [];
     this.listen(video, 'waiting', () => { if (this.state?.phase === 'playing' && this.serverTime() >= this.state.startsAt) this.report(false); });
@@ -34,7 +35,7 @@ export class SyncPlayer {
       if (performance.now() > this.internalUntil && this.state?.phase === 'playing' && this.serverTime() > this.state.startsAt) this.command('pause');
     });
     this.listen(video, 'seeking', () => {
-      if (performance.now() > this.internalUntil && this.state) this.command('seek', video.currentTime);
+      if (performance.now() > this.internalUntil && this.state) this.command('seek', this.position());
     });
     this.listen(document, 'visibilitychange', () => {
       if (document.hidden) { this.pauseLocal(); this.report(false); }
@@ -45,6 +46,7 @@ export class SyncPlayer {
   }
   listen(target, event, handler) { target.addEventListener(event, handler); this.listeners.push(() => target.removeEventListener(event, handler)); }
   serverTime() { return performance.now() + this.clock.offset; }
+  position() { return Math.max(0, this.video.currentTime - this.offset); }
   target() {
     if (!this.state) return 0;
     return Math.min(this.state.duration, this.state.position +
@@ -68,7 +70,7 @@ export class SyncPlayer {
       if (message.type === 'error') this.onStatus(message.error);
       if (message.type === 'state') {
         this.state = message.state;
-        if (message.movie?.id !== this.movie?.id) this.load(message.movie);
+        if (message.movie?.id !== this.movie?.id || message.movie?.generation !== this.movie?.generation) this.load(message.movie);
         if (this.lastEpoch !== this.state.epoch) { clearTimeout(this.startTimer); this.startTimer = null; this.scheduled = null; this.lastEpoch = this.state.epoch; }
         this.reconcile(); this.onState(message, this);
       }
@@ -82,24 +84,34 @@ export class SyncPlayer {
   }
   pauseLocal() { this.internalUntil = performance.now() + 500; this.video.pause(); this.video.playbackRate = 1; }
   seekLocal(position) { this.internalUntil = performance.now() + 500; this.video.currentTime = position; }
-  load(movie) {
+  load(movie, selected) {
+    const sameMovie = movie?.id === this.movie?.id;
+    const activated = sameMovie && this.activated;
+    if (!sameMovie) { this.audioChoice = 0; this.subtitleChoice = -1; }
+    clearTimeout(this.startTimer); this.scheduled = null;
     this.pauseLocal(); this.hls?.destroy(); this.hls = null;
-    this.movie = movie; this.failure = null; this.activated = false; this.onActivation(false);
+    this.movie = movie; this.failure = null; this.activated = activated; this.onActivation(activated);
     this.video.removeAttribute('src'); this.video.load();
     if (!movie) return;
-    const url = `/media/${movie.id}/master.m3u8`;
+    const versions = movie.renditions?.length ? movie.renditions : [{ id: 'original', manifest: 'master.m3u8', timelineOffset: 0 }];
+    this.rendition = versions.find(item => item.id === selected) ?? versions.find(item => item.id === 'compatible') ?? versions[0];
+    this.offset = this.rendition.timelineOffset ?? 0;
+    this.onRendition(versions, this.rendition.id);
+    const url = `/media/${movie.id}/${this.rendition.manifest}`;
     // Prefer native HLS on Safari; its media policies and audio track API differ from MSE.
     if (this.video.canPlayType('application/vnd.apple.mpegurl') &&
       (/Apple/.test(navigator.vendor) || !window.Hls?.isSupported())) {
+      // Native HLS presents a zero-based playlist timeline; MSE retains media PTS.
+      this.offset = 0;
       this.video.src = url;
-      this.listen(this.video, 'loadedmetadata', () => this.tracks());
+      this.listen(this.video, 'loadedmetadata', () => { this.applyTrackChoices(); this.tracks(); });
       if (this.video.audioTracks) this.listen(this.video.audioTracks, 'addtrack', () => this.tracks());
       if (this.video.textTracks) this.listen(this.video.textTracks, 'addtrack', () => this.tracks());
     } else if (window.Hls?.isSupported()) {
       this.hls = new window.Hls({ maxBufferLength: 60, maxMaxBufferLength: 120,
         maxBufferSize: 120 * 1024 * 1024, backBufferLength: 10, enableWorker: true });
       this.hls.loadSource(url); this.hls.attachMedia(this.video);
-      for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) this.hls.on(window.Hls.Events[name], () => this.tracks());
+      for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) this.hls.on(window.Hls.Events[name], () => { this.applyTrackChoices(); this.tracks(); });
       this.hls.on(window.Hls.Events.ERROR, (event, data) => {
         if (data.fatal) { this.failure = 'Chargement interrompu. Rechargez la page pour réessayer.'; this.activated = false; this.onActivation(false); this.pauseLocal(); this.report(false); this.onStatus(this.failure); }
       });
@@ -132,6 +144,7 @@ export class SyncPlayer {
   }
   changeTrack(type, index) {
     this.command('pause');
+    if (type === 'audio') this.audioChoice = index; else this.subtitleChoice = index;
     if (this.hls) {
       if (type === 'audio') this.hls.audioTrack = index;
       else { this.hls.subtitleTrack = index; this.hls.subtitleDisplay = index >= 0; }
@@ -139,17 +152,33 @@ export class SyncPlayer {
     else Array.from(this.video.textTracks ?? []).forEach((track, i) => { track.mode = i === index ? 'showing' : 'disabled'; });
     this.onStatus('Piste changée pour vous. Relancez la séance quand vous êtes prêt.');
   }
+  applyTrackChoices() {
+    if (this.hls) {
+      if (this.hls.audioTracks[this.audioChoice] && this.hls.audioTrack !== this.audioChoice) this.hls.audioTrack = this.audioChoice;
+      if (this.subtitleChoice < 0 || this.hls.subtitleTracks[this.subtitleChoice]) {
+        if (this.hls.subtitleTrack !== this.subtitleChoice) this.hls.subtitleTrack = this.subtitleChoice;
+        this.hls.subtitleDisplay = this.subtitleChoice >= 0;
+      }
+    } else {
+      Array.from(this.video.audioTracks ?? []).forEach((track, i) => { track.enabled = i === this.audioChoice; });
+      Array.from(this.video.textTracks ?? []).forEach((track, i) => { track.mode = i === this.subtitleChoice ? 'showing' : 'disabled'; });
+    }
+  }
+  changeRendition(id) {
+    if (!this.movie?.renditions?.some(item => item.id === id) || this.rendition?.id === id) return;
+    this.command('pause'); this.load(this.movie, id);
+  }
   reconcile() {
     if (this.activating) return;
     if (!this.state || !this.clock.ready || document.hidden || performance.now() - this.lastMessage > 1500) { this.pauseLocal(); return; }
-    const target = this.target();
+    const target = this.target() + this.offset;
     if (this.state.phase !== 'playing' || this.serverTime() < this.state.startsAt) {
       this.pauseLocal();
       // B-frame reordering can leave a tiny initial gap after lossless remuxing.
       const start = this.video.buffered.length ? this.video.buffered.start(0) : 0;
       const seekTarget = start > target && start - target <= 0.1 ? start + 0.00001 : target;
       if (this.video.readyState >= 1 && !this.video.seeking &&
-        (Math.abs(this.video.currentTime - seekTarget) > 0.1 || (seekTarget > target && this.video.currentTime < start))) this.seekLocal(seekTarget);
+        (Math.abs(this.video.currentTime - seekTarget) > 0.1 || (Math.abs(start - seekTarget) <= 0.1 && this.video.currentTime < start))) this.seekLocal(Math.max(seekTarget, start));
       if (this.state.phase === 'playing' && this.activated && this.scheduled !== this.state.startsAt) {
         clearTimeout(this.startTimer); this.scheduled = this.state.startsAt;
         this.startTimer = setTimeout(() => this.begin(), Math.max(0, this.state.startsAt - this.serverTime()));
@@ -174,13 +203,13 @@ export class SyncPlayer {
   }
   report(force) {
     if (!this.state) return;
-    const position = this.video.currentTime;
+    const position = this.position();
     const running = this.state.phase === 'playing' && this.serverTime() > this.state.startsAt + 200;
     const ready = force !== false && this.activated && this.clock.ready && !document.hidden &&
       performance.now() - this.lastMessage < 1500 && !this.video.seeking && this.video.readyState >= 3 &&
       (!running || (!this.video.paused && Math.abs(position - this.target()) <= 0.35));
     this.send({ type: 'report', epoch: this.state.epoch, sequence: this.sequence++, position,
-      bufferedUntil: bufferEnd(this.video), ready,
+      bufferedUntil: Math.max(position, bufferEnd(this.video) - this.offset), ready,
       ackStartsAt: ready && this.scheduled === this.state.startsAt ? this.scheduled : null });
   }
   dispose() {
