@@ -75,6 +75,10 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   const roomState = room => ({ type: 'state', roomId: room.id, serverNow: performance.now(),
     state: room.engine.snapshot(), movie: room.movieId ? publicMovie(getMovie(room.movieId)) : null,
     members: [...room.engine.members.entries()].map(([id, member]) => ({ id,
+      name: [...room.clients].find(client => client.memberId === id)?.displayName ?? 'Invité / 게스트',
+      waiting: !member.report?.ready || performance.now() - member.report.receivedAt >= room.engine.reportTimeout ||
+        member.report.bufferedUntil < Math.min(room.engine.duration, room.engine.positionAt() +
+          (room.engine.phase === 'playing' ? room.engine.lowBuffer : room.engine.minBuffer)),
       ready: !!member.report?.ready, buffer: member.report ? Math.max(0, member.report.bufferedUntil - room.engine.positionAt()) : 0 })),
   });
   const broadcast = room => {
@@ -302,6 +306,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     res.sendFile(req.params.file, { root: path.join(store.directory(movie.id), movie.generation) }, error => { if (error) next(error); });
   });
   app.get('/vendor/hls.js', (req, res) => res.sendFile(path.join(ROOT, 'node_modules/hls.js/dist/hls.min.js')));
+  for (const file of ['plyr.js', 'plyr.css', 'plyr.svg']) app.get(`/vendor/${file}`, (req, res) =>
+    res.sendFile(path.join(ROOT, 'node_modules/plyr/dist', file)));
   app.use(express.static(path.join(ROOT, 'public')));
   app.use((req, res) => res.status(404).json({ error: 'Page introuvable.' }));
   app.use((error, req, res, next) => {
@@ -320,7 +326,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     }
     wss.handleUpgrade(request, socket, head, ws => {
       const id = randomUUID(); let messages = 0, windowAt = Date.now();
-      ws.session = session; ws.alive = true;
+      ws.session = session; ws.alive = true; ws.memberId = id;
+      ws.displayName = session.admin ? 'Hôte / 호스트' : 'Invité / 게스트';
       room.clients.add(ws); room.engine.join(id);
       ws.send(JSON.stringify({ type: 'welcome', id })); broadcast(room);
       ws.on('pong', () => { ws.alive = true; });
@@ -330,6 +337,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         if (++messages > 40 || session.expires <= Date.now()) return ws.close(1008, 'Session invalide');
         try {
           const message = JSON.parse(data);
+          if (message.type === 'identify') {
+            if (typeof message.name !== 'string' || message.name.length > 40) throw new Error('Pseudo invalide.');
+            const name = message.name.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '').trim();
+            if (!name) throw new Error('Pseudo requis.');
+            ws.displayName = name; broadcast(room); return;
+          }
           if (message.type === 'ping' && Number.isFinite(message.sentAt)) {
             return ws.send(JSON.stringify({ type: 'pong', sentAt: message.sentAt, serverNow: performance.now() }));
           }

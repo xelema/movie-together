@@ -3,6 +3,23 @@ import { label } from './labels.js';
 
 const $ = id => document.getElementById(id);
 let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false;
+const playbackUI = new window.Plyr($('video'), {
+  controls: ['play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'fullscreen'],
+  settings: [], storage: { enabled: false }, clickToPlay: false, keyboard: { focused: false, global: false },
+  hideControls: false, iconUrl: '/vendor/plyr.svg', blankVideo: '',
+  fullscreen: { enabled: true, fallback: true, iosNative: false, container: '#screen' },
+  i18n: { play: 'Lecture / 재생', pause: 'Pause / 일시정지', seek: 'Position / 재생 위치',
+    currentTime: 'Position / 재생 위치', duration: 'Durée / 길이', volume: 'Volume / 볼륨',
+    mute: 'Couper le son / 음소거', unmute: 'Activer le son / 소리 켜기',
+    enterFullscreen: 'Plein écran / 전체 화면', exitFullscreen: 'Quitter le plein écran / 전체 화면 종료' },
+  listeners: {
+    play: () => { player?.togglePlayback().catch(error => notice(error.message)); return false; },
+    seek: event => {
+      if (player?.state) player.command('seek', Number(event.target.value) / 100 * player.state.duration);
+      return false;
+    },
+  },
+});
 function notice(message = '') { $('notice').textContent = label(message); }
 async function api(url, { body, method = 'GET', ...options } = {}) {
   const response = await fetch(url, { method, ...options,
@@ -161,9 +178,10 @@ async function enterRoom(id) {
   player?.dispose(); activeRoom = id;
   $('entry').hidden = true; $('library').hidden = true; $('watch').hidden = false;
   history.replaceState(null, '', `/#room=${id}`);
-  player = new SyncPlayer({ video: $('video'), roomId: id,
+  $('display-name').value = localStorage.getItem('movie-night-name') || (session.admin ? 'Hôte / 호스트' : 'Invité / 게스트');
+  player = new SyncPlayer({ video: $('video'), roomId: id, name: $('display-name').value,
     onStatus: message => { $('playback-status').textContent = label(message); },
-    onActivation: active => { $('activate').hidden = active; },
+    onActivation: () => {},
     onRendition: (versions, selected) => {
       fillSelect($('quality'), versions.map(version => ({ value: version.id,
         label: `${version.id === 'original' ? 'Original / 원본' : 'Compatible SDR / 호환 SDR'}${version.hdr ? ' · HDR' : ''}` })));
@@ -171,22 +189,34 @@ async function enterRoom(id) {
     },
     onTracks: (audio, subtitles) => {
       fillSelect($('audio'), audio.map(track => ({ value: track.index, label: track.label })));
+      $('audio').disabled = audio.length < 2;
+      if (!audio.length) fillSelect($('audio'), [{ value: -1, label: 'Aucune piste / 음성 없음' }]);
       fillSelect($('subtitles'), [{ value: -1, label: label('Désactivés') }, ...subtitles.map(track => ({ value: track.index, label: track.label }))]);
+      $('subtitles').disabled = !subtitles.length;
     },
     onState: (message, controller) => {
       $('movie-title').textContent = message.movie?.title ?? 'Séance';
       $('room-movie').value = message.movie?.id ?? '';
       const phase = message.state.phase;
-      $('playback-status').textContent = label(controller.failure || (!controller.activated ? 'Activez votre lecteur, puis lancez la séance.' :
+      const waiting = message.members.filter(member => member.waiting).map(member => member.name);
+      $('buffering-overlay').hidden = phase !== 'buffering';
+      $('buffering-label').textContent = waiting.length ? `En attente de ${waiting.join(', ')} / 버퍼 대기 중` : 'Synchronisation… / 동기화 중…';
+      $('playback-status').textContent = label(controller.failure || (!controller.activated ? 'Appuyez sur Lecture pour rejoindre le visionnage. / 재생을 눌러 함께 시청하세요.' :
         !controller.clock.ready ? 'Mesure de la connexion…' : phase === 'buffering' ? 'Préparation commune : attente du buffer de chaque participant…' :
           phase === 'playing' ? controller.serverTime() < message.state.startsAt ? 'Départ synchronisé…' : 'Lecture synchronisée' : 'En pause'));
       const position = controller.target();
-      if (document.activeElement !== $('seek')) $('seek').value = position;
-      $('seek').max = message.state.duration || 1;
-      $('time').textContent = `${formatTime(position)} / ${formatTime(message.state.duration)}`;
+      const playing = controller.activated && ['playing', 'buffering'].includes(phase);
+      $('screen').dataset.playing = String(playing);
+      for (const control of playbackUI.elements.buttons.play ?? []) control.setAttribute('aria-label', playing ? 'Pause / 일시정지' : 'Lecture / 재생');
       $('diagnostics').textContent = `Écart / 시간차 : ${Math.round((controller.position() - position) * 1000)} ms · Réseau / 네트워크 : ${Math.round(controller.clock.best?.rtt ?? 0)} ms`;
-      $('participants').replaceChildren(...message.members.map((member, index) => element('li',
-        `${member.id === controller.memberId ? 'Vous / 나' : `Participant / 참가자 ${index + 1}`} : ${member.ready ? 'prêt / 준비 완료' : 'en attente / 대기 중'} · Buffer / 버퍼 ${member.buffer.toFixed(1)} s`)));
+      $('member-count').textContent = `(${message.members.length})`;
+      $('participants').replaceChildren(...message.members.map(member => {
+        const item = element('li'); item.dataset.ready = String(member.ready);
+        item.dataset.ready = String(!member.waiting);
+        item.append(element('strong', `${member.name}${member.id === controller.memberId ? ' · vous / 나' : ''}`),
+          element('span', member.waiting ? 'En attente / 대기 중' : 'Prêt / 준비 완료'));
+        return item;
+      }));
     },
   });
   movies = await api('/api/movies');
@@ -204,18 +234,14 @@ $('logout').addEventListener('click', handle(async () => {
 }));
 $('refresh').addEventListener('click', handle(refresh));
 $('upload-form').addEventListener('submit', handle(() => upload($('upload-file').files[0])));
-$('activate').addEventListener('click', handle(() => player?.activate()));
-$('play').addEventListener('click', () => player?.command('play'));
-$('pause').addEventListener('click', () => player?.command('pause'));
-$('seek').addEventListener('change', () => player?.command('seek', Number($('seek').value)));
+$('name-form').addEventListener('submit', handle(() => {
+  const name = $('display-name').value.trim();
+  if (!name) return;
+  localStorage.setItem('movie-night-name', name); player?.identify(name);
+}));
 $('audio').addEventListener('change', () => player?.changeTrack('audio', Number($('audio').value)));
 $('quality').addEventListener('change', () => player?.changeRendition($('quality').value));
 $('subtitles').addEventListener('change', () => player?.changeTrack('subtitles', Number($('subtitles').value)));
-$('volume').addEventListener('input', () => { $('video').volume = Number($('volume').value); });
-$('fullscreen').addEventListener('click', handle(async () => {
-  if ($('screen').requestFullscreen) await $('screen').requestFullscreen();
-  else if ($('video').webkitEnterFullscreen) $('video').webkitEnterFullscreen();
-}));
 $('leave').addEventListener('click', handle(async () => {
   player?.dispose(); player = null; activeRoom = null; $('watch').hidden = true;
   history.replaceState(null, '', '/'); await refresh();
