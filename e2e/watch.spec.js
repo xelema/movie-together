@@ -36,27 +36,34 @@ test('two viewers play, pause, seek, choose audio independently and stop when di
       host.getByRole('button', { name: /^Ajouter les sous-titres \/ / }).click(),
     ]);
     await host.getByRole('button', { name: 'Créer une room' }).click();
+    await expect(host.locator('#notice')).toContainText('http://localhost:3100/#invite=');
     const invite = (await host.locator('#notice').textContent()).match(/http:\/\/\S+/)[0];
     let releaseMedia;
     const mediaGate = new Promise(resolve => { releaseMedia = resolve; });
     await guest.route('**/*.m4s', async route => { await mediaGate; await route.continue().catch(() => {}); });
-    await guest.goto(invite);
+    // The guest's media requests are deliberately held; navigation must not wait for them.
+    await guest.goto(invite, { waitUntil: 'domcontentloaded' });
     await expect(guest.locator('#movie-title')).toHaveText('fixture');
     await expect(host.locator('#quality')).toHaveValue('compatible');
     await host.locator('#quality').selectOption('original');
     await expect(guest.locator('#quality')).toHaveValue('compatible');
     await expect.poll(() => host.locator('video').evaluate(video => video.readyState)).toBeGreaterThanOrEqual(3);
-    await host.getByRole('button', { name: 'Activer mon lecteur' }).click();
-    await host.getByRole('button', { name: 'Lecture pour tous' }).click();
+    await host.locator('#display-name').fill('Alex');
+    await host.locator('#name-form button').click();
+    await guest.locator('#display-name').fill('민지');
+    await guest.locator('#name-form button').click();
+    await expect(host.locator('#participants')).toContainText('민지');
+    await expect(guest.locator('#participants')).toContainText('Alex');
+    await host.locator('[data-plyr=play]').click();
     await expect.poll(() => latest.get(host)?.state.phase).toBe('buffering');
+    await expect(host.locator('#buffering-overlay')).toBeVisible();
+    await expect(host.locator('#buffering-label')).toContainText('민지');
     expect(await host.locator('video').evaluate(video => video.paused)).toBe(true);
     releaseMedia();
     for (const page of [host, guest]) {
       await expect.poll(() => page.locator('video').evaluate(video => video.readyState)).toBeGreaterThanOrEqual(3);
-      if (await page.getByRole('button', { name: 'Activer mon lecteur' }).isVisible()) await page.getByRole('button', { name: 'Activer mon lecteur' }).click();
-      await expect(page.getByRole('button', { name: 'Activer mon lecteur' })).toBeHidden();
     }
-    await host.getByRole('button', { name: 'Lecture pour tous' }).click();
+    await guest.locator('[data-plyr=play]').click();
     await expect.poll(() => host.locator('video').evaluate(video => video.currentTime), { timeout: 15_000 }).toBeGreaterThan(2);
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     const drift = await Promise.all([host, guest].map(async page => {
@@ -66,7 +73,7 @@ test('two viewers play, pause, seek, choose audio independently and stop when di
     }));
     expect(Math.abs(drift[0] - drift[1])).toBeLessThan(0.25);
     console.log(`Measured initial viewer difference: ${Math.round(Math.abs(drift[0] - drift[1]) * 1000)} ms`);
-    await guest.getByRole('button', { name: 'Pause pour tous' }).click();
+    await guest.locator('[data-plyr=play]').click();
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
     await guest.locator('#audio').selectOption('1');
@@ -74,10 +81,12 @@ test('two viewers play, pause, seek, choose audio independently and stop when di
     await guest.locator('#subtitles').selectOption('0');
     await expect(host.locator('#subtitles')).toHaveValue('-1');
     await expect(guest.locator('#subtitles')).toHaveValue('0');
-    await host.locator('#seek').fill('25'); await host.locator('#seek').dispatchEvent('change');
+    const percent = 25 / latest.get(host).state.duration * 100;
+    await host.locator('[data-plyr=seek]').fill(String(percent));
+    await host.locator('[data-plyr=seek]').dispatchEvent('input');
     const guestOffset = latest.get(guest).movie.renditions.find(item => item.id === 'compatible').timelineOffset;
     await expect.poll(() => guest.locator('video').evaluate((video, offset) => Math.abs(video.currentTime - offset - 25), guestOffset)).toBeLessThan(0.15);
-    await host.getByRole('button', { name: 'Lecture pour tous' }).click();
+    await host.locator('[data-plyr=play]').click();
     await expect.poll(() => host.locator('video').evaluate(video => video.currentTime), { timeout: 15_000 }).toBeGreaterThan(26);
     await expect.poll(() => guest.locator('video').evaluate(video => Array.from(video.textTracks)
       .some(track => track.mode === 'showing' && Array.from(track.activeCues ?? []).some(cue => cue.text === 'Subtitle test.')))).toBe(true);
@@ -89,10 +98,11 @@ test('two viewers play, pause, seek, choose audio independently and stop when di
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused), { timeout: 6000 }).toBe(true);
     expect(errors).toEqual([]);
   } catch (error) {
+    console.log('Test failure:', error.message, 'Browser errors:', errors);
     for (const page of [host, guest]) console.log('Playback state:', latest.get(page), await page.locator('video').evaluate(video => ({
       time: video.currentTime, paused: video.paused, readyState: video.readyState, hidden: document.hidden,
       ranges: Array.from({ length: video.buffered.length }, (_, i) => [video.buffered.start(i), video.buffered.end(i)]),
-    })));
+    }), undefined, { timeout: 1000 }).catch(() => 'No player available'));
     throw error;
-  } finally { await a.close(); await b.close(); }
+  } finally { await guest.unrouteAll({ behavior: 'ignoreErrors' }); await a.close(); await b.close(); }
 });

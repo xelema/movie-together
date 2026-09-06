@@ -18,6 +18,7 @@
     "express-rate-limit": "^8.7.0",
     "helmet": "^8.3.0",
     "hls.js": "^1.7.2",
+    "plyr": "^3.8.4",
     "ws": "^8.21.3"
   },
   "devDependencies": {

@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark"><title>Movie Night</title>
-  <link rel="stylesheet" href="/style.css">
-  <script src="/vendor/hls.js" defer></script><script type="module" src="/app.js"></script>
+  <link rel="stylesheet" href="/vendor/plyr.css"><link rel="stylesheet" href="/style.css">
+  <script src="/vendor/hls.js" defer></script><script src="/vendor/plyr.js" defer></script><script type="module" src="/app.js"></script>
 </head>
 <body>
   <header><a href="/">Movie Night</a><button id="logout" hidden>Déconnexion / <span lang="ko">로그아웃</span></button></header>
@@ -27,18 +27,19 @@
     </section>
     <section id="watch" hidden>
       <div class="heading"><h1 id="movie-title">Séance / <span lang="ko">시청방</span></h1><button id="leave">Quitter la room / <span lang="ko">나가기</span></button></div>
-      <div id="screen"><video id="video" playsinline preload="auto" disablepictureinpicture></video></div>
+      <aside class="room-presence" aria-label="Participants / 참가자">
+        <div class="heading"><h2>Dans la séance / <span lang="ko">참가자</span> <span id="member-count">0</span></h2>
+        <form id="name-form"><label for="display-name">Votre pseudo / <span lang="ko">닉네임</span></label><input id="display-name" required maxlength="40" autocomplete="nickname"><button>Enregistrer / 저장</button></form></div>
+        <ul id="participants"></ul>
+      </aside>
+      <div id="screen"><div class="video-stage"><video id="video" playsinline preload="auto" disablepictureinpicture></video>
+        <div id="buffering-overlay" hidden><span class="spinner" aria-hidden="true"></span><span id="buffering-label"></span></div></div>
+        <div class="controls track-controls"><label>Version / <span lang="ko">영상 버전</span><select id="quality"></select></label><label>Langue audio / <span lang="ko">음성 언어</span><select id="audio"></select></label>
+          <label>Sous-titres / <span lang="ko">자막</span><select id="subtitles"><option value="-1">Désactivés / 끄기</option></select></label></div>
+      </div>
       <p id="playback-status" role="status">Connexion… / <span lang="ko">연결 중…</span></p>
-      <div class="controls">
-        <button id="activate">Activer mon lecteur / <span lang="ko">플레이어 활성화</span></button><button id="play">Lecture pour tous / <span lang="ko">모두 재생</span></button><button id="pause">Pause pour tous / <span lang="ko">모두 일시정지</span></button>
-        <button id="fullscreen">Plein écran / <span lang="ko">전체 화면</span></button>
-      </div>
-      <label>Position commune / <span lang="ko">공통 재생 위치</span><input id="seek" type="range" min="0" max="1" step="0.1" value="0"></label>
-      <div class="controls"><output id="time">0:00 / 0:00</output><label>Version / <span lang="ko">영상 버전</span><select id="quality"></select></label><label>Audio / <span lang="ko">음성</span><select id="audio"></select></label>
-        <label>Sous-titres / <span lang="ko">자막</span><select id="subtitles"><option value="-1">Désactivés / 끄기</option></select></label>
-        <label>Volume / <span lang="ko">볼륨</span><input id="volume" type="range" min="0" max="1" step="0.05" value="1"></label>
-      </div>
-      <p id="diagnostics" class="muted"></p><ul id="participants"></ul>
+      <p class="muted">Lecture, pause et déplacement pour tous. Langue et sous-titres pour vous. / <span lang="ko">재생·일시정지·탐색은 함께, 음성·자막은 개별 선택.</span></p>
+      <details><summary>Connexion / <span lang="ko">연결 상태</span></summary><p id="diagnostics" class="muted"></p></details>
       <form id="choose-film"><label>Changer de film / <span lang="ko">영화 변경</span><select id="room-movie"></select></label><button>Choisir / <span lang="ko">선택</span></button></form>
       <p class="muted">Gardez cette page ouverte à l’écran. / <span lang="ko">이 페이지를 화면에 열어 두세요.</span></p>
     </section>
