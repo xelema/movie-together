@@ -25,9 +25,27 @@ test('keeps audio at normal speed and pauses the group for excessive drift', t =
   assert.equal(player.video.playbackRate, 1); assert.equal(stopped, false);
   player.video.currentTime = 9.5; player.reconcile();
   assert.equal(stopped, true); assert.equal(reported, true);
+  // A backward seek must reload evicted segments rather than clamp to the buffered range.
+  let seek;
+  player.state.phase = 'paused'; player.video.currentTime = 44; player.video.readyState = 1;
+  player.video.buffered = { length: 1, start: () => 40 };
+  player.seekLocal = position => { seek = position; };
+  player.reconcile(); assert.equal(seek, 10);
 });
 test('buffer measurement never counts ranges beyond a gap', () => {
   const video = { currentTime: 2, buffered: { length: 2, start: i => [0, 20][i], end: i => [4, 60][i] } };
   assert.equal(bufferEnd(video), 4);
   video.currentTime = 10; assert.equal(bufferEnd(video), 10);
+});
+
+test('audio authorization reports readiness without issuing a group play command', async () => {
+  const blocked = Object.assign(new Error('Autoplay blocked'), { name: 'NotAllowedError' });
+  let reject = true, commands = 0;
+  const player = Object.assign(Object.create(SyncPlayer.prototype), {
+    movie: { id: 'test' }, video: { play: async () => { if (reject) throw blocked; } },
+    pauseLocal() {}, onStatus() {}, onActivation() {}, reconcile() {}, report() {}, command() { commands++; },
+  });
+  await player.activate(); assert.equal(player.activationBlocked, true); assert.equal(player.activated, false);
+  reject = false; await player.activate();
+  assert.equal(player.activated, true); assert.equal(player.activationBlocked, false); assert.equal(commands, 0);
 });
