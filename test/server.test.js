@@ -7,14 +7,15 @@ import { WebSocket } from 'ws';
 import { createApplication } from '../src/app.js';
 import { run, inspectProbe } from '../src/media.js';
 
-test('rejects incompatible video and audio without conversion', () => {
+test('accepts decodable video and audio without resolution or HDR restrictions', () => {
   const video = { codec_type: 'video', codec_name: 'h264', pix_fmt: 'yuv420p', profile: 'High', level: 40, width: 1920, height: 1080 };
   const audio = { codec_type: 'audio', codec_name: 'aac', profile: 'LC', channels: 2, sample_rate: '48000' };
   const inspect = (v, a) => inspectProbe({ streams: [v, a], format: { duration: '100' } }).compatible;
   assert.equal(inspect(video, audio), true);
-  assert.equal(inspect({ ...video, codec_name: 'hevc' }, audio), false);
-  assert.equal(inspect(video, { ...audio, codec_name: 'dts' }), false);
-  assert.equal(inspect({ ...video, pix_fmt: 'yuv420p10le' }, audio), false);
+  assert.equal(inspect({ ...video, codec_name: 'hevc', width: 7680, height: 4320 }, audio), true);
+  assert.equal(inspect(video, { ...audio, codec_name: 'dts' }), true);
+  assert.equal(inspect({ ...video, pix_fmt: 'yuv420p10le' }, audio), true);
+  assert.equal(inspect({ ...video, codec_name: 'unknown' }, audio), false);
 });
 
 test('authenticated upload, real lossless packaging, private rooms and access control', { timeout: 60_000 }, async t => {
