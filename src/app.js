@@ -28,14 +28,14 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   const server = createServer(app);
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8192 });
   const store = createStore(dataDir);
-  const sessions = new Map(), rooms = new Map(), locks = new Set();
+  const sessions = new Map(), rooms = new Map(), locks = new Set(), mediaLocks = new Set();
   const salt = randomBytes(32), hash = scryptSync(password, salt, 64);
   let processing = false;
   app.disable('x-powered-by');
   if (trustProxy) app.set('trust proxy', 1);
   app.use(helmet({ contentSecurityPolicy: { directives: {
     defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"],
-    mediaSrc: ["'self'", 'blob:'], workerSrc: ["'self'", 'blob:'],
+    mediaSrc: ["'self'", 'blob:', 'data:'], workerSrc: ["'self'", 'blob:'],
     connectSrc: ["'self'"], upgradeInsecureRequests: secure ? [] : null,
   } }, strictTransportSecurity: secure ? undefined : false }));
   const sessionFor = request => {
@@ -62,6 +62,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   };
   const idleMovie = id => {
     const movie = getMovie(id);
+    if (mediaLocks.has(id)) throw fail(409, 'Modification du film en cours.');
     if (['processing', 'probing'].includes(movie.status)) throw fail(409, 'Traitement en cours.');
     if ([...rooms.values()].some(room => room.movieId === id && room.engine.members.size)) throw fail(409, 'Film utilisé dans une room.');
     return movie;
@@ -104,7 +105,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.post('/api/rooms', admin, (req, res) => {
     if (rooms.size >= 20) throw fail(409, 'Fermer une room avant d’en créer une autre.');
     const movie = getMovie(req.body.movieId);
-    if (movie.status !== 'ready') throw fail(409, 'Film non préparé.');
+    if (movie.status !== 'ready' || mediaLocks.has(movie.id)) throw fail(409, 'Film non préparé.');
     const id = randomUUID(), code = randomBytes(8).toString('hex');
     const room = { id, code, expires: Date.now() + TTL, movieId: movie.id, engine: new Room(syncOptions), clients: new Set() };
     room.engine.load(movie.duration); rooms.set(id, room);
@@ -136,7 +137,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     const room = rooms.get(req.params.id);
     if (!access(req, room)) throw fail(404, 'Room introuvable.');
     const movie = getMovie(req.body.movieId);
-    if (movie.status !== 'ready') throw fail(409, 'Film non préparé.');
+    if (movie.status !== 'ready' || mediaLocks.has(movie.id)) throw fail(409, 'Film non préparé.');
     room.movieId = movie.id; room.engine.load(movie.duration); broadcast(room); res.json({ ok: true });
   });
 
@@ -149,13 +150,14 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     catch (error) { if (error.code === 'ENOENT') throw fail(404, 'Upload introuvable.'); throw error; }
   };
   app.post('/api/uploads', admin, async (req, res) => {
-    const { size, name } = req.body;
+    const { size, name, fingerprint } = req.body;
     if (!Number.isSafeInteger(size) || size <= 0 || size > 20 * 1024 ** 3 || typeof name !== 'string' || name.length > 250) throw fail(400, 'Fichier invalide (maximum 20 Go).');
     if ((await readdir(path.join(store.root, 'uploads'))).length >= 2) throw fail(409, 'Terminer ou supprimer les uploads précédents.');
     const disk = await statfs(store.root);
     if (disk.bavail * disk.bsize < size * 2.2) throw fail(409, 'Espace disque insuffisant pour l’original et sa préparation.');
     const id = randomUUID(); await mkdir(uploadPath(id));
-    const info = { id, name, size, createdAt: Date.now() };
+    if (fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(fingerprint)) throw fail(400, 'Empreinte invalide.');
+    const info = { id, name, size, fingerprint, createdAt: Date.now() };
     await writeFile(path.join(uploadPath(id), 'upload.json'), JSON.stringify(info));
     await writeFile(path.join(uploadPath(id), 'source'), '');
     res.status(201).json({ ...info, offset: 0, chunkSize: CHUNK });
@@ -185,7 +187,9 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   });
   app.delete('/api/uploads/:id', admin, async (req, res) => {
     if (locks.has(req.params.id)) throw fail(409, 'Upload occupé.');
-    await rm(uploadPath(req.params.id), { recursive: true, force: true }); res.json({ ok: true });
+    locks.add(req.params.id);
+    try { await rm(uploadPath(req.params.id), { recursive: true, force: true }); res.json({ ok: true }); }
+    finally { locks.delete(req.params.id); }
   });
   app.post('/api/uploads/:id/complete', admin, async (req, res) => {
     const id = req.params.id;
@@ -205,6 +209,17 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       store.save(movie); res.json(movie);
     } finally { processing = false; locks.delete(id); }
   });
+  app.post('/api/movies/:id/probe', admin, async (req, res) => {
+    const movie = idleMovie(req.params.id);
+    if (processing || movie.status === 'ready') throw fail(409, 'Analyse indisponible.');
+    processing = true; movie.status = 'probing'; movie.error = null; store.save(movie);
+    res.status(202).json({ ok: true });
+    try {
+      movie.probe = await probeFile(path.join(store.directory(movie.id), 'source'));
+      movie.status = movie.probe.compatible ? 'uploaded' : 'incompatible';
+    } catch (error) { movie.status = 'failed'; movie.error = error.message; }
+    finally { store.save(movie); processing = false; }
+  });
   app.post('/api/movies/:id/prepare', admin, async (req, res) => {
     const movie = idleMovie(req.params.id);
     if (processing) throw fail(409, 'Un import est déjà en cours.');
@@ -213,6 +228,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     try {
       Object.assign(movie, await prepareMovie(store, movie, req.body.audio, req.body.subtitles));
       movie.status = 'ready';
+      // No active viewer can reference previous generations while a movie is prepared.
+      for (const entry of await readdir(store.directory(movie.id), { withFileTypes: true })) {
+        if (entry.isDirectory() && ID.test(entry.name) && entry.name !== movie.generation) {
+          await rm(path.join(store.directory(movie.id), entry.name), { recursive: true, force: true });
+        }
+      }
     } catch (error) { movie.status = 'failed'; movie.error = error.message; }
     finally { store.save(movie); processing = false; }
   });
@@ -224,14 +245,15 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.delete('/api/movies/:id', admin, async (req, res) => {
     const movie = idleMovie(req.params.id);
     for (const room of rooms.values()) if (room.movieId === movie.id) throw fail(409, 'Fermer les rooms de ce film avant suppression.');
-    await rm(store.directory(movie.id), { recursive: true, force: true }); store.movies.delete(movie.id);
-    res.json({ ok: true });
+    mediaLocks.add(movie.id);
+    try { await rm(store.directory(movie.id), { recursive: true, force: true }); store.movies.delete(movie.id); res.json({ ok: true }); }
+    finally { mediaLocks.delete(movie.id); }
   });
   app.post('/api/movies/:id/subtitles', admin, express.raw({ type: 'text/plain', limit: '2mb' }), async (req, res) => {
     const movie = idleMovie(req.params.id);
     if (processing || movie.status !== 'ready') throw fail(409, 'Film indisponible.');
     if (!Buffer.isBuffer(req.body) || !req.body.length) throw fail(400, 'Sous-titre vide.');
-    processing = true;
+    processing = true; mediaLocks.add(movie.id);
     const directory = path.join(store.directory(movie.id), movie.generation);
     const input = path.join(directory, 'subtitle-input');
     try {
@@ -240,16 +262,22 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         language: req.query.language || 'und', duration: movie.duration });
       movie.subtitles.push(track); await writeMaster(directory, movie.audio, movie.subtitles); store.save(movie);
       res.json(movie);
-    } finally { await unlink(input).catch(() => {}); processing = false; }
+    } finally { await unlink(input).catch(() => {}); processing = false; mediaLocks.delete(movie.id); }
   });
   app.delete('/api/movies/:id/subtitles/:track', admin, async (req, res) => {
     const movie = idleMovie(req.params.id);
     if (processing) throw fail(409, 'Un import est déjà en cours.');
     const track = movie.subtitles?.find(item => item.id === req.params.track);
     if (!track) throw fail(404, 'Piste introuvable.');
-    movie.subtitles = movie.subtitles.filter(item => item !== track);
-    await writeMaster(path.join(store.directory(movie.id), movie.generation), movie.audio, movie.subtitles);
-    store.save(movie); res.json(movie);
+    mediaLocks.add(movie.id);
+    try {
+      const subtitles = movie.subtitles.filter(item => item !== track);
+      const directory = path.join(store.directory(movie.id), movie.generation);
+      await writeMaster(directory, movie.audio, subtitles);
+      movie.subtitles = subtitles; store.save(movie);
+      await unlink(path.join(directory, track.filename)); await unlink(path.join(directory, `sub_${track.id}.m3u8`));
+      res.json(movie);
+    } finally { mediaLocks.delete(movie.id); }
   });
   app.get('/media/:id/:file', authenticated, (req, res, next) => {
     const movie = getMovie(req.params.id);

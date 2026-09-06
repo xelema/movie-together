@@ -69,6 +69,13 @@ test('authenticated upload, real lossless packaging, private rooms and access co
   const directory = path.join(instance.store.directory(movie.id), prepared.generation);
   assert.equal(await hashStream(path.join(directory, 'stream_0.m3u8'), '0:v:0'), await hashStream(file, '0:v:0'));
   assert.equal(await hashStream(path.join(directory, 'stream_1.m3u8'), '0:a:0'), await hashStream(file, '0:a:0'));
+  const subtitle = await request(`/api/movies/${movie.id}/subtitles?label=English&language=en`, { cookie, method: 'POST',
+    headers: { 'Content-Type': 'text/plain' }, body: Buffer.from('1\n00:00:01,000 --> 00:00:03,000\nA subtitle.\n') });
+  assert.equal(subtitle.status, 200);
+  const withSubtitles = await subtitle.json();
+  const vtt = await (await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`, { cookie })).text();
+  assert.match(vtt, /WEBVTT/); assert.match(vtt, /A subtitle\./);
+  assert.match(await (await request(`/media/${movie.id}/master.m3u8`, { cookie })).text(), /TYPE=SUBTITLES/);
   assert.equal((await request(`/media/${movie.id}/master.m3u8`)).status, 401);
   const room = await (await request('/api/rooms', { cookie, method: 'POST', body: { movieId: movie.id } })).json();
   const joined = await request('/api/join', { method: 'POST', body: { code: room.code } });

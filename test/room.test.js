@@ -90,3 +90,9 @@ test('cancels a scheduled start if a participant has not acknowledged it', () =>
   advance(700); room.tick();
   assert.equal(room.phase, 'buffering');
 });
+
+test('a pause from a slightly outdated participant still stops the group', () => {
+  const { room, start } = setup(); start();
+  room.command('b', { epoch: room.epoch - 1, type: 'pause' });
+  assert.equal(room.phase, 'paused');
+});
