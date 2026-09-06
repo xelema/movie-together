@@ -1,8 +1,9 @@
 import { SyncPlayer } from './sync-player.js';
+import { label } from './labels.js';
 
 const $ = id => document.getElementById(id);
 let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false;
-function notice(message = '') { $('notice').textContent = message; }
+function notice(message = '') { $('notice').textContent = label(message); }
 async function api(url, { body, method = 'GET', ...options } = {}) {
   const response = await fetch(url, { method, ...options,
     headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
@@ -12,12 +13,12 @@ async function api(url, { body, method = 'GET', ...options } = {}) {
   return result;
 }
 function handle(action) { return async event => { event?.preventDefault(); try { await action(event); } catch (error) { notice(error.message); } }; }
-function element(tag, text, className) { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; }
+function element(tag, text, className) { const node = document.createElement(tag); if (text !== undefined) node.textContent = label(text); if (className) node.className = className; return node; }
 function button(text, action, className) { const node = element('button', text, className); node.type = 'button'; node.addEventListener('click', handle(action)); return node; }
 function formatTime(seconds = 0) { const s = Math.floor(seconds); return `${Math.floor(s / 3600) ? `${Math.floor(s / 3600)}:` : ''}${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; }
 function fillSelect(select, choices) {
   const previous = select.value;
-  select.replaceChildren(...choices.map(({ value, label }) => { const option = element('option', label); option.value = value; return option; }));
+  select.replaceChildren(...choices.map(({ value, label }) => { const option = element('option'); option.textContent = label; option.value = value; return option; }));
   if (choices.some(choice => String(choice.value) === previous)) select.value = previous;
 }
 async function refresh() {
@@ -53,9 +54,9 @@ async function refresh() {
 }
 function movieCard(movie) {
   const card = element('article', undefined, 'card');
-  card.append(element('h2', movie.title));
+  const heading = element('h2'); heading.textContent = movie.title; card.append(heading);
   const statuses = { ready: 'Prêt', uploaded: 'À préparer', processing: 'Préparation en cours…', probing: 'Analyse…', failed: 'Échec', incompatible: 'Format incompatible' };
-  card.append(element('p', `${statuses[movie.status] ?? movie.status}${movie.duration ? ` · ${formatTime(movie.duration)}` : ''}`));
+  card.append(element('p', `${label(statuses[movie.status] ?? movie.status)}${movie.duration ? ` · ${formatTime(movie.duration)}` : ''}`));
   if (movie.error) card.append(element('p', movie.error));
   if (movie.status === 'incompatible') card.append(element('p', 'Requis : H.264 8 bits, ≤ 1080p / niveau 4.2, et au moins une piste AAC-LC stéréo. L’original reste intact.'));
   if (movie.maxSegmentSeconds > 8) card.append(element('p', `Segments jusqu’à ${movie.maxSegmentSeconds.toFixed(1)} s : préparation du lecteur potentiellement plus longue.`));
@@ -101,7 +102,7 @@ function movieCard(movie) {
         { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: file.files[0] });
       const result = await response.json(); if (!response.ok) throw new Error(result.error); await refresh();
     }));
-    for (const track of movie.subtitles) details.append(button(`Retirer « ${track.label} »`, async () => {
+    for (const track of movie.subtitles) details.append(button(`Retirer / 삭제 « ${track.label} »`, async () => {
       await api(`/api/movies/${movie.id}/subtitles/${track.id}`, { method: 'DELETE' }); await refresh();
     }, 'secondary'));
   }
@@ -141,9 +142,9 @@ async function upload(file) {
         offset = (await api(`/api/uploads/${info.id}`)).offset;
       }
     }
-    $('upload-status').textContent = 'Analyse du fichier…';
+    $('upload-status').textContent = label('Analyse du fichier…');
     await api(`/api/uploads/${info.id}/complete`, { method: 'POST', body: {} });
-    $('upload-status').textContent = 'Envoi terminé. Choisissez les pistes dans « Gérer le film et les pistes ».';
+    $('upload-status').textContent = label('Envoi terminé. Choisissez les pistes.');
     await refresh();
   } finally { uploadBusy = false; $('upload-button').disabled = false; }
 }
@@ -154,26 +155,26 @@ async function enterRoom(id) {
   $('entry').hidden = true; $('library').hidden = true; $('watch').hidden = false;
   history.replaceState(null, '', `/#room=${id}`);
   player = new SyncPlayer({ video: $('video'), roomId: id,
-    onStatus: message => { $('playback-status').textContent = message; },
+    onStatus: message => { $('playback-status').textContent = label(message); },
     onActivation: active => { $('activate').hidden = active; },
     onTracks: (audio, subtitles) => {
       fillSelect($('audio'), audio.map(track => ({ value: track.index, label: track.label })));
-      fillSelect($('subtitles'), [{ value: -1, label: 'Désactivés' }, ...subtitles.map(track => ({ value: track.index, label: track.label }))]);
+      fillSelect($('subtitles'), [{ value: -1, label: label('Désactivés') }, ...subtitles.map(track => ({ value: track.index, label: track.label }))]);
     },
     onState: (message, controller) => {
       $('movie-title').textContent = message.movie?.title ?? 'Séance';
       $('room-movie').value = message.movie?.id ?? '';
       const phase = message.state.phase;
-      $('playback-status').textContent = controller.failure || (!controller.activated ? 'Activez votre lecteur, puis lancez la séance.' :
+      $('playback-status').textContent = label(controller.failure || (!controller.activated ? 'Activez votre lecteur, puis lancez la séance.' :
         !controller.clock.ready ? 'Mesure de la connexion…' : phase === 'buffering' ? 'Préparation commune : attente du buffer de chaque participant…' :
-          phase === 'playing' ? controller.serverTime() < message.state.startsAt ? 'Départ synchronisé…' : 'Lecture synchronisée' : 'En pause');
+          phase === 'playing' ? controller.serverTime() < message.state.startsAt ? 'Départ synchronisé…' : 'Lecture synchronisée' : 'En pause'));
       const position = controller.target();
       if (document.activeElement !== $('seek')) $('seek').value = position;
       $('seek').max = message.state.duration || 1;
       $('time').textContent = `${formatTime(position)} / ${formatTime(message.state.duration)}`;
-      $('diagnostics').textContent = `Écart local : ${Math.round(($('video').currentTime - position) * 1000)} ms · Aller-retour réseau : ${Math.round(controller.clock.best?.rtt ?? 0)} ms`;
+      $('diagnostics').textContent = `Écart / 시간차 : ${Math.round(($('video').currentTime - position) * 1000)} ms · Réseau / 네트워크 : ${Math.round(controller.clock.best?.rtt ?? 0)} ms`;
       $('participants').replaceChildren(...message.members.map((member, index) => element('li',
-        `${member.id === controller.memberId ? 'Vous' : `Participant ${index + 1}`} : ${member.ready ? 'prêt' : 'en attente'} · ${member.buffer.toFixed(1)} s de réserve`)));
+        `${member.id === controller.memberId ? 'Vous / 나' : `Participant / 참가자 ${index + 1}`} : ${member.ready ? 'prêt / 준비 완료' : 'en attente / 대기 중'} · Buffer / 버퍼 ${member.buffer.toFixed(1)} s`)));
     },
   });
   movies = await api('/api/movies');

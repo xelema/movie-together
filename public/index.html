@@ -7,41 +7,40 @@
   <script src="/vendor/hls.js" defer></script><script type="module" src="/app.js"></script>
 </head>
 <body>
-  <header><a href="/">Movie Night</a><span>Votre séance, ensemble.</span><button id="logout" hidden>Déconnexion</button></header>
+  <header><a href="/">Movie Night</a><button id="logout" hidden>Déconnexion / <span lang="ko">로그아웃</span></button></header>
   <main>
     <p id="notice" role="status" aria-live="polite"></p>
     <section id="entry">
-      <h1>On regarde quoi ce soir ?</h1><p>Une room privée. Le même instant. Vos langues au choix.</p>
       <div class="columns">
-        <form id="join-form"><h2>Rejoindre une séance</h2><label>Code d’invitation<input name="code" required autocomplete="off" maxlength="16"></label><button>Rejoindre</button></form>
-        <form id="login-form"><h2>Administration</h2><label>Mot de passe<input name="password" type="password" required autocomplete="current-password"></label><button>Se connecter</button></form>
+        <form id="join-form"><h2>Rejoindre une séance / <span lang="ko">시청방 입장</span></h2><label>Code d’invitation / <span lang="ko">초대 코드</span><input name="code" required autocomplete="off" maxlength="16"></label><button>Rejoindre / <span lang="ko">입장</span></button></form>
+        <form id="login-form"><h2>Administration / <span lang="ko">관리</span></h2><label>Mot de passe / <span lang="ko">비밀번호</span><input name="password" type="password" required autocomplete="current-password"></label><button>Se connecter / <span lang="ko">로그인</span></button></form>
       </div>
     </section>
     <section id="library" hidden>
-      <div class="heading"><h1>Bibliothèque</h1><button id="refresh">Actualiser</button></div>
-      <form id="upload-form" hidden><h2>Ajouter un film</h2><p>Original conservé. Aucun réencodage. Jusqu’à 20 Go par fichier.</p>
-        <label>Film MP4 ou MKV<input id="upload-file" type="file" accept=".mp4,.mkv,.mov,.m4v" required></label>
-        <button id="upload-button">Envoyer le film</button><progress id="upload-progress" value="0" max="100"></progress><span id="upload-status"></span>
+      <div class="heading"><h1>Bibliothèque / <span lang="ko">영화 목록</span></h1><button id="refresh">Actualiser / <span lang="ko">새로고침</span></button></div>
+      <form id="upload-form" hidden><h2>Ajouter un film / <span lang="ko">영화 추가</span></h2><p>Sans réencodage · 20 Go max. / <span lang="ko">재인코딩 없음 · 최대 20GB</span></p>
+        <label>Film MP4 ou MKV / <span lang="ko">영화 파일</span><input id="upload-file" type="file" accept=".mp4,.mkv,.mov,.m4v" required></label>
+        <button id="upload-button">Envoyer le film / <span lang="ko">업로드</span></button><progress id="upload-progress" value="0" max="100"></progress><span id="upload-status"></span>
       </form>
       <div id="pending-uploads"></div><div id="movies" class="columns"></div>
-      <section id="rooms-section" hidden><h2>Invitations actives</h2><div id="rooms"></div></section>
+      <section id="rooms-section" hidden><h2>Invitations actives / <span lang="ko">유효한 초대</span></h2><div id="rooms"></div></section>
     </section>
     <section id="watch" hidden>
-      <div class="heading"><h1 id="movie-title">Séance</h1><button id="leave">Quitter la room</button></div>
+      <div class="heading"><h1 id="movie-title">Séance / <span lang="ko">시청방</span></h1><button id="leave">Quitter la room / <span lang="ko">나가기</span></button></div>
       <div id="screen"><video id="video" playsinline preload="auto" disablepictureinpicture></video></div>
-      <p id="playback-status" role="status">Connexion…</p>
+      <p id="playback-status" role="status">Connexion… / <span lang="ko">연결 중…</span></p>
       <div class="controls">
-        <button id="activate">Activer mon lecteur</button><button id="play">Lecture pour tous</button><button id="pause">Pause pour tous</button>
-        <button id="fullscreen">Plein écran</button>
+        <button id="activate">Activer mon lecteur / <span lang="ko">플레이어 활성화</span></button><button id="play">Lecture pour tous / <span lang="ko">모두 재생</span></button><button id="pause">Pause pour tous / <span lang="ko">모두 일시정지</span></button>
+        <button id="fullscreen">Plein écran / <span lang="ko">전체 화면</span></button>
       </div>
-      <label>Position commune<input id="seek" type="range" min="0" max="1" step="0.1" value="0"></label>
-      <div class="controls"><output id="time">0:00 / 0:00</output><label>Audio<select id="audio"></select></label>
-        <label>Sous-titres<select id="subtitles"><option value="-1">Désactivés</option></select></label>
-        <label>Volume<input id="volume" type="range" min="0" max="1" step="0.05" value="1"></label>
+      <label>Position commune / <span lang="ko">공통 재생 위치</span><input id="seek" type="range" min="0" max="1" step="0.1" value="0"></label>
+      <div class="controls"><output id="time">0:00 / 0:00</output><label>Audio / <span lang="ko">음성</span><select id="audio"></select></label>
+        <label>Sous-titres / <span lang="ko">자막</span><select id="subtitles"><option value="-1">Désactivés / 끄기</option></select></label>
+        <label>Volume / <span lang="ko">볼륨</span><input id="volume" type="range" min="0" max="1" step="0.05" value="1"></label>
       </div>
       <p id="diagnostics" class="muted"></p><ul id="participants"></ul>
-      <form id="choose-film"><label>Changer de film pour la room<select id="room-movie"></select></label><button>Choisir</button></form>
-      <p class="muted">Gardez la page au premier plan. Un lecteur bloqué ou une connexion perdue met la séance en pause.</p>
+      <form id="choose-film"><label>Changer de film / <span lang="ko">영화 변경</span><select id="room-movie"></select></label><button>Choisir / <span lang="ko">선택</span></button></form>
+      <p class="muted">Gardez cette page ouverte à l’écran. / <span lang="ko">이 페이지를 화면에 열어 두세요.</span></p>
     </section>
   </main>
 </body>
