@@ -3,9 +3,9 @@ import { mkdir, readFile, writeFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-export function run(binary, args, { timeout = 4 * 3600_000 } = {}) {
+export function run(binary, args, { timeout = 4 * 3600_000, cwd } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(binary, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '', expired = false;
     const timer = setTimeout(() => { expired = true; child.kill('SIGKILL'); }, timeout);
     child.stdout.on('data', chunk => { stdout = (stdout + chunk).slice(-4_000_000); });
@@ -110,7 +110,7 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices) 
     '-master_pl_name', 'base.m3u8', '-var_stream_map',
     [`v:0,agroup:audio`, ...audio.map((track, index) => `a:${index},agroup:audio,language:${language(track.language)},default:${index === 0 ? 'yes' : 'no'}`)].join(' '),
     path.join(directory, 'stream_%v.m3u8'));
-  await run(process.env.FFMPEG_PATH || 'ffmpeg', args);
+  await run(process.env.FFMPEG_PATH || 'ffmpeg', args, { cwd: directory });
   const subtitles = [];
   for (const track of embeddedSubs) {
     subtitles.push(await addSubtitle(directory, source, { ...track, duration: movie.probe.duration }));
