@@ -67,7 +67,8 @@ export class Room {
 
   command(id, { epoch, type, position }) {
     this.requireMember(id);
-    if (epoch !== this.epoch) return this.snapshot();
+    // Pause remains effective even if the sender has not received the latest epoch.
+    if (epoch !== this.epoch && type !== 'pause') return this.snapshot();
     if (this.duration === null) throw new Error('No movie selected');
     if (!['play', 'pause', 'seek'].includes(type)) throw new Error('Unknown command');
     if (type === 'seek' && (!Number.isFinite(position) || position < 0 || position > this.duration)) {
