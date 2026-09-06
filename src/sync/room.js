@@ -80,21 +80,21 @@ export class Room {
     return this.snapshot();
   }
 
-  report(id, { epoch, sequence, position, bufferedUntil, ready }) {
+  report(id, { epoch, sequence, position, bufferedUntil, ready, ackStartsAt = null }) {
     const member = this.requireMember(id);
     if (epoch !== this.epoch || !Number.isSafeInteger(sequence) || sequence <= member.sequence) return this.snapshot();
     if (!Number.isFinite(position) || position < 0 || !Number.isFinite(bufferedUntil) || bufferedUntil < position || typeof ready !== 'boolean') {
       throw new RangeError('Invalid playback report');
     }
     member.sequence = sequence;
-    member.report = { position, bufferedUntil, ready, receivedAt: this.now() };
+    member.report = { position, bufferedUntil, ready, ackStartsAt, receivedAt: this.now() };
     return this.tick();
   }
 
   tick() {
     const time = this.now();
     const position = this.positionAt(time);
-    if (this.duration !== null && position >= this.duration) {
+    if (this.phase === 'playing' && this.duration !== null && position >= this.duration) {
       this.wantsPlay = false;
       this.freeze();
       return this.snapshot();
@@ -104,7 +104,8 @@ export class Room {
       time - report.receivedAt < this.reportTimeout &&
       report.bufferedUntil >= Math.min(this.duration, position + reserve);
     if (this.phase === 'playing') {
-      if (!reports.every(report => healthy(report, this.lowBuffer))) this.freeze();
+      if (!reports.every(report => healthy(report, this.lowBuffer)) ||
+        (time >= this.startsAt - 300 && !reports.every(report => report.ackStartsAt === this.startsAt))) this.freeze();
     } else if (this.wantsPlay && this.duration !== null && reports.length &&
       reports.every(report => healthy(report, this.minBuffer) && Math.abs(report.position - position) <= 0.1)) {
       this.phase = 'playing';

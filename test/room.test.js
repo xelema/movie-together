@@ -9,9 +9,9 @@ function setup() {
   const command = (type, position) => room.command('a', { epoch: room.epoch, type, position });
   const report = (id, options = {}) => room.report(id, {
     epoch: room.epoch, sequence: (room.members.get(id).sequence ?? -1) + 1,
-    position: room.positionAt(), bufferedUntil: 60, ready: true, ...options,
+    position: room.positionAt(), bufferedUntil: 60, ready: true, ackStartsAt: room.startsAt, ...options,
   });
-  const start = () => { command('play'); report('a'); report('b'); };
+  const start = () => { command('play'); report('a'); report('b'); report('a'); report('b'); };
   return { room, command, report, start, advance: ms => { time += ms; } };
 }
 
@@ -21,6 +21,7 @@ test('waits for every participant and schedules a shared future start', () => {
   assert.equal(room.phase, 'buffering');
   report('b');
   assert.equal(room.startsAt, 1000);
+  report('a'); report('b');
   advance(500); assert.equal(room.positionAt(), 0);
   advance(1000); assert.equal(room.positionAt(), 0.5);
 });
@@ -78,6 +79,14 @@ test('near the end, readiness only requires the remaining movie', () => {
   command('seek', 118); command('play');
   report('a', { bufferedUntil: 120 }); report('b', { bufferedUntil: 120 });
   assert.equal(room.phase, 'playing');
+  report('a', { bufferedUntil: 120 }); report('b', { bufferedUntil: 120 });
   advance(3000); room.tick();
   assert.equal(room.position, 120); assert.equal(room.phase, 'paused');
+});
+
+test('cancels a scheduled start if a participant has not acknowledged it', () => {
+  const { room, command, report, advance } = setup();
+  command('play'); report('a'); report('b'); report('a');
+  advance(700); room.tick();
+  assert.equal(room.phase, 'buffering');
 });
