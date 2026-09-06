@@ -18,22 +18,22 @@ test('two viewers play, pause, seek, choose audio independently and stop when di
   }
   try {
     await host.goto('/');
-    await host.getByLabel('Mot de passe', { exact: true }).fill('browser-test-password');
+    await host.getByLabel(/Mot de passe/).fill('browser-test-password');
     await host.getByRole('button', { name: 'Se connecter' }).click();
     await expect(host.getByRole('heading', { name: 'Bibliothèque' })).toBeVisible();
     await host.locator('#upload-file').setInputFiles('data/e2e/fixture.mp4');
     await host.getByRole('button', { name: 'Envoyer le film' }).click();
-    await expect(host.getByText('À préparer', { exact: true })).toBeVisible({ timeout: 15_000 });
-    await host.getByText('Gérer le film et les pistes', { exact: true }).click();
+    await expect(host.getByText(/^À préparer \/ /)).toBeVisible({ timeout: 15_000 });
+    await host.getByText(/^Gérer le film et les pistes \/ /).click();
     await host.getByRole('button', { name: 'Préparer les pistes sélectionnées' }).click();
     await expect(host.getByRole('button', { name: 'Créer une room' })).toBeVisible({ timeout: 20_000 });
-    await host.getByText('Gérer le film et les pistes', { exact: true }).click();
+    await host.getByText(/^Gérer le film et les pistes \/ /).click();
     await host.locator('#movies input[type=file]').setInputFiles({ name: 'test.srt', mimeType: 'text/plain',
       buffer: Buffer.from('1\n00:00:00,000 --> 00:00:49,000\nSubtitle test.\n') });
-    await host.getByLabel('Nom affiché', { exact: true }).fill('Test subtitles');
+    await host.getByLabel(/Nom affiché/).fill('Test subtitles');
     await Promise.all([
       host.waitForResponse(response => response.url().includes('/subtitles?') && response.status() === 200),
-      host.getByRole('button', { name: 'Ajouter les sous-titres', exact: true }).click(),
+      host.getByRole('button', { name: /^Ajouter les sous-titres \/ / }).click(),
     ]);
     await host.getByRole('button', { name: 'Créer une room' }).click();
     const invite = (await host.locator('#notice').textContent()).match(/http:\/\/\S+/)[0];
