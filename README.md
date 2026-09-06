@@ -24,14 +24,17 @@ L'upload utilise les API cryptographiques disponibles sur localhost ou HTTPS.
 
 ## Utilisation
 
-1. Se connecter à l'administration et envoyer un MP4 ou MKV (maximum 20 Go).
+1. Se connecter à l'administration et envoyer un film (maximum 20 Go).
 2. Ouvrir « Gérer le film et les pistes », sélectionner les audios et sous-titres
-   embarqués puis lancer la préparation. L'original reste intact.
+   embarqués puis lancer la préparation. L'original reste intact. Laisser cochée
+   « Copie compatible SDR si nécessaire » pour les appareils différents.
+   Attendre le statut « Prêt » avant de créer la room : la conversion peut être longue.
 3. Facultativement, ajouter des sous-titres externes SRT/VTT et renommer le film.
 4. Créer une room et transmettre le lien ou le code affiché à son invité.
 5. Chaque participant clique sur « Activer mon lecteur ». L'un lance la lecture.
 6. Chacun peut mettre en pause ou déplacer la position commune. Audio et sous-titres
-   sont individuels. Un changement de piste met le groupe en pause ; relancer ensuite.
+   et version vidéo sont individuels. Un changement de piste ou de version met le
+   groupe en pause ; relancer ensuite.
 
 Un upload interrompu reprend après sélection du même fichier. Une empreinte du début,
 de la fin et des métadonnées évite les confusions courantes de fichiers homonymes ;
@@ -43,21 +46,37 @@ Elles donnent accès à la liste des films prêts ; les médias accessibles aux 
 sont ceux des rooms qu'ils ont rejointes. Chaque participant peut choisir un film
 de la bibliothèque pour sa room. Modifier un film en cours de visionnage est bloqué.
 
-## Formats : aucun réencodage audio ou vidéo
+## Formats et préparation avant lecture
 
-La première version accepte une base conservatrice :
+L'import n'impose aucune limite de résolution, de niveau ou de HDR. FFmpeg doit
+pouvoir lire la vidéo et sa durée. Les versions de lecture sont entièrement
+préparées sur disque ; aucun encodage n'est lancé pendant une séance.
 
 | Élément | Formats pris en charge |
 | --- | --- |
-| Vidéo | H.264, 8 bits, YUV 4:2:0, profils Baseline/Main/High, niveau ≤ 4.2, maximum 1920 × 1080 |
-| Audio | AAC-LC, mono ou stéréo, 44,1 ou 48 kHz |
+| Vidéo originale | H.264, HEVC/H.265, AV1 ou VP9 copiés en HLS/fMP4, résolution et profondeur conservées, y compris 4K/HDR |
+| Copie compatible | H.264 8 bits SDR, au plus 1920 × 1080 et 60 images/s, sans agrandissement ; autres codecs décodables acceptés via cette copie |
+| Audio | AAC-LC mono/stéréo copié ; autres pistes décodables converties en AAC stéréo 192 kbit/s |
 | Sous-titres embarqués | SubRip, WebVTT, mov_text, ASS/SSA textuels |
 | Sous-titres externes | SRT ou VTT, maximum 2 Mo |
 
-Les flux vidéo/audio sélectionnés sont copiés (`-c copy`) vers HLS/fMP4 : aucune
-baisse de résolution ou de débit, aucune conversion DTS/AC3 vers AAC. Un film doit
-posséder au moins un audio compatible. Les pistes incompatibles restent dans
-l'original mais ne peuvent pas être sélectionnées pour la lecture.
+Le fichier envoyé reste intact. La vidéo originale de lecture est remuxée sans
+réencodage ; sa lecture dépend des codecs et du HDR pris en charge par l'appareil.
+La copie compatible est proposée par défaut et évitée si la vidéo est déjà H.264
+8 bits SDR jusqu'à 1080p/niveau 4.2. Chaque participant choisit sa version, avec une
+position commune corrigée du décalage temporel propre à chaque version préparée.
+Les pistes audio préparées sont partagées entre les versions pour éviter leur duplication.
+Les films muets sont acceptés ; sinon sélectionner au moins une piste audio.
+
+Le HDR10 et HLG sont convertis en SDR par tone mapping (`zscale` et `tonemap`
+requis dans FFmpeg). Dolby Vision avec base HDR10/HLG/SDR utilise cette base pour
+la copie compatible. Le remuxage ne garantit pas la signalisation Dolby Vision :
+un extrait DV 8.1 testé conserve son flux vidéo et son HDR10, mais perd l'annonce
+Dolby Vision du conteneur. Pour Dolby Vision sans base compatible, notamment le
+profil 5, la copie SDR exige FFmpeg avec `libplacebo`, Vulkan et un pilote fonctionnel.
+Si ces composants manquent, la préparation échoue avec un message explicite ;
+la distribution Windows FFmpeg Essentials ne les fournit pas tous.
+
 Les sous-titres sont convertis en WebVTT ; la mise en forme avancée ASS/SSA peut
 être perdue. Les sous-titres images PGS/VobSub et l'ajout d'audios provenant de
 fichiers externes ne sont pas pris en charge.
@@ -101,8 +120,9 @@ npm run test:e2e
 ```
 
 Tests du moteur, horloges, trous de buffer, upload/reprise, accès privé, FFmpeg réel,
-empreintes des flux avant/après remuxage, sous-titres et deux navigateurs avec audio
-indépendant, pause, déplacement et coupure réseau. Les vidéos de test sont des mires
+empreintes des flux avant/après remuxage, conversion 4K HDR vers SDR et audio AC3
+vers AAC, sous-titres et deux navigateurs avec versions vidéo et audio
+indépendants, pause, déplacement et coupure réseau. Les vidéos de test sont des mires
 synthétiques. Ces essais ne remplacent pas une séance sur iPhone et Android physiques :
 voir [docs/validation.md](docs/validation.md).
 
@@ -114,8 +134,15 @@ Node sert les segments sans compression HTTP.
 
 `data/movies` conserve les originaux, les pistes et les métadonnées JSON écrites
 par remplacement atomique ; `data/uploads` conserve les imports partiels. Prévoir
-environ deux fois la taille de la bibliothèque, plus une marge de travail et de
-sauvegarde. Un seul import est traité à la fois, dans un sous-processus FFmpeg.
+la taille des originaux + les vidéos remuxées + les copies compatibles + les audios
+préparés, plus une marge de travail et de sauvegarde. Ce n'est donc pas un facteur
+deux fixe. Une copie compatible plafonnée à 8 Mbit/s représente jusqu'à environ
+7,2 Go pour deux heures, hors audio. Repréparer conserve l'ancienne génération
+jusqu'à réussite et demande temporairement l'espace pour les deux générations.
+Un seul import est traité à la fois, dans un sous-processus FFmpeg, avec progression
+dans l'administration. `ENCODE_THREADS` limite les threads de décodage/encodage
+vidéo (2 par défaut, au plus 8) ; préparer de la 4K HDR sur un petit serveur peut
+prendre plusieurs heures. Cette limite ne plafonne pas toute l'activité CPU du processus.
 
 Les sessions et rooms sont en mémoire : un redémarrage les ferme, mais conserve
 films et uploads. Un import interrompu est signalé en échec. Ne pas lancer plusieurs

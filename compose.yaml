@@ -11,6 +11,7 @@ services:
       TRUST_PROXY: '1'
       MIN_BUFFER_SECONDS: ${MIN_BUFFER_SECONDS:-8}
       LOW_BUFFER_SECONDS: ${LOW_BUFFER_SECONDS:-3}
+      ENCODE_THREADS: ${ENCODE_THREADS:-2}
     volumes:
       - ${MEDIA_DIR:-movie-data}:/data
     expose:
