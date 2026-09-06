@@ -18,8 +18,8 @@
     </section>
     <section id="library" hidden>
       <div class="heading"><h1>Bibliothèque / <span lang="ko">영화 목록</span></h1><button id="refresh">Actualiser / <span lang="ko">새로고침</span></button></div>
-      <form id="upload-form" hidden><h2>Ajouter un film / <span lang="ko">영화 추가</span></h2><p>Sans réencodage · 20 Go max. / <span lang="ko">재인코딩 없음 · 최대 20GB</span></p>
-        <label>Film MP4 ou MKV / <span lang="ko">영화 파일</span><input id="upload-file" type="file" accept=".mp4,.mkv,.mov,.m4v" required></label>
+      <form id="upload-form" hidden><h2>Ajouter un film / <span lang="ko">영화 추가</span></h2><p>Original conservé · 20 Go max. / <span lang="ko">원본 보존 · 최대 20GB</span></p>
+        <label>Film / <span lang="ko">영화 파일</span><input id="upload-file" type="file" required></label>
         <button id="upload-button">Envoyer le film / <span lang="ko">업로드</span></button><progress id="upload-progress" value="0" max="100"></progress><span id="upload-status"></span>
       </form>
       <div id="pending-uploads"></div><div id="movies" class="columns"></div>
@@ -34,7 +34,7 @@
         <button id="fullscreen">Plein écran / <span lang="ko">전체 화면</span></button>
       </div>
       <label>Position commune / <span lang="ko">공통 재생 위치</span><input id="seek" type="range" min="0" max="1" step="0.1" value="0"></label>
-      <div class="controls"><output id="time">0:00 / 0:00</output><label>Audio / <span lang="ko">음성</span><select id="audio"></select></label>
+      <div class="controls"><output id="time">0:00 / 0:00</output><label>Version / <span lang="ko">영상 버전</span><select id="quality"></select></label><label>Audio / <span lang="ko">음성</span><select id="audio"></select></label>
         <label>Sous-titres / <span lang="ko">자막</span><select id="subtitles"><option value="-1">Désactivés / 끄기</option></select></label>
         <label>Volume / <span lang="ko">볼륨</span><input id="volume" type="range" min="0" max="1" step="0.05" value="1"></label>
       </div>

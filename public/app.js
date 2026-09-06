@@ -58,7 +58,10 @@ function movieCard(movie) {
   const statuses = { ready: 'Prêt', uploaded: 'À préparer', processing: 'Préparation en cours…', probing: 'Analyse…', failed: 'Échec', incompatible: 'Format incompatible' };
   card.append(element('p', `${label(statuses[movie.status] ?? movie.status)}${movie.duration ? ` · ${formatTime(movie.duration)}` : ''}`));
   if (movie.error) card.append(element('p', movie.error));
-  if (movie.status === 'incompatible') card.append(element('p', 'Requis : H.264 8 bits, ≤ 1080p / niveau 4.2, et au moins une piste AAC-LC stéréo. L’original reste intact.'));
+  if (movie.progress) card.append(element('p', `${movie.progress.percent} % · Préparation / 준비 중`));
+  if (movie.renditions?.length && movie.status === 'ready') card.append(element('p', movie.renditions.map(version =>
+    `${version.id === 'original' ? 'Original / 원본' : 'Compatible SDR / 호환 SDR'} · ${version.width} × ${version.height}${version.hdr ? ' · HDR' : ''}`).join(' — ')));
+  if (movie.status === 'incompatible') card.append(element('p', 'Aucune vidéo exploitable. Réanalysez le fichier. / 영상을 분석할 수 없습니다. 다시 분석하세요.'));
   if (movie.maxSegmentSeconds > 8) card.append(element('p', `Segments jusqu’à ${movie.maxSegmentSeconds.toFixed(1)} s : préparation du lecteur potentiellement plus longue.`));
   if (!session.admin) return card;
   if (movie.status === 'ready') card.append(button('Créer une room', async () => {
@@ -69,24 +72,28 @@ function movieCard(movie) {
   const details = element('details'); details.append(element('summary', 'Gérer le film et les pistes'));
   const titleLabel = element('label', 'Titre'); const title = element('input'); title.value = movie.title; title.maxLength = 150; titleLabel.append(title);
   details.append(titleLabel, button('Enregistrer le titre', async () => { await api(`/api/movies/${movie.id}`, { method: 'PATCH', body: { title: title.value } }); await refresh(); }));
-  if (movie.status === 'failed' && !movie.probe) details.append(button('Réanalyser le fichier', async () => {
+  if (movie.status === 'incompatible' || (movie.status === 'failed' && !movie.probe)) details.append(button('Réanalyser le fichier', async () => {
     await api(`/api/movies/${movie.id}/probe`, { method: 'POST', body: {} }); await refresh();
   }));
   if (movie.probe) {
-    details.append(element('p', `Vidéo : ${movie.probe.video?.codec ?? 'absente'} · ${movie.probe.video?.width ?? '?'} × ${movie.probe.video?.height ?? '?'}`));
+    details.append(element('p', `Vidéo / 영상 : ${movie.probe.video?.codec ?? 'absente'} · ${movie.probe.video?.width ?? '?'} × ${movie.probe.video?.height ?? '?'}${movie.probe.video?.hdr ? ' · HDR' : ''}${movie.probe.video?.dolbyVision ? ` · Dolby Vision ${movie.probe.video.dolbyVision.dv_profile}` : ''}`));
     const audio = [], subtitles = [];
     for (const [tracks, selected, heading] of [[movie.probe.audio, audio, 'Pistes audio à conserver'], [movie.probe.subtitles, subtitles, 'Sous-titres à extraire']]) {
       details.append(element('h3', heading));
       for (const track of tracks) {
         const label = element('label'), checkbox = element('input'); checkbox.type = 'checkbox'; checkbox.disabled = !track.compatible;
         checkbox.checked = track.compatible; selected.push({ checkbox, index: track.index });
-        label.append(checkbox, document.createTextNode(` ${track.label} (${track.codec}${track.channels ? `, ${track.channels} canaux` : ''})${track.compatible ? '' : ' — incompatible'}`)); details.append(label);
+        label.append(checkbox, document.createTextNode(` ${track.label} (${track.codec}${track.channels ? `, ${track.channels} canaux` : ''})${!track.compatible ? ' — incompatible / 지원 불가' : selected === audio && track.copy === false ? ' → AAC stéréo / 스테레오' : ''}`)); details.append(label);
       }
     }
+    const compatibleLabel = element('label'), compatible = element('input'); compatible.type = 'checkbox'; compatible.checked = true;
+    compatibleLabel.append(compatible, document.createTextNode(' Copie compatible SDR si nécessaire / 필요 시 SDR 호환 버전 생성'));
+    details.append(compatibleLabel, element('p', 'Préparation avant lecture. La conversion vidéo peut être longue. / 재생 전에 준비합니다. 영상 변환에는 시간이 걸릴 수 있습니다.'));
     if (movie.probe.compatible) details.append(button('Préparer les pistes sélectionnées', async () => {
       await api(`/api/movies/${movie.id}/prepare`, { method: 'POST', body: {
         audio: audio.filter(item => item.checkbox.checked).map(item => item.index),
         subtitles: subtitles.filter(item => item.checkbox.checked).map(item => item.index),
+        compatible: compatible.checked,
       } }); notice('Préparation lancée. La bibliothèque se mettra à jour automatiquement.'); await refresh();
     }));
   }
@@ -157,6 +164,11 @@ async function enterRoom(id) {
   player = new SyncPlayer({ video: $('video'), roomId: id,
     onStatus: message => { $('playback-status').textContent = label(message); },
     onActivation: active => { $('activate').hidden = active; },
+    onRendition: (versions, selected) => {
+      fillSelect($('quality'), versions.map(version => ({ value: version.id,
+        label: `${version.id === 'original' ? 'Original / 원본' : 'Compatible SDR / 호환 SDR'}${version.hdr ? ' · HDR' : ''}` })));
+      $('quality').value = selected; $('quality').disabled = versions.length < 2;
+    },
     onTracks: (audio, subtitles) => {
       fillSelect($('audio'), audio.map(track => ({ value: track.index, label: track.label })));
       fillSelect($('subtitles'), [{ value: -1, label: label('Désactivés') }, ...subtitles.map(track => ({ value: track.index, label: track.label }))]);
@@ -172,7 +184,7 @@ async function enterRoom(id) {
       if (document.activeElement !== $('seek')) $('seek').value = position;
       $('seek').max = message.state.duration || 1;
       $('time').textContent = `${formatTime(position)} / ${formatTime(message.state.duration)}`;
-      $('diagnostics').textContent = `Écart / 시간차 : ${Math.round(($('video').currentTime - position) * 1000)} ms · Réseau / 네트워크 : ${Math.round(controller.clock.best?.rtt ?? 0)} ms`;
+      $('diagnostics').textContent = `Écart / 시간차 : ${Math.round((controller.position() - position) * 1000)} ms · Réseau / 네트워크 : ${Math.round(controller.clock.best?.rtt ?? 0)} ms`;
       $('participants').replaceChildren(...message.members.map((member, index) => element('li',
         `${member.id === controller.memberId ? 'Vous / 나' : `Participant / 참가자 ${index + 1}`} : ${member.ready ? 'prêt / 준비 완료' : 'en attente / 대기 중'} · Buffer / 버퍼 ${member.buffer.toFixed(1)} s`)));
     },
@@ -197,6 +209,7 @@ $('play').addEventListener('click', () => player?.command('play'));
 $('pause').addEventListener('click', () => player?.command('pause'));
 $('seek').addEventListener('change', () => player?.command('seek', Number($('seek').value)));
 $('audio').addEventListener('change', () => player?.changeTrack('audio', Number($('audio').value)));
+$('quality').addEventListener('change', () => player?.changeRendition($('quality').value));
 $('subtitles').addEventListener('change', () => player?.changeTrack('subtitles', Number($('subtitles').value)));
 $('volume').addEventListener('input', () => { $('video').volume = Number($('volume').value); });
 $('fullscreen').addEventListener('click', handle(async () => {
