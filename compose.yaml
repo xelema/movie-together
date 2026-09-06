@@ -1,0 +1,53 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      APP_ORIGIN: https://${DOMAIN:?Set DOMAIN in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      DATA_DIR: /data
+      TRUST_PROXY: '1'
+      MIN_BUFFER_SECONDS: ${MIN_BUFFER_SECONDS:-8}
+      LOW_BUFFER_SECONDS: ${LOW_BUFFER_SECONDS:-3}
+    volumes:
+      - ${MEDIA_DIR:-movie-data}:/data
+    expose:
+      - '3000'
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+  proxy:
+    image: caddy:2.11-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+volumes:
+  movie-data:
+  caddy-data:
+  caddy-config:
