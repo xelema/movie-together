@@ -21,7 +21,7 @@ const publicMovie = movie => ({ id: movie.id, title: movie.title, status: movie.
   maxSegmentSeconds: movie.maxSegmentSeconds, bitrate: movie.probe?.bitrate });
 
 export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
-  origin = 'http://localhost:3000', secure = false, trustProxy = false } = {}) {
+  origin = 'http://localhost:3000', secure = false, trustProxy = false, syncOptions = {} } = {}) {
   if (!password || password.length < 16) throw new Error('ADMIN_PASSWORD doit contenir au moins 16 caractères.');
   if (secure && !origin.startsWith('https://')) throw new Error('APP_ORIGIN doit utiliser HTTPS en production.');
   const app = express();
@@ -106,7 +106,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     const movie = getMovie(req.body.movieId);
     if (movie.status !== 'ready') throw fail(409, 'Film non préparé.');
     const id = randomUUID(), code = randomBytes(8).toString('hex');
-    const room = { id, code, expires: Date.now() + TTL, movieId: movie.id, engine: new Room(), clients: new Set() };
+    const room = { id, code, expires: Date.now() + TTL, movieId: movie.id, engine: new Room(syncOptions), clients: new Set() };
     room.engine.load(movie.duration); rooms.set(id, room);
     res.status(201).json({ id, code, link: `${origin}/#invite=${code}` });
   });

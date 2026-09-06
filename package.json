@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "setup": "node scripts/setup.js",
     "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "node --env-file-if-exists=.env --watch src/server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --env-file-if-exists=.env --test test/*.test.js",
+    "test:e2e": "node --env-file-if-exists=.env node_modules/@playwright/test/cli.js test"
   },
   "engines": {
     "node": ">=22"
@@ -17,5 +19,8 @@
     "helmet": "^8.3.0",
     "hls.js": "^1.7.2",
     "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
   }
 }

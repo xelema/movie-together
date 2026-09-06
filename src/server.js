@@ -7,6 +7,7 @@ const application = createApplication({
   origin: process.env.APP_ORIGIN || `http://localhost:${port}`,
   secure: process.env.NODE_ENV === 'production',
   trustProxy: process.env.TRUST_PROXY === '1',
+  syncOptions: { minBuffer: Number(process.env.MIN_BUFFER_SECONDS || 8), lowBuffer: Number(process.env.LOW_BUFFER_SECONDS || 3) },
 });
 application.server.listen(port, '0.0.0.0', () => console.log(`Movie Night écoute sur le port ${port}.`));
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => {

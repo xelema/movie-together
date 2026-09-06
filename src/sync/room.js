@@ -1,6 +1,6 @@
 // All timestamps use one server-side monotonic clock, in milliseconds.
 export class Room {
-  constructor({ now = () => performance.now(), minBuffer = 15, lowBuffer = 3,
+  constructor({ now = () => performance.now(), minBuffer = 8, lowBuffer = 3,
     reportTimeout = 3000, startDelay = 1000 } = {}) {
     if (!(minBuffer > lowBuffer && lowBuffer > 0 && reportTimeout > startDelay && startDelay > 0)) {
       throw new RangeError('Invalid synchronization thresholds');
