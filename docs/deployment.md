@@ -1,5 +1,7 @@
 # Déployer sur une VM Linux
 
+Pour un premier déploiement par archive, suivre l'[installation rapide](quickstart.md).
+
 Les instructions Docker s'appliquent aussi à un VPS aux Pays-Bas. Les étapes de
 création de VM et de disque ci-dessous prennent Google Cloud comme exemple.
 
