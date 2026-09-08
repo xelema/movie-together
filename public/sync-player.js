@@ -32,7 +32,7 @@ export class SyncPlayer {
       }
     });
     this.listen(video.textTracks, 'addtrack', event => {
-      const raise = () => { for (const cue of event.track.activeCues ?? []) { cue.snapToLines = false; cue.line = 82; cue.lineAlign = 'end'; } };
+      const raise = () => { for (const cue of event.track.activeCues ?? []) { cue.snapToLines = false; cue.line = 84; cue.lineAlign = 'end'; } };
       this.listen(event.track, 'cuechange', raise); raise();
     });
     this.listen(video, 'error', () => { this.failure = 'Lecture impossible sur cet appareil.'; this.onStatus(this.failure); this.activated = false; this.onActivation(false); this.report(false); });
