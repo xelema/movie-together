@@ -1,4 +1,7 @@
-# Déployer sur Google Cloud
+# Déployer sur une VM Linux
+
+Les instructions Docker s'appliquent aussi à un VPS aux Pays-Bas. Les étapes de
+création de VM et de disque ci-dessous prennent Google Cloud comme exemple.
 
 ## Architecture
 
@@ -22,7 +25,7 @@ Dans le projet Google Cloud choisi par le propriétaire :
    `/etc/fstab` suivant le [guide Google Cloud](https://docs.cloud.google.com/compute/docs/disks/add-persistent-disk).
    Ne jamais formater un disque contenant déjà des données.
 5. Installer Docker Engine et Compose avec le [guide Debian officiel](https://docs.docker.com/engine/install/debian/).
-6. Autoriser TCP 80 et 443 pour cette VM. Limiter SSH à l'administration ou utiliser
+6. Autoriser TCP 80 et 443, ainsi que UDP 443 pour HTTP/3 pour cette VM. Limiter SSH à l'administration ou utiliser
    IAP. Ne pas exposer publiquement le port applicatif 3000.
 
 Prévoir VM, disque, IP, sauvegardes et trafic sortant dans le budget. Deux lectures
@@ -45,8 +48,8 @@ chmod 600 .env
 ADMIN_PASSWORD=remplacer-par-un-secret-aleatoire-long
 DOMAIN=films.example.com
 MEDIA_DIR=/mnt/movie-data
-MIN_BUFFER_SECONDS=8
-LOW_BUFFER_SECONDS=3
+MIN_BUFFER_SECONDS=20
+LOW_BUFFER_SECONDS=5
 ENCODE_THREADS=2
 ```
 
@@ -69,6 +72,64 @@ Valider un petit film puis un original de taille habituelle avec la
 [matrice de validation](validation.md).
 
 ## Exploitation
+
+### Lecture depuis la Corée du Sud
+
+Le lecteur HLS.js vise deux minutes d'avance, jusqu'à trois selon le débit et
+les limites mémoire du navigateur. Safari natif gère lui-même cette réserve.
+Les segments peuvent être réutilisés depuis le cache privé du navigateur après
+vérification des droits auprès du serveur ; les listes de lecture ne sont pas
+conservées. Cela évite de retransférer les mêmes données lors d'un retour en arrière.
+La vidéo reste inchangée.
+
+Pour une installation existante, régler `MIN_BUFFER_SECONDS=20` et
+`LOW_BUFFER_SECONDS=5` dans `.env` puis redémarrer l'application hors séance.
+Le démarrage et la reprise attendent ainsi vingt secondes d'avance chez chacun
+(ou la durée restante), et la pause commune intervient sous cinq secondes.
+Le chargement initial est plus long, mais laisse une meilleure marge.
+
+Compose publie aussi UDP 443 : l'autoriser dans le pare-feu Linux et chez
+l'hébergeur pour [HTTP/3 de Caddy](https://caddyserver.com/docs/modules/http).
+HTTP/2 reste disponible lorsque le réseau ne laisse pas passer UDP.
+
+### BBR optionnel sur le VPS
+
+[BBR](https://github.com/google/bbr/blob/master/Documentation/bbr-quick-start.md)
+peut améliorer le débit TCP sur certains trajets à forte latence. Il ne garantit
+pas un gain et ce réglage Linux ne configure pas le transport QUIC d'HTTP/3.
+Sur le VPS Linux, vérifier sa disponibilité avant toute installation :
+
+```sh
+sudo modprobe tcp_bbr
+sysctl net.ipv4.tcp_available_congestion_control
+sysctl net.core.default_qdisc net.ipv4.tcp_congestion_control
+```
+
+Si `bbr` apparaît, noter les anciennes valeurs puis installer le fichier dédié :
+
+```sh
+sudo install -m 644 deploy/99-movie-together-network.conf /etc/sysctl.d/99-movie-together-network.conf
+sudo sysctl -p /etc/sysctl.d/99-movie-together-network.conf
+docker compose -f compose.yaml -f compose.bbr.yaml up -d
+docker compose exec proxy sysctl net.ipv4.tcp_congestion_control
+```
+
+Le fichier Compose complémentaire applique BBR dans l'espace réseau du proxy
+Docker, qui termine les connexions des spectateurs. Garder les deux `-f` pour
+les prochains déploiements. Le résultat dans le proxy doit être `bbr`.
+`default_qdisc` concerne les interfaces nouvellement créées ; vérifier les
+interfaces existantes avec `tc qdisc show`, sans remplacer leur configuration
+aveuglément. Aucun noyau personnalisé n'est nécessaire.
+
+Pour revenir en arrière, retirer le fichier sysctl dédié, rétablir les deux
+valeurs notées avec `sudo sysctl -w`, puis recréer le proxy avec Compose seul.
+
+Mesurer ensuite depuis la connexion coréenne avec un film représentatif. Un
+film de 15 Go sur deux heures représente environ 17 Mbit/s en moyenne, avec
+des pointes : prévoir une marge et additionner les débits pour plusieurs personnes.
+Si le débit reste insuffisant, envisager un hébergement des médias plus proche
+ou un CDN vidéo avec accès privé signé. Un proxy inverse sur la même VM ne
+raccourcit pas le trajet international. Aucun CDN ni relais payant n'est créé.
 
 - Planifier des snapshots du disque et vérifier une restauration. Éviter les imports
   pendant la sauvegarde ou arrêter temporairement l'application pour sa cohérence.
