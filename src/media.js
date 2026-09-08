@@ -30,11 +30,6 @@ export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress } =
 export function inspectProbe(probe) {
   const streams = probe.streams ?? [];
   const video = streams.find(stream => stream.codec_type === 'video' && !stream.disposition?.attached_pic);
-  const dovi = video?.side_data_list?.find(item => item.side_data_type === 'DOVI configuration record');
-  const hdr = ['smpte2084', 'arib-std-b67'].includes(video?.color_transfer) || !!dovi;
-  const baseline = !hdr && video?.codec_name === 'h264' && video.pix_fmt === 'yuv420p' &&
-    ['Constrained Baseline', 'Baseline', 'Main', 'High'].includes(video.profile) &&
-    video.level <= 42 && video.width <= 1920 && video.height <= 1080;
   const audio = streams.filter(stream => stream.codec_type === 'audio').map(stream => ({
     index: stream.index, codec: stream.codec_name, channels: stream.channels,
     language: stream.tags?.language ?? 'und', label: stream.tags?.title ?? stream.tags?.language ?? `Audio ${stream.index}`,
@@ -48,13 +43,11 @@ export function inspectProbe(probe) {
     compatible: ['subrip', 'webvtt', 'mov_text', 'ass', 'ssa'].includes(stream.codec_name),
   }));
   const duration = Number(probe.format?.duration);
-  const videoCompatible = !!video?.codec_name && video.codec_name !== 'unknown' && video.width > 0 && video.height > 0;
+  const videoCompatible = ['h264', 'hevc', 'av1', 'vp9'].includes(video?.codec_name) && video.width > 0 && video.height > 0;
   const [num, den = 1] = (video?.avg_frame_rate || video?.r_frame_rate || '24/1').split('/').map(Number);
-  return { schema: 2, video: video ? { codec: video.codec_name, pixelFormat: video.pix_fmt,
+  return { schema: 3, video: video ? { codec: video.codec_name, pixelFormat: video.pix_fmt,
     index: video.index, width: video.width, height: video.height, profile: video.profile, level: video.level,
-    hdr, transfer: video.color_transfer, primaries: video.color_primaries, colorSpace: video.color_space,
-    frameRate: num / den || 24, dolbyVision: dovi ?? null,
-    direct: ['h264', 'hevc', 'av1', 'vp9'].includes(video.codec_name), baseline: !!baseline } : null,
+    frameRate: num / den || 24 } : null,
     videoCompatible, audio, subtitles, duration,
     bitrate: Number(probe.format?.bit_rate) || null,
     compatible: videoCompatible && Number.isFinite(duration) && duration > 0 };
@@ -92,7 +85,7 @@ export async function writeMaster(directory, audio, subtitles, renditions) {
       const index = lines.findIndex(line => line === `stream_${rendition.streamIndex}.m3u8`);
       if (index < 1) throw new Error('Manifeste vidéo incomplet.');
       let info = lines[index - 1];
-      info = info.replace(/,VIDEO-RANGE=[^,]+/, '') + `,VIDEO-RANGE=${rendition.videoRange}`;
+      info = info.replace(/,VIDEO-RANGE=[^,]+/, '');
       rendition.codecs = info.match(/CODECS="([^"]+)"/)?.[1] ?? '';
       const subs = [];
       for (const track of subtitles) {
@@ -107,8 +100,8 @@ export async function writeMaster(directory, audio, subtitles, renditions) {
       await writeFile(path.join(directory, `${rendition.manifest}.tmp`), [...shared, ...subs, info, lines[index]].join('\n') + '\n');
       await rename(path.join(directory, `${rendition.manifest}.tmp`), path.join(directory, rendition.manifest));
     }
-    // The default URL always exposes the safest fully prepared version, never ABR across HDR/SDR.
-    const fallback = renditions.find(item => item.id === 'compatible') ?? renditions[0];
+    // Keep existing prepared libraries readable.
+    const fallback = renditions[0];
     await writeFile(path.join(directory, 'master.m3u8.tmp'), await readFile(path.join(directory, fallback.manifest)));
     await rename(path.join(directory, 'master.m3u8.tmp'), path.join(directory, 'master.m3u8'));
   }
@@ -126,24 +119,6 @@ export async function addSubtitle(directory, input, { label, language: lang, ind
   return { id, label: quote(label), language: language(lang), filename };
 }
 
-export function compatibleFilter(video) {
-  const scale = "scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2";
-  const dovi = video.dolbyVision;
-  const base = dovi?.dv_bl_signal_compatibility_id;
-  if (dovi && ![1, 2, 4].includes(base)) {
-    // Dolby Vision without an HDR10/HLG/SDR base requires RPU-aware reshaping.
-    return { vulkan: true, filter: `format=yuv420p10le,hwupload,libplacebo=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2:apply_dolbyvision=1:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:format=yuv420p,hwdownload,format=yuv420p,setsar=1` };
-  }
-  if (video.hdr && base !== 2) {
-    const transfer = base === 1 ? 'smpte2084' : base === 4 ? 'arib-std-b67' : video.transfer;
-    const primaries = !video.primaries || video.primaries === 'unknown' ? 'bt2020' : video.primaries;
-    const matrix = !video.colorSpace || video.colorSpace === 'unknown' ? 'bt2020nc' : video.colorSpace;
-    const input = `zscale=pin=${primaries}:tin=${transfer}:min=${matrix}:t=linear:npl=100`;
-    return { vulkan: false, filter: `${input},format=gbrpf32le,${scale},tonemap=mobius:desat=2,zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p,setsar=1` };
-  }
-  return { vulkan: false, filter: `${scale},format=yuv420p,setsar=1` };
-}
-
 export async function prepareMovie(store, movie, audioIndices, subtitleIndices, options = {}) {
   const source = path.join(store.directory(movie.id), 'source');
   // Reprobe old uploads: compatibility must not depend on a previous application's filter.
@@ -157,45 +132,30 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
       return track;
     });
   };
-  const audio = select(movie.probe.audio, audioIndices);
+  const external = movie.externalTracks ?? [];
+  const audio = [...select(movie.probe.audio, audioIndices).map(track => ({ ...track, input: 0 })),
+    ...external.filter(track => track.kind === 'audio').map((track, index) => ({ ...track, input: index + 1, copy: false }))];
   const embeddedSubs = select(movie.probe.subtitles, subtitleIndices);
   if (movie.probe.audio.length && !audio.length) throw new Error('Choisir au moins une piste audio.');
   const video = movie.probe.video;
-  const compatible = !video.direct || (!video.baseline && options.compatible !== false);
-  const renditions = [];
-  if (video.direct) renditions.push({ id: 'original', manifest: 'master_original.m3u8', streamIndex: 0,
-    codec: video.codec, width: video.width, height: video.height, hdr: video.hdr,
-    videoRange: video.dolbyVision?.dv_bl_signal_compatibility_id === 2 ? 'SDR' :
-      video.transfer === 'arib-std-b67' || video.dolbyVision?.dv_bl_signal_compatibility_id === 4 ? 'HLG' : video.hdr ? 'PQ' : 'SDR', compatible: video.baseline });
-  if (compatible) renditions.push({ id: 'compatible', manifest: 'master_compatible.m3u8', streamIndex: renditions.length,
-    codec: 'h264', hdr: false, videoRange: 'SDR', compatible: true });
+  const renditions = [{ id: 'original', manifest: 'master_original.m3u8', streamIndex: 0,
+    codec: video.codec, width: video.width, height: video.height }];
   const disk = await statfs(store.root);
-  const estimated = (video.direct ? (movie.originalBytes ?? (await stat(source)).size) : 0) +
-    (compatible ? movie.probe.duration * 8_000_000 / 8 : 0) + movie.probe.duration * audio.length * 192_000 / 8;
+  const estimated = (movie.originalBytes ?? (await stat(source)).size) + movie.probe.duration * audio.length * 192_000 / 8;
   if (disk.bavail * disk.bsize < estimated * 1.15 + 256 * 1024 ** 2) throw new Error('Espace disque insuffisant pour les versions préparées.');
   const generation = randomUUID();
   const directory = path.join(store.directory(movie.id), generation);
   await mkdir(directory, { recursive: true });
-  const filtered = compatible ? compatibleFilter(video) : null;
   const threads = Math.max(1, Math.min(8, Number(process.env.ENCODE_THREADS) || 2));
   const args = ['-y', '-v', 'error', '-progress', 'pipe:1', '-nostats', '-filter_threads', String(threads)];
-  if (filtered?.vulkan) args.push('-init_hw_device', 'vulkan=vk', '-filter_hw_device', 'vk');
   args.push('-threads', String(threads), '-protocol_whitelist', 'file,pipe', '-i', source);
-  for (const rendition of renditions) args.push('-map', `0:${video.index}`);
-  for (const track of audio) args.push('-map', `0:${track.index}`);
+  for (const track of audio.filter(track => track.input > 0)) args.push('-protocol_whitelist', 'file,pipe', '-i', path.join(store.directory(movie.id), track.filename));
+  args.push('-map', `0:${video.index}`);
+  for (const track of audio) args.push('-map', `${track.input}:${track.index}`);
   args.push('-c', 'copy');
-  if (video.direct && video.codec === 'hevc') args.push('-tag:v:0', 'hvc1');
-  if (compatible) {
-    const index = renditions.find(item => item.id === 'compatible').streamIndex;
-    const fps = Math.min(60, video.frameRate);
-    args.push(`-c:v:${index}`, 'libx264', `-threads:v:${index}`, String(threads), `-filter:v:${index}`, filtered.filter,
-      `-preset:v:${index}`, 'fast', `-crf:v:${index}`, '20', `-maxrate:v:${index}`, '8M', `-bufsize:v:${index}`, '16M',
-      `-pix_fmt:v:${index}`, 'yuv420p', `-profile:v:${index}`, 'high', `-level:v:${index}`, '4.2',
-      `-r:v:${index}`, String(fps), `-g:v:${index}`, String(Math.ceil(fps * 4)),
-      `-force_key_frames:v:${index}`, 'expr:gte(t,n_forced*4)',
-      `-color_primaries:v:${index}`, 'bt709', `-color_trc:v:${index}`, 'bt709', `-colorspace:v:${index}`, 'bt709');
-  }
+  if (video.codec === 'hevc') args.push('-tag:v:0', 'hvc1');
   for (const [index, track] of audio.entries()) {
+    if (track.input > 0) args.push(`-filter:a:${index}`, `apad,atrim=duration=${movie.probe.duration}`);
     if (!track.copy) args.push(`-c:a:${index}`, 'aac', `-ac:a:${index}`, '2', `-ar:a:${index}`, '48000', `-b:a:${index}`, '192k');
   }
   args.push('-f', 'hls', '-hls_time', '4', '-hls_playlist_type', 'vod',
@@ -214,11 +174,13 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
     if (!frame) throw new Error('Version préparée illisible.');
     rendition.timelineOffset = Number(frame.best_effort_timestamp_time);
     rendition.width = probe.streams[0].width; rendition.height = probe.streams[0].height;
-    if (rendition.id === 'compatible' && (probe.streams[0].codec_name !== 'h264' || probe.streams[0].pix_fmt !== 'yuv420p')) throw new Error('Version compatible invalide.');
   }
   const subtitles = [];
   for (const track of embeddedSubs) {
     subtitles.push(await addSubtitle(directory, source, { ...track, duration: movie.probe.duration }));
+  }
+  for (const track of external.filter(track => track.kind === 'subtitle')) {
+    subtitles.push(await addSubtitle(directory, path.join(store.directory(movie.id), track.filename), { ...track, duration: movie.probe.duration }));
   }
   options.onProgress?.({ stage: 'subtitles', percent: 96 });
   // Keep administrator-added subtitle files when rebuilding versions.
@@ -239,7 +201,6 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   } catch (error) {
     // A generation is never served before it is complete. Remove only this fresh UUID directory.
     await rm(directory, { recursive: true, force: true });
-    if (filtered?.vulkan) error.message = `Conversion Dolby Vision : FFmpeg avec libplacebo et Vulkan requis. ${error.message}`;
     throw error;
   }
 }
