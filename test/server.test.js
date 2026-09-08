@@ -7,7 +7,7 @@ import { WebSocket } from 'ws';
 import { createApplication } from '../src/app.js';
 import { run, inspectProbe } from '../src/media.js';
 
-test('accepts decodable video and audio without resolution or HDR restrictions', () => {
+test('accepts supported video without resolution restrictions and converts audio when needed', () => {
   const video = { codec_type: 'video', codec_name: 'h264', pix_fmt: 'yuv420p', profile: 'High', level: 40, width: 1920, height: 1080 };
   const audio = { codec_type: 'audio', codec_name: 'aac', profile: 'LC', channels: 2, sample_rate: '48000' };
   const inspect = (v, a) => inspectProbe({ streams: [v, a], format: { duration: '100' } }).compatible;
@@ -78,9 +78,13 @@ test('authenticated upload, real lossless packaging, private rooms and access co
   assert.match(vtt, /WEBVTT/); assert.match(vtt, /A subtitle\./);
   assert.match(await (await request(`/media/${movie.id}/master.m3u8`, { cookie })).text(), /TYPE=SUBTITLES/);
   assert.equal((await request(`/media/${movie.id}/master.m3u8`)).status, 401);
-  const room = await (await request('/api/rooms', { cookie, method: 'POST', body: { movieId: movie.id } })).json();
+  const room = await (await request('/api/rooms', { cookie, method: 'POST', body: { movieId: movie.id, code: 'Cinema-Soir' } })).json();
+  assert.equal(room.code, 'cinema-soir');
+  assert.equal((await request('/api/rooms', { cookie, method: 'POST', body: { movieId: movie.id, code: 'CINEMA-SOIR' } })).status, 409);
+  assert.equal((await request('/api/rooms', { cookie, method: 'POST', body: { movieId: movie.id, code: '<script>' } })).status, 400);
   const joined = await request('/api/join', { method: 'POST', body: { code: room.code } });
   const guest = joined.headers.get('set-cookie').split(';')[0];
+  assert.equal((await request(`/api/rooms/${room.id}/movie`, { cookie: guest, method: 'POST', body: { movieId: movie.id } })).status, 401);
   assert.equal((await request(`/media/${movie.id}/master.m3u8`, { cookie: guest })).status, 200);
   assert.equal((await request(`/media/${movie.id}/source`, { cookie: guest })).status, 404);
   assert.equal((await request('/api/uploads', { cookie: guest })).status, 401);
