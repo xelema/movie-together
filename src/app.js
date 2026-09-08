@@ -105,12 +105,14 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     res.clearCookie('sid', { path: '/', httpOnly: true, sameSite: 'strict', secure }); res.json({ ok: true });
   });
   app.get('/api/movies', authenticated, (req, res) => res.json([...store.movies.values()]
-    .filter(movie => req.session.admin || movie.status === 'ready').map(movie => req.session.admin ? movie : publicMovie(movie))));
+    .filter(movie => req.session.admin || [...req.session.rooms].some(id => rooms.get(id)?.movieId === movie.id)).map(movie => req.session.admin ? movie : publicMovie(movie))));
   app.post('/api/rooms', admin, (req, res) => {
     if (rooms.size >= 20) throw fail(409, 'Fermer une room avant d’en créer une autre.');
     const movie = getMovie(req.body.movieId);
     if (movie.status !== 'ready' || mediaLocks.has(movie.id)) throw fail(409, 'Film non préparé.');
-    const id = randomUUID(), code = randomBytes(8).toString('hex');
+    if (req.body.code !== undefined && (typeof req.body.code !== 'string' || !/^[a-z0-9-]{4,32}$/i.test(req.body.code.trim()))) throw fail(400, 'Code : 4 à 32 lettres, chiffres ou tirets.');
+    const id = randomUUID(), code = req.body.code?.trim().toLowerCase() || randomBytes(8).toString('hex');
+    if ([...rooms.values()].some(room => room.code === code && room.expires > Date.now())) throw fail(409, 'Ce code est déjà utilisé.');
     const room = { id, code, expires: Date.now() + TTL, movieId: movie.id, engine: new Room(syncOptions), clients: new Set() };
     room.engine.load(movie.duration); rooms.set(id, room);
     res.status(201).json({ id, code, link: `${origin}/#invite=${code}` });
@@ -137,7 +139,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     if (room) { for (const client of room.clients) client.close(1000, 'Room fermée'); rooms.delete(room.id); }
     res.json({ ok: true });
   });
-  app.post('/api/rooms/:id/movie', authenticated, (req, res) => {
+  app.post('/api/rooms/:id/movie', admin, (req, res) => {
     const room = rooms.get(req.params.id);
     if (!access(req, room)) throw fail(404, 'Room introuvable.');
     const movie = getMovie(req.body.movieId);
@@ -155,13 +157,22 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   };
   app.post('/api/uploads', admin, async (req, res) => {
     const { size, name, fingerprint } = req.body;
+    const { kind = 'movie', movieId, label = name, language = 'und' } = req.body;
+    if (!['movie', 'audio', 'subtitle'].includes(kind)) throw fail(400, 'Fichier invalide.');
+    if (kind !== 'movie') {
+      const movie = idleMovie(movieId);
+      if ((movie.externalTracks?.length ?? 0) >= 24) throw fail(400, 'Trop de fichiers ajoutés.');
+      if (typeof label !== 'string' || !label.trim() || label.length > 100 || !/^[a-z]{2,3}$/.test(language)) throw fail(400, 'Nom ou langue invalide.');
+      if (kind === 'subtitle' && (!/\.(srt|vtt)$/i.test(name) || size > 2 * 1024 ** 2)) throw fail(400, 'Choisir un fichier SRT ou VTT de moins de 2 Mo.');
+      if (kind === 'audio' && size > 2 * 1024 ** 3) throw fail(400, 'Fichier audio limité à 2 Go.');
+    }
     if (!Number.isSafeInteger(size) || size <= 0 || size > 20 * 1024 ** 3 || typeof name !== 'string' || name.length > 250) throw fail(400, 'Fichier invalide (maximum 20 Go).');
     if ((await readdir(path.join(store.root, 'uploads'))).length >= 2) throw fail(409, 'Terminer ou supprimer les uploads précédents.');
     const disk = await statfs(store.root);
     if (disk.bavail * disk.bsize < size * 2.2) throw fail(409, 'Espace disque insuffisant pour l’original et sa préparation.');
     const id = randomUUID(); await mkdir(uploadPath(id));
     if (fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(fingerprint)) throw fail(400, 'Empreinte invalide.');
-    const info = { id, name, size, fingerprint, createdAt: Date.now() };
+    const info = { id, name, size, fingerprint, kind, movieId, label, language, createdAt: Date.now() };
     await writeFile(path.join(uploadPath(id), 'upload.json'), JSON.stringify(info));
     await writeFile(path.join(uploadPath(id), 'source'), '');
     res.status(201).json({ ...info, offset: 0, chunkSize: CHUNK });
@@ -202,6 +213,19 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     try {
       const info = await uploadInfo(id), source = path.join(uploadPath(id), 'source');
       if ((await stat(source)).size !== info.size) throw fail(409, 'Upload incomplet.');
+      if (info.kind && info.kind !== 'movie') {
+        const movie = idleMovie(info.movieId);
+        const probe = await probeFile(source);
+        const stream = (info.kind === 'audio' ? probe.audio : probe.subtitles).find(track => track.compatible);
+        if (!stream) throw fail(400, 'Ce fichier ne contient aucune piste utilisable.');
+        const filename = `external_${id}`;
+        await rename(source, path.join(store.directory(movie.id), filename));
+        movie.externalTracks ??= [];
+        movie.externalTracks.push({ ...stream, id, kind: info.kind, filename, label: info.label, language: info.language });
+        movie.status = 'uploaded';
+        store.save(movie); await rm(uploadPath(id), { recursive: true, force: true });
+        res.json(movie); return;
+      }
       const movie = { id, title: info.name.replace(/\.[^.]+$/, ''), status: 'probing', originalBytes: info.size };
       store.save(movie);
       await rename(source, path.join(store.directory(id), 'source'));
@@ -227,14 +251,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.post('/api/movies/:id/prepare', admin, async (req, res) => {
     const movie = idleMovie(req.params.id);
     if (processing) throw fail(409, 'Un import est déjà en cours.');
-    if (req.body.compatible !== undefined && typeof req.body.compatible !== 'boolean') throw fail(400, 'Option de préparation invalide.');
     processing = true; movie.status = 'processing'; movie.error = null; store.save(movie);
     res.status(202).json({ ok: true });
     try {
       movie.progress = { stage: 'analysis', percent: 0 }; store.save(movie);
       let lastProgress = 0;
       Object.assign(movie, await prepareMovie(store, movie, req.body.audio, req.body.subtitles, {
-        compatible: req.body.compatible,
         onProgress(progress) {
           movie.progress = progress;
           if (Date.now() - lastProgress > 1000) { store.save(movie); lastProgress = Date.now(); }
@@ -306,6 +328,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     res.sendFile(req.params.file, { root: path.join(store.directory(movie.id), movie.generation) }, error => { if (error) next(error); });
   });
   app.get('/vendor/hls.js', (req, res) => res.sendFile(path.join(ROOT, 'node_modules/hls.js/dist/hls.min.js')));
+  app.get('/admin', (req, res) => res.sendFile(path.join(ROOT, 'public/index.html')));
   for (const file of ['plyr.js', 'plyr.css', 'plyr.svg']) app.get(`/vendor/${file}`, (req, res) =>
     res.sendFile(path.join(ROOT, 'node_modules/plyr/dist', file)));
   app.use(express.static(path.join(ROOT, 'public')));

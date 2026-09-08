@@ -13,7 +13,7 @@ const application = createApplication({
 });
 // Upgrade metadata without uploading again or launching a lengthy video conversion.
 for (const movie of application.store.movies.values()) {
-  if (movie.probe?.schema === 2 || movie.status === 'ready') continue;
+  if (movie.probe?.schema === 3 || movie.status === 'ready') continue;
   try {
     movie.probe = await probeFile(path.join(application.store.directory(movie.id), 'source'));
     movie.status = movie.probe.compatible ? 'uploaded' : 'incompatible'; movie.error = null;
