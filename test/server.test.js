@@ -65,7 +65,16 @@ test('authenticated upload, real lossless packaging, private rooms and access co
   assert.equal(prepared.status, 'ready', prepared.error);
   const master = await (await request(`/media/${movie.id}/master.m3u8`, { cookie })).text();
   assert.equal((master.match(/TYPE=AUDIO/g) ?? []).length, 2);
-  assert.equal((await request(`/media/${movie.id}/init_0.mp4`, { cookie })).status, 200);
+  const media = await request(`/media/${movie.id}/init_0.mp4`, { cookie });
+  assert.equal(media.status, 200);
+  assert.equal(media.headers.get('cache-control'), 'private, no-cache');
+  const etag = media.headers.get('etag');
+  assert.ok(etag.includes(prepared.generation));
+  assert.equal((await request(`/media/${movie.id}/init_0.mp4`, { cookie, headers: { 'If-None-Match': etag, 'Cache-Control': 'max-age=0' } })).status, 304);
+  assert.equal((await request(`/media/${movie.id}/init_0.mp4`, { headers: { 'If-None-Match': etag, 'Cache-Control': 'max-age=0' } })).status, 401);
+  const range = await request(`/media/${movie.id}/init_0.mp4`, { cookie, headers: { Range: 'bytes=0-31' } });
+  assert.equal(range.status, 206);
+  assert.equal((await range.arrayBuffer()).byteLength, 32);
   const hashStream = (input, stream) => run(process.env.FFMPEG_PATH || 'ffmpeg', ['-v', 'error', '-i', input, '-map', stream, '-c', 'copy', '-f', 'hash', '-hash', 'sha256', '-']);
   const directory = path.join(instance.store.directory(movie.id), prepared.generation);
   assert.equal(await hashStream(path.join(directory, 'stream_0.m3u8'), '0:v:0'), await hashStream(file, '0:v:0'));
@@ -99,5 +108,6 @@ test('authenticated upload, real lossless packaging, private rooms and access co
   assert.equal((await request(`/api/movies/${movie.id}`, { cookie, method: 'DELETE' })).status, 409);
   await request(`/api/rooms/${room.id}`, { cookie, method: 'DELETE' });
   assert.equal((await request(`/media/${movie.id}/master.m3u8`, { cookie: guest })).status, 403);
+  assert.equal((await request(`/media/${movie.id}/init_0.mp4`, { cookie: guest, headers: { 'If-None-Match': etag, 'Cache-Control': 'max-age=0' } })).status, 403);
   assert.equal((await request('/api/join', { method: 'POST', body: { code: room.code } })).status, 404);
 });
