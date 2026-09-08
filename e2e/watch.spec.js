@@ -83,6 +83,10 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(host.locator('#player-settings')).toBeHidden();
     await host.mouse.move(0,0); await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 5000 });
     await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '0');
+    await expect(host.locator('video')).toHaveCSS('cursor', 'none');
+    await controls(host);
+    await expect(host.locator('video')).not.toHaveCSS('cursor', 'none');
+    await host.mouse.move(0,0); await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/);
     await host.screenshot({ path: 'test-results/watch-fullscreen.png' }); await host.evaluate(() => document.exitFullscreen());
     await b.setOffline(true); await expect.poll(() => host.locator('video').evaluate(video => video.paused), { timeout: 6000 }).toBe(true);
     expect(errors).toEqual([]);
