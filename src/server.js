@@ -9,7 +9,7 @@ const application = createApplication({
   origin: process.env.APP_ORIGIN || `http://localhost:${port}`,
   secure: process.env.NODE_ENV === 'production',
   trustProxy: process.env.TRUST_PROXY === '1',
-  syncOptions: { minBuffer: Number(process.env.MIN_BUFFER_SECONDS || 8), lowBuffer: Number(process.env.LOW_BUFFER_SECONDS || 3) },
+  syncOptions: { minBuffer: Number(process.env.MIN_BUFFER_SECONDS || 20), lowBuffer: Number(process.env.LOW_BUFFER_SECONDS || 5) },
 });
 // Upgrade metadata without uploading again or launching a lengthy video conversion.
 for (const movie of application.store.movies.values()) {

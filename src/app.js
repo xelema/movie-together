@@ -324,6 +324,11 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     if (movie.status !== 'ready' || !/^(master(?:_original|_compatible)?|stream_\d+|sub_[a-f0-9-]+(?:_original|_compatible)?)\.m3u8$|^(init_\d+\.mp4|segment_\d+_\d+\.m4s|sub_[a-f0-9-]+(?:_original|_compatible)?\.vtt)$/.test(req.params.file)) throw fail(404, 'Média introuvable.');
     res.set('Cache-Control', 'private, no-store');
     const ext = path.extname(req.params.file);
+    if (ext === '.m4s' || ext === '.mp4') {
+      // Revalidate access before reusing private bytes; generations change on preparation.
+      res.set('Cache-Control', 'private, no-cache');
+      res.set('ETag', `"${movie.generation}-${req.params.file}"`);
+    }
     res.type(({ '.m3u8': 'application/vnd.apple.mpegurl', '.m4s': 'video/mp4', '.vtt': 'text/vtt', '.mp4': 'video/mp4' })[ext]);
     res.sendFile(req.params.file, { root: path.join(store.directory(movie.id), movie.generation) }, error => { if (error) next(error); });
   });

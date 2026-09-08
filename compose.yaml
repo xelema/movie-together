@@ -9,8 +9,8 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
       DATA_DIR: /data
       TRUST_PROXY: '1'
-      MIN_BUFFER_SECONDS: ${MIN_BUFFER_SECONDS:-8}
-      LOW_BUFFER_SECONDS: ${LOW_BUFFER_SECONDS:-3}
+      MIN_BUFFER_SECONDS: ${MIN_BUFFER_SECONDS:-20}
+      LOW_BUFFER_SECONDS: ${LOW_BUFFER_SECONDS:-5}
       ENCODE_THREADS: ${ENCODE_THREADS:-2}
     volumes:
       - ${MEDIA_DIR:-movie-data}:/data
@@ -36,6 +36,7 @@ services:
     ports:
       - '80:80'
       - '443:443'
+      - '443:443/udp'
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
