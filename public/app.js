@@ -159,7 +159,7 @@ async function enterRoom(id, name) {
       $('buffering-overlay').hidden = phase !== 'buffering';
       $('buffering-label').textContent = waiting.length ? t(`En attente de ${waiting.join(', ')}…`, `${waiting.join(', ')} 님을 기다리는 중…`) : t('La séance va commencer…', '곧 재생됩니다…');
       $('allow-sound').hidden = !controller.activationBlocked;
-      $('playback-status').textContent = controller.failure ? label(controller.failure) : !controller.activated ? controller.activationBlocked ? t('Autorisez le son pour nous rejoindre.', '함께 보려면 소리를 허용하세요.') : t('Chargement du film…', '영화를 불러오는 중…') : phase === 'buffering' ? $('buffering-label').textContent : phase === 'playing' ? t('Bon film !', '즐겁게 시청하세요!') : t('En pause', '일시정지');
+      $('playback-status').textContent = controller.failure ? label(controller.failure) : !controller.activated ? controller.activationBlocked ? t('Autorisez le son pour nous rejoindre.', '함께 보려면 소리를 허용하세요.') : t('Chargement du film…', '영화를 불러오는 중…') : phase === 'buffering' ? $('buffering-label').textContent : phase === 'playing' ? '' : t('En pause', '일시정지');
       const playing = controller.activated && ['playing', 'buffering'].includes(phase); $('screen').dataset.playing = String(playing);
       for (const control of playbackUI.elements.buttons.play ?? []) control.setAttribute('aria-label', playing ? t('Pause', '일시정지') : t('Lecture', '재생'));
       $('member-count').textContent = `(${message.members.length})`;
