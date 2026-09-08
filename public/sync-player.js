@@ -19,8 +19,8 @@ export function bufferEnd(video) {
 }
 
 export class SyncPlayer {
-  constructor({ video, roomId, name = '', onStatus, onState, onTracks, onActivation, onRendition = () => {} }) {
-    Object.assign(this, { video, roomId, onStatus, onState, onTracks, onActivation, onRendition });
+  constructor({ video, roomId, name = '', onStatus, onState, onTracks, onActivation }) {
+    Object.assign(this, { video, roomId, onStatus, onState, onTracks, onActivation });
     this.offset = 0; this.audioChoice = 0; this.subtitleChoice = -1;
     this.name = name;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
@@ -30,6 +30,10 @@ export class SyncPlayer {
       if (!this.activated && !this.activating && !this.autoActivationTried) {
         this.autoActivationTried = true; this.activate();
       }
+    });
+    this.listen(video.textTracks, 'addtrack', event => {
+      const raise = () => { for (const cue of event.track.activeCues ?? []) { cue.snapToLines = false; cue.line = 82; cue.lineAlign = 'end'; } };
+      this.listen(event.track, 'cuechange', raise); raise();
     });
     this.listen(video, 'error', () => { this.failure = 'Lecture impossible sur cet appareil.'; this.onStatus(this.failure); this.activated = false; this.onActivation(false); this.report(false); });
     this.listen(video, 'play', () => {
@@ -91,7 +95,7 @@ export class SyncPlayer {
   }
   pauseLocal() { this.internalUntil = performance.now() + 500; this.video.pause(); this.video.playbackRate = 1; }
   seekLocal(position) { this.internalUntil = performance.now() + 500; this.video.currentTime = position; }
-  load(movie, selected) {
+  load(movie) {
     const sameMovie = movie?.id === this.movie?.id;
     const activated = sameMovie && this.activated;
     if (!sameMovie) { this.audioChoice = 0; this.subtitleChoice = -1; }
@@ -101,9 +105,8 @@ export class SyncPlayer {
     this.video.removeAttribute('src'); this.video.load();
     if (!movie) return;
     const versions = movie.renditions?.length ? movie.renditions : [{ id: 'original', manifest: 'master.m3u8', timelineOffset: 0 }];
-    this.rendition = versions.find(item => item.id === selected) ?? versions.find(item => item.id === 'compatible') ?? versions[0];
+    this.rendition = versions[0];
     this.offset = this.rendition.timelineOffset ?? 0;
-    this.onRendition(versions, this.rendition.id);
     const url = `/media/${movie.id}/${this.rendition.manifest}`;
     // Prefer native HLS on Safari; its media policies and audio track API differ from MSE.
     if (this.video.canPlayType('application/vnd.apple.mpegurl') &&
@@ -182,10 +185,6 @@ export class SyncPlayer {
       Array.from(this.video.audioTracks ?? []).forEach((track, i) => { track.enabled = i === this.audioChoice; });
       Array.from(this.video.textTracks ?? []).forEach((track, i) => { track.mode = i === this.subtitleChoice ? 'showing' : 'disabled'; });
     }
-  }
-  changeRendition(id) {
-    if (!this.movie?.renditions?.some(item => item.id === id) || this.rendition?.id === id) return;
-    this.command('pause'); this.load(this.movie, id);
   }
   reconcile() {
     if (this.activating) return;

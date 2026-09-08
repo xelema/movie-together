@@ -13,11 +13,10 @@ déployer cette version sur plusieurs instances Cloud Run sans adapter la coordi
 Dans le projet Google Cloud choisi par le propriétaire :
 
 1. Créer une VM Debian 12 proche des participants. Deux vCPU et 4 Go de RAM sont
-   un point de départ à mesurer pour servir des films déjà préparés. La conversion
-   4K HDR en SDR sera beaucoup plus lente ; elle se termine avant la lecture.
+   un point de départ à mesurer pour servir des films déjà préparés. La préparation des fichiers se termine avant la lecture.
 2. Réserver une IP externe et faire pointer un sous-domaine dessus.
 3. Attacher un disque persistant pour les films, sans suppression automatique avec
-   la VM. Additionner originaux, versions remuxées, copies SDR et audios, plus une
+   la VM. Additionner originaux, versions remuxées et audios, plus une
    marge pour les préparations et sauvegardes (voir le README).
 4. Monter ce disque à `/mnt/movie-data` et configurer son montage persistant dans
    `/etc/fstab` suivant le [guide Google Cloud](https://docs.cloud.google.com/compute/docs/disks/add-persistent-disk).
@@ -92,11 +91,7 @@ Le même Compose peut fonctionner sur un VPS Linux x86-64 ou ARM64 avec Docker,
 un disque persistant et les ports 80/443 accessibles. Les règles réseau du
 fournisseur et le pare-feu de la VM doivent tous deux autoriser ces ports.
 Limiter `ENCODE_THREADS` sur une petite instance et préparer un extrait avant un
-long film pour mesurer le temps et l'espace nécessaires. La préparation CPU de
-4K HDR est distincte du simple service des fichiers pendant la séance.
+long film pour mesurer le temps et l'espace nécessaires. La préparation des fichiers est distincte de leur lecture.
 
 Pour une offre gratuite, vérifier les quotas, la disponibilité et les règles
-de récupération des instances au moment de créer la VM. Les tests locaux ne
-valident pas les performances ni les pilotes Vulkan d'un VPS ARM. La conversion
-Dolby Vision sans base compatible nécessite une installation FFmpeg/Vulkan
-spécifique ; elle n'est pas garantie par l'image Docker fournie.
+de récupération des instances au moment de créer la VM. Les tests locaux ne valident pas les performances d’un VPS ARM.
