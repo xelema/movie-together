@@ -13,3 +13,5 @@ dialog{color:#edf0f5;background:#171d27;border:1px solid #3a4558;border-radius:1
 @media(max-width:380px){.brand-icon{display:none}header{padding:0 12px}.brand{font-size:14px}.language-picker{gap:4px}#participants span{display:none}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 @media(max-width:700px){#screen .plyr__volume{min-width:34px;width:34px;max-width:34px;flex:0 0 34px}#screen .plyr__volume input{display:none}}
+
+#screen:fullscreen:has(.plyr--hide-controls),#screen:fullscreen .plyr--hide-controls,#screen:fullscreen .plyr--hide-controls video,#screen.plyr--fullscreen-fallback:has(.plyr--hide-controls),#screen.plyr--fullscreen-fallback .plyr--hide-controls,#screen.plyr--fullscreen-fallback .plyr--hide-controls video{cursor:none}
