@@ -65,11 +65,11 @@ Le serveur est l'autorité pour lecture, pause et position. Il utilise une horlo
 monotone et programme un départ commun une seconde dans le futur, acquitté par
 tous les participants. Les rapports des lecteurs arrivent toutes les 200 ms.
 
-- Au moins 8 secondes chargées avant reprise ; pause préventive sous 3 secondes.
+- Par défaut en production, 20 secondes chargées avant reprise ; pause préventive sous 5 secondes.
 - Un lecteur bloqué, absent ou décalé de plus de 350 ms provoque une pause commune.
 - Vitesse fixe, sans accélérations audio pour corriger les petits écarts.
 - Une pause manuelle ou une déconnexion exige une reprise explicite.
-- Hls.js charge environ une minute en avance ; le lecteur natif Apple contrôle sa réserve.
+- Hls.js vise deux minutes en avance ; le lecteur natif Apple contrôle sa réserve.
 
 La latence réseau et les horloges des appareils empêchent de garantir un écart
 nul. Le débit doit dépasser celui du film à long terme. Garder la page visible ;
@@ -87,6 +87,9 @@ Les tests vérifient les accès, la copie vidéo, les pistes externes, les langu
 le départ commun, la pause, les sous-titres et les formats d'écran.
 Voir [la validation sur appareils physiques](docs/validation.md) et
 [le guide de déploiement](docs/deployment.md).
+
+Pour envoyer rapidement le site sur une VM GCP ou OCI, x86_64 ou ARM64 :
+[installation rapide](docs/quickstart.md).
 
 `data/movies` contient les originaux, fichiers externes, médias préparés et
 métadonnées. Prévoir leur somme, une marge pour les préparations et les sauvegardes.
