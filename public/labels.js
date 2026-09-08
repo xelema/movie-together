@@ -1,4 +1,13 @@
 const korean = {
+  'Ce code est déjà utilisé.': '이미 사용 중인 코드입니다.',
+  'Code : 4 à 32 lettres, chiffres ou tirets.': '영문, 숫자, 하이픈으로 4~32자를 입력하세요.',
+  'Mot de passe incorrect.': '비밀번호가 올바르지 않습니다.',
+  'Code invalide ou expiré.': '초대 코드가 올바르지 않거나 만료되었습니다.',
+  'Film utilisé dans une room.': '시청 중에는 영화를 수정할 수 없습니다.',
+  'Fermer les rooms de ce film avant suppression.': '영화를 삭제하려면 먼저 시청방을 닫으세요.',
+  'Un import est déjà en cours.': '다른 파일을 준비 중입니다. 잠시 기다려 주세요.',
+  'Choisir un fichier SRT ou VTT de moins de 2 Mo.': '2MB 미만의 SRT 또는 VTT 파일을 선택하세요.',
+  'Ce fichier ne contient aucune piste utilisable.': '사용할 수 있는 음성이나 자막이 없는 파일입니다.',
   'Ouvrir': '열기',
   'Copier le lien': '링크 복사',
   'Fermer la room': '시청방 닫기',
@@ -46,5 +55,7 @@ const korean = {
 };
 
 export function label(french) {
-  return Object.hasOwn(korean, french) ? `${french} / ${korean[french]}` : french;
+  if (french.includes(' / ')) return french.split(' / ')[sessionStorage.getItem('language') === 'ko' ? 1 : 0];
+  if (sessionStorage.getItem('language') === 'ko') return korean[french] ?? (/[가-힣]/.test(french) || !french ? french : '요청을 완료하지 못했습니다. 다시 시도하세요.');
+  return french.replace('Room', 'Séance').replace('room', 'séance').replace('Ce navigateur ne permet pas la lecture HLS.', 'Ce navigateur ne peut pas lire ce film.');
 }
