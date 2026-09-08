@@ -2,12 +2,12 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="dark"><title>Movie Night</title>
+  <meta name="color-scheme" content="dark"><title>Movie Together</title>
   <link rel="stylesheet" href="/vendor/plyr.css"><link rel="stylesheet" href="/style.css">
   <script src="/vendor/hls.js" defer></script><script src="/vendor/plyr.js" defer></script><script type="module" src="/app.js"></script>
 </head>
 <body>
-  <header><a class="brand" href="/"><span class="brand-icon" aria-hidden="true">▶</span> Movie Night</a><label class="language-picker"><img id="language-flag" src="/flags/fr.svg" alt="" width="24" height="18"><select id="language" aria-label="Langue / 언어"><option value="fr">Français</option><option value="ko">한국어</option></select></label><button id="logout" class="secondary" data-fr="Déconnexion" data-ko="로그아웃" hidden></button></header>
+  <header><a class="brand" href="/"><span class="brand-icon" aria-hidden="true">▶</span> Movie Together</a><label class="language-picker"><img id="language-flag" src="/flags/fr.svg" alt="" width="24" height="18"><select id="language" aria-label="Langue / 언어"><option value="fr">Français</option><option value="ko">한국어</option></select></label><button id="logout" class="secondary" data-fr="Déconnexion" data-ko="로그아웃" hidden></button></header>
   <main>
     <p id="notice" role="status" aria-live="polite"></p>
     <section id="entry">
@@ -29,7 +29,6 @@
         </div>
       </div>
       <p id="playback-status" role="status"></p><button id="allow-sound" type="button" data-fr="Autoriser le son" data-ko="소리 허용" hidden></button>
-      <p class="muted" data-fr="Lecture et pause pour tous. Langue et sous-titres pour vous." data-ko="재생과 일시정지는 함께, 음성과 자막은 개별 선택."></p>
       <form id="choose-film" hidden><label><span data-fr="Changer de film" data-ko="영화 변경"></span><select id="room-movie"></select></label><button data-fr="Choisir" data-ko="선택"></button></form>
     </section>
     <dialog id="name-dialog"><form method="dialog"><h2 data-fr="Votre pseudo" data-ko="닉네임"></h2><input id="room-name" required maxlength="40" autocomplete="nickname" aria-label="Pseudo / 닉네임"><button data-fr="Rejoindre" data-ko="입장"></button></form></dialog>
