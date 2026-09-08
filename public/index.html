@@ -7,42 +7,33 @@
   <script src="/vendor/hls.js" defer></script><script src="/vendor/plyr.js" defer></script><script type="module" src="/app.js"></script>
 </head>
 <body>
-  <header><a href="/">Movie Night</a><button id="logout" hidden>Déconnexion / <span lang="ko">로그아웃</span></button></header>
+  <header><a class="brand" href="/"><span class="brand-icon" aria-hidden="true">▶</span> Movie Night</a><label class="language-picker"><img id="language-flag" src="/flags/fr.svg" alt="" width="24" height="18"><select id="language" aria-label="Langue / 언어"><option value="fr">Français</option><option value="ko">한국어</option></select></label><button id="logout" class="secondary" data-fr="Déconnexion" data-ko="로그아웃" hidden></button></header>
   <main>
     <p id="notice" role="status" aria-live="polite"></p>
     <section id="entry">
-      <div class="columns">
-        <form id="join-form"><h2>Rejoindre une séance / <span lang="ko">시청방 입장</span></h2><label>Code d’invitation / <span lang="ko">초대 코드</span><input name="code" required autocomplete="off" maxlength="16"></label><button>Rejoindre / <span lang="ko">입장</span></button></form>
-        <form id="login-form"><h2>Administration / <span lang="ko">관리</span></h2><label>Mot de passe / <span lang="ko">비밀번호</span><input name="password" type="password" required autocomplete="current-password"></label><button>Se connecter / <span lang="ko">로그인</span></button></form>
-      </div>
+      <form id="join-form"><div class="entry-icon" aria-hidden="true">▶</div><h1 data-fr="Rejoindre une séance" data-ko="함께 시청하기"></h1><p data-fr="Entrez le code que l’on vous a partagé." data-ko="초대받은 코드를 입력하세요."></p><label><span data-fr="Code de la séance" data-ko="시청방 코드"></span><input name="code" required autocomplete="off" maxlength="32" spellcheck="false" placeholder="cinema-123"></label><button data-fr="Continuer" data-ko="계속"></button></form>
+      <form id="login-form" hidden><h1 data-fr="Administration" data-ko="관리"></h1><label><span data-fr="Mot de passe" data-ko="비밀번호"></span><input name="password" type="password" required autocomplete="current-password"></label><button data-fr="Se connecter" data-ko="로그인"></button></form>
     </section>
     <section id="library" hidden>
-      <div class="heading"><h1>Bibliothèque / <span lang="ko">영화 목록</span></h1><button id="refresh">Actualiser / <span lang="ko">새로고침</span></button></div>
-      <form id="upload-form" hidden><h2>Ajouter un film / <span lang="ko">영화 추가</span></h2><p>Original conservé · 20 Go max. / <span lang="ko">원본 보존 · 최대 20GB</span></p>
-        <label>Film / <span lang="ko">영화 파일</span><input id="upload-file" type="file" required></label>
-        <button id="upload-button">Envoyer le film / <span lang="ko">업로드</span></button><progress id="upload-progress" value="0" max="100"></progress><span id="upload-status"></span>
-      </form>
+      <div class="heading"><h1 data-fr="Bibliothèque" data-ko="영화 목록"></h1><button id="refresh" data-fr="Actualiser" data-ko="새로고침"></button></div>
+      <form id="upload-form"><h2 data-fr="Ajouter un film" data-ko="영화 추가"></h2><label><span data-fr="Fichier du film (20 Go maximum)" data-ko="영화 파일 (최대 20GB)"></span><input id="upload-file" type="file" required></label><button id="upload-button" data-fr="Envoyer le film" data-ko="영화 업로드"></button><progress id="upload-progress" value="0" max="100"></progress><span id="upload-status"></span></form>
       <div id="pending-uploads"></div><div id="movies" class="columns"></div>
-      <section id="rooms-section" hidden><h2>Invitations actives / <span lang="ko">유효한 초대</span></h2><div id="rooms"></div></section>
+      <section id="rooms-section"><h2 data-fr="Séances ouvertes" data-ko="열린 시청방"></h2><div id="rooms"></div></section>
     </section>
     <section id="watch" hidden>
-      <div class="heading"><h1 id="movie-title">Séance / <span lang="ko">시청방</span></h1><button id="leave">Quitter la room / <span lang="ko">나가기</span></button></div>
-      <aside class="room-presence" aria-label="Participants / 참가자">
-        <div class="heading"><h2>Dans la séance / <span lang="ko">참가자</span> <span id="member-count">0</span></h2>
-        <form id="name-form"><label for="display-name">Votre pseudo / <span lang="ko">닉네임</span></label><input id="display-name" required maxlength="40" autocomplete="nickname"><button>Enregistrer / 저장</button></form></div>
-        <ul id="participants"></ul>
-      </aside>
-      <div id="screen"><div class="video-stage"><video id="video" playsinline preload="auto" disablepictureinpicture></video>
-        <div id="buffering-overlay" hidden><span class="spinner" aria-hidden="true"></span><span id="buffering-label"></span></div></div>
-        <div class="controls track-controls"><label>Version / <span lang="ko">영상 버전</span><select id="quality"></select></label><label>Langue audio / <span lang="ko">음성 언어</span><select id="audio"></select></label>
-          <label>Sous-titres / <span lang="ko">자막</span><select id="subtitles"><option value="-1">Désactivés / 끄기</option></select></label></div>
+      <div class="heading"><h1 id="movie-title"></h1><button id="leave" data-fr="Quitter" data-ko="나가기"></button></div>
+      <aside class="room-presence"><h2><span data-fr="Avec vous" data-ko="함께 보는 사람"></span> <span id="member-count"></span></h2><ul id="participants"></ul></aside>
+      <div id="screen"><div class="video-stage"><video id="video" playsinline preload="auto" disablepictureinpicture></video><div id="buffering-overlay" hidden><span class="spinner" aria-hidden="true"></span><span id="buffering-label"></span></div></div>
+        <div id="player-settings" class="track-controls" role="region" hidden><div class="heading"><strong data-fr="Réglages" data-ko="설정"></strong><button id="close-settings" type="button" aria-label="Fermer / 닫기">×</button></div>
+          <label><span data-fr="Langue du film" data-ko="음성 언어"></span><select id="audio"></select></label><label><span data-fr="Sous-titres" data-ko="자막"></span><select id="subtitles"></select></label>
+        </div>
       </div>
-      <p id="playback-status" role="status">Connexion… / <span lang="ko">연결 중…</span></p>
-      <p class="muted">Lecture, pause et déplacement pour tous. Langue et sous-titres pour vous. / <span lang="ko">재생·일시정지·탐색은 함께, 음성·자막은 개별 선택.</span></p>
-      <details><summary>Connexion / <span lang="ko">연결 상태</span></summary><p id="diagnostics" class="muted"></p></details>
-      <form id="choose-film"><label>Changer de film / <span lang="ko">영화 변경</span><select id="room-movie"></select></label><button>Choisir / <span lang="ko">선택</span></button></form>
-      <p class="muted">Gardez cette page ouverte à l’écran. / <span lang="ko">이 페이지를 화면에 열어 두세요.</span></p>
+      <p id="playback-status" role="status"></p><button id="allow-sound" type="button" data-fr="Autoriser le son" data-ko="소리 허용" hidden></button>
+      <p class="muted" data-fr="Lecture et pause pour tous. Langue et sous-titres pour vous." data-ko="재생과 일시정지는 함께, 음성과 자막은 개별 선택."></p>
+      <form id="choose-film" hidden><label><span data-fr="Changer de film" data-ko="영화 변경"></span><select id="room-movie"></select></label><button data-fr="Choisir" data-ko="선택"></button></form>
     </section>
+    <dialog id="name-dialog"><form method="dialog"><h2 data-fr="Votre pseudo" data-ko="닉네임"></h2><input id="room-name" required maxlength="40" autocomplete="nickname" aria-label="Pseudo / 닉네임"><button data-fr="Rejoindre" data-ko="입장"></button></form></dialog>
+    <dialog id="create-dialog"><form method="dialog"><h2 data-fr="Créer une séance" data-ko="시청방 만들기"></h2><label><span data-fr="Code à partager" data-ko="공유할 코드"></span><input id="create-code" required minlength="4" maxlength="32" pattern="[A-Za-z0-9-]{4,32}" autocomplete="off" spellcheck="false"></label><p data-fr="4 à 32 lettres, chiffres ou tirets." data-ko="영문, 숫자, 하이픈 4~32자."></p><div class="dialog-actions"><button id="random-code" class="secondary" type="button" data-fr="Aléatoire" data-ko="무작위"></button><button data-fr="Créer" data-ko="만들기"></button></div></form></dialog>
   </main>
 </body>
 </html>
