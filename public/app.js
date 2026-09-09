@@ -4,11 +4,12 @@ import { label } from './labels.js';
 const $ = id => document.getElementById(id);
 const t = (fr, ko) => sessionStorage.getItem('language') === 'ko' ? ko : fr;
 const adminPage = location.pathname === '/admin';
-let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false;
+let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null;
 const playbackUI = new window.Plyr($('video'), {
-  controls: ['play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'fullscreen'],
+  controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'fullscreen'],
   settings: [], storage: { enabled: false }, clickToPlay: false, keyboard: { focused: false, global: false },
-  hideControls: true, iconUrl: '/vendor/plyr.svg', blankVideo: '',
+  hideControls: true, tooltips: { controls: true, seek: true }, invertTime: false, toggleInvert: false,
+  iconUrl: '/vendor/plyr.svg', blankVideo: '',
   fullscreen: { enabled: true, fallback: true, iosNative: false, container: '#screen' },
   listeners: {
     play: () => { player?.togglePlayback().catch(error => notice(error.message)); return false; },
@@ -21,7 +22,9 @@ settingsButton.textContent = '⚙'; settingsButton.setAttribute('aria-controls',
 playbackUI.elements.controls.insertBefore(settingsButton, playbackUI.elements.buttons.fullscreen);
 function showSettings(open, focus = false) {
   $('player-settings').hidden = !open; settingsButton.setAttribute('aria-expanded', String(open));
+  $('screen').classList.toggle('settings-open', open);
   if (open) playbackUI.toggleControls(true);
+  player?.positionSubtitles();
   if (focus) (open ? $('close-settings') : settingsButton).focus();
 }
 settingsButton.addEventListener('click', () => showSettings($('player-settings').hidden, true));
@@ -29,6 +32,20 @@ $('close-settings').addEventListener('click', event => showSettings(false, event
 document.addEventListener('pointerdown', event => { if (!$('player-settings').contains(event.target) && !settingsButton.contains(event.target)) showSettings(false); });
 $('screen').addEventListener('keydown', event => { if (event.key === 'Escape' && !$('player-settings').hidden) { event.preventDefault(); event.stopPropagation(); showSettings(false, true); } });
 playbackUI.on('enterfullscreen exitfullscreen', () => showSettings(false));
+// Route transport shortcuts through the shared clock, not Plyr's local playback.
+$('screen').addEventListener('keydown', event => {
+  if (!player || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+      event.target.closest('input, select, textarea, button, [contenteditable=true]')) return;
+  const key = event.key.toLowerCase();
+  if (![' ', 'k', 'arrowleft', 'arrowright', 'm', 'f'].includes(key)) return;
+  event.preventDefault();
+  if (event.repeat) return;
+  if (key === ' ' || key === 'k') player.togglePlayback().catch(error => notice(error.message));
+  else if (key.startsWith('arrow')) player.command('seek', Math.max(0, Math.min(player.state?.duration || 0, player.position() + (key === 'arrowleft' ? -10 : 10))));
+  else if (key === 'm') playbackUI.muted = !playbackUI.muted;
+  else playbackUI.fullscreen.toggle();
+  playbackUI.toggleControls(true);
+});
 function translate() {
   const lang = sessionStorage.getItem('language') === 'ko' ? 'ko' : 'fr';
   document.documentElement.lang = lang; $('language').value = lang;
@@ -37,16 +54,57 @@ function translate() {
   const words = { play: t('Lecture', '재생'), pause: t('Pause', '일시정지'), seek: t('Avancer ou reculer', '재생 위치'),
     currentTime: t('Position', '재생 위치'), duration: t('Durée', '길이'), volume: t('Volume', '음량'),
     mute: t('Couper le son', '음소거'), unmute: t('Activer le son', '소리 켜기'),
-    enterFullscreen: t('Plein écran', '전체 화면'), exitFullscreen: t('Quitter le plein écran', '전체 화면 종료') };
+    enterFullscreen: t('Plein écran', '전체 화면'), exitFullscreen: t('Quitter le plein écran', '전체 화면 종료'),
+    seekLabel: t('{currentTime} sur {duration}', '{duration} 중 {currentTime}'),
+    played: t('Lu', '재생됨'), buffered: t('Chargé', '버퍼링됨') };
   Object.assign(playbackUI.config.i18n, words);
   for (const [key, text] of Object.entries(words)) {
-    for (const node of playbackUI.elements.container.querySelectorAll(`[data-plyr=${key}]`)) node.setAttribute('aria-label', text);
+    for (const node of playbackUI.elements.container.querySelectorAll(`[data-plyr=${key}]`)) {
+      node.setAttribute('aria-label', text);
+      for (const tooltip of node.querySelectorAll('.plyr__tooltip')) tooltip.textContent = text;
+    }
   }
-  playbackUI.elements.buttons.fullscreen?.setAttribute('aria-label', words.enterFullscreen);
+  for (const [button, normal, pressed] of [[playbackUI.elements.buttons.mute, words.mute, words.unmute],
+    [playbackUI.elements.buttons.fullscreen, words.enterFullscreen, words.exitFullscreen]]) {
+    if (!button) continue;
+    button.querySelector('.label--not-pressed').textContent = normal;
+    button.querySelector('.label--pressed').textContent = pressed;
+  }
+  playbackUI.elements.buttons.fullscreen?.setAttribute('aria-label', playbackUI.fullscreen.active ? words.exitFullscreen : words.enterFullscreen);
   settingsButton.setAttribute('aria-label', t('Réglages', '설정'));
   $('player-settings').setAttribute('aria-label', t('Réglages', '설정')); $('close-settings').setAttribute('aria-label', t('Fermer', '닫기'));
   $('room-name').setAttribute('aria-label', t('Votre pseudo', '닉네임'));
+  $('screen').setAttribute('aria-label', t('Lecteur vidéo', '동영상 플레이어'));
   if (player) player.tracks();
+  updatePlayback(player);
+}
+
+function updatePlayback(controller) {
+  if (!controller) return;
+  const phase = controller.state?.phase;
+  const waiting = roomMessage?.members.filter(member => member.waiting).map(member => member.name) ?? [];
+  const needsSound = controller.activationBlocked;
+  const loading = !controller.activated || controller.recovering;
+  const message = controller.failure ? label(controller.failure) : navigator.onLine === false ? t('Connexion perdue. Séance en pause.', '연결이 끊겨 일시정지되었습니다.') : !phase ? t('Reconnexion…', '다시 연결 중…') :
+    needsSound ? t('Un clic pour activer le son', '클릭하여 소리를 켜세요') :
+    loading ? t('Chargement du film…', '영화를 불러오는 중…') :
+    phase === 'buffering' ? waiting.length ? t(`En attente de ${waiting.join(', ')}…`, `${waiting.join(', ')} 님을 기다리는 중…`) : t('La séance va commencer…', '곧 재생됩니다…') : '';
+  const overlay = !!message;
+  $('buffering-overlay').hidden = !overlay;
+  $('screen').dataset.overlay = String(overlay);
+  const busy = overlay && !controller.failure && !needsSound;
+  $('video').setAttribute('aria-busy', String(busy));
+  $('playback-spinner').hidden = !busy;
+  if ($('buffering-label').textContent !== message) $('buffering-label').textContent = message;
+  $('allow-sound').hidden = !needsSound || !!controller.failure;
+  $('playback-status').textContent = overlay ? '' : phase === 'paused' ? t('En pause', '일시정지') : '';
+  const playing = controller.activated && ['playing', 'buffering'].includes(phase);
+  $('screen').dataset.playing = String(playing);
+  for (const control of playbackUI.elements.buttons.play ?? []) {
+    const text = playing ? t('Pause', '일시정지') : t('Lecture', '재생');
+    control.setAttribute('aria-label', text);
+    for (const tooltip of control.querySelectorAll('.plyr__tooltip')) tooltip.textContent = text;
+  }
 }
 function notice(message = '') { $('notice').textContent = label(message); }
 async function api(url, { body, method = 'GET', ...options } = {}) {
@@ -97,6 +155,7 @@ function movieCard(movie) {
   const card = el('article', undefined, 'card'); card.append(el('h2', movie.title));
   const states = { ready: t('Prêt à regarder', '시청 준비 완료'), uploaded: t('À préparer', '준비 필요'), processing: t('Préparation en cours…', '준비 중…'), probing: t('Vérification…', '확인 중…'), failed: t('Préparation échouée. Réessayez.', '준비에 실패했습니다. 다시 시도하세요.'), incompatible: t('Ce fichier ne peut pas être lu.', '이 파일은 재생할 수 없습니다.') };
   card.append(el('p', `${states[movie.status] || ''}${movie.progress ? ` ${movie.progress.percent} %` : ''}`));
+  if (movie.error) card.append(el('p', movie.error, 'media-error'));
   if (movie.status === 'ready') card.append(button(t('Créer une séance', '시청방 만들기'), async () => {
     $('create-code').value = '';
     const code = await askDialog('create-dialog', 'create-code'); if (!code) return;
@@ -143,25 +202,20 @@ async function enterRoom(id, name) {
   }
   sessionStorage.setItem('nickname', name); showSettings(false);
   await api(`/api/rooms/${id}`); session = await api('/api/session');
-  player?.dispose(); activeRoom = id;
+  player?.dispose(); activeRoom = id; roomMessage = null;
   $('entry').hidden = true; $('library').hidden = true; $('watch').hidden = false; $('choose-film').hidden = !session.admin;
   history.replaceState(null, '', `${adminPage ? '/admin' : '/'}#room=${id}`);
   player = new SyncPlayer({ video: $('video'), roomId: id, name,
-    onStatus: message => { $('playback-status').textContent = label(message); },
-    onActivation: active => { $('allow-sound').hidden = active || !player?.activationBlocked; },
+    onStatus: message => { $('playback-status').textContent = label(message); updatePlayback(player); },
+    onActivation: () => updatePlayback(player),
     onTracks: (audio, subtitles) => {
       selectOptions($('audio'), audio.length ? audio.map(track => [track.index, trackName(track)]) : [[-1, t('Sans son', '음성 없음')]]); $('audio').disabled = audio.length < 2;
       selectOptions($('subtitles'), [[-1, t('Sans sous-titres', '자막 없음')], ...subtitles.map(track => [track.index, trackName(track)])]); $('subtitles').disabled = !subtitles.length;
+      if (player) { $('audio').value = String(audio.length ? player.audioChoice : -1); $('subtitles').value = String(player.subtitleChoice); }
     },
     onState: (message, controller) => {
       $('movie-title').textContent = message.movie?.title ?? ''; $('room-movie').value = message.movie?.id ?? '';
-      const phase = message.state.phase, waiting = message.members.filter(member => member.waiting).map(member => member.name);
-      $('buffering-overlay').hidden = phase !== 'buffering';
-      $('buffering-label').textContent = waiting.length ? t(`En attente de ${waiting.join(', ')}…`, `${waiting.join(', ')} 님을 기다리는 중…`) : t('La séance va commencer…', '곧 재생됩니다…');
-      $('allow-sound').hidden = !controller.activationBlocked;
-      $('playback-status').textContent = controller.failure ? label(controller.failure) : !controller.activated ? controller.activationBlocked ? t('Autorisez le son pour nous rejoindre.', '함께 보려면 소리를 허용하세요.') : t('Chargement du film…', '영화를 불러오는 중…') : phase === 'buffering' ? $('buffering-label').textContent : phase === 'playing' ? '' : t('En pause', '일시정지');
-      const playing = controller.activated && ['playing', 'buffering'].includes(phase); $('screen').dataset.playing = String(playing);
-      for (const control of playbackUI.elements.buttons.play ?? []) control.setAttribute('aria-label', playing ? t('Pause', '일시정지') : t('Lecture', '재생'));
+      roomMessage = message; updatePlayback(controller);
       $('member-count').textContent = `(${message.members.length})`;
       $('participants').replaceChildren(...message.members.map(member => { const item = el('li'); item.dataset.ready = String(!member.waiting); item.append(el('strong', `${member.name}${member.id === controller.memberId ? t(' · vous', ' · 나') : ''}`), el('span', member.waiting ? t('Chargement…', '준비 중…') : t('Prêt', '준비 완료'))); return item; }));
     },

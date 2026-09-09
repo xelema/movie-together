@@ -146,7 +146,6 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     if (movie.status !== 'ready' || mediaLocks.has(movie.id)) throw fail(409, 'Film non préparé.');
     room.movieId = movie.id; room.engine.load(movie.duration); broadcast(room); res.json({ ok: true });
   });
-
   const uploadPath = id => {
     if (!ID.test(id)) throw fail(404, 'Upload introuvable.');
     return path.join(store.root, 'uploads', id);

@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 
 test('admin manages a film and two named viewers join in their language with one shared play', async ({ browser }) => {
+  test.skip(process.platform === 'win32' && browser.browserType().name() === 'webkit', 'Playwright WebKit on Windows has neither HLS nor MSE decoding; run this project on macOS/Linux.');
   const a = await browser.newContext(), b = await browser.newContext();
   const host = await a.newPage(), guest = await b.newPage(), latest = new Map(), errors = [];
   let releaseMedia = () => {};
@@ -12,6 +14,13 @@ test('admin manages a film and two named viewers join in their language with one
   const openDetails = async () => { if (!await host.locator('#movies details').evaluate(node => node.open)) await host.locator('#movies summary').click(); };
   const controls = page => page.locator('.plyr').hover();
   try {
+    await guest.addInitScript(() => {
+      const play = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function () {
+        return window.testSoundAllowed ? play.call(this) : Promise.reject(new DOMException('Sound permission', 'NotAllowedError'));
+      };
+      document.addEventListener('click', event => { if (event.target.closest('#allow-sound')) window.testSoundAllowed = true; }, true);
+    });
     await guest.goto('/');
     await expect(guest.locator('#join-form input')).toHaveCount(1);
     await expect(guest.locator('#login-form')).toBeHidden();
@@ -22,7 +31,12 @@ test('admin manages a film and two named viewers join in their language with one
     await guest.screenshot({ path: 'test-results/home-mobile.png', fullPage: true });
     await host.goto('/admin'); await host.locator('#login-form input').fill('browser-test-password'); await host.locator('#login-form button').click();
     await expect(host.locator('#library')).toBeVisible();
-    await host.locator('#upload-file').setInputFiles('data/e2e/fixture.mp4'); await host.locator('#upload-button').click();
+    // Each engine uses the same temporary test server; start with an empty library.
+    const headers = { Origin: 'http://localhost:3100' };
+    for (const room of await (await host.request.get('/api/rooms')).json()) await host.request.delete(`/api/rooms/${room.id}`, { headers });
+    for (const movie of await (await host.request.get('/api/movies')).json()) await host.request.delete(`/api/movies/${movie.id}`, { headers });
+    await host.locator('#refresh').click();
+    await host.locator('#upload-file').setInputFiles({ name: 'fixture.mp4', mimeType: 'video/mp4', buffer: await readFile('data/e2e/fixture.mp4') }); await host.locator('#upload-button').click();
     await expect(host.locator('#movies')).toContainText('À préparer');
     await openDetails();
     await host.locator('#movies input[type=file]').setInputFiles({ name: 'dialogue.srt', mimeType: 'text/plain', buffer: Buffer.from('1\n00:00:00,000 --> 00:00:49,000\nUn sous-titre lisible.\n') });
@@ -31,7 +45,7 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(host.locator('#movies')).toContainText('Fichier ajouté : Français');
     await openDetails();
     await host.getByLabel('Type de fichier').selectOption('audio');
-    await host.locator('#movies input[type=file]').setInputFiles('data/e2e/external.wav');
+    await host.locator('#movies input[type=file]').setInputFiles({ name: 'external.wav', mimeType: 'audio/wav', buffer: await readFile('data/e2e/external.wav') });
     await host.getByLabel('Nom affiché').fill('한국어'); await host.getByLabel('Langue', { exact: true }).selectOption('ko');
     await host.getByRole('button', { name: 'Ajouter le fichier' }).click();
     await expect(host.locator('#movies')).toContainText('Fichier ajouté : 한국어');
@@ -53,29 +67,50 @@ test('admin manages a film and two named viewers join in their language with one
     await guest.locator('#join-form input').fill('cine-soir'); await guest.locator('#join-form button').click();
     await expect(guest.locator('#name-dialog')).toBeVisible(); await guest.locator('#room-name').fill('민지'); await guest.locator('#name-dialog button').click();
     await expect(guest.locator('#movie-title')).toHaveText('fixture'); await expect(guest.locator('#choose-film')).toBeHidden();
+    await expect(host.locator('video')).toHaveCSS('filter', 'none');
+    await expect(guest.locator('video')).toHaveCSS('filter', 'none');
+    await expect(host.locator('#picture-settings')).toHaveCount(0);
+    await expect(guest.locator('#picture-settings')).toHaveCount(0);
     await expect(host.locator('#participants')).toContainText('민지');
-    await controls(host); await host.locator('[data-plyr=play]').click();
+    await host.locator('.plyr__control--overlaid').click();
     await expect(host.locator('#buffering-label')).toContainText('민지');
     releaseMedia();
     await expect.poll(() => guest.locator('video').evaluate(video => video.readyState)).toBeGreaterThanOrEqual(3);
-    if (await guest.locator('#allow-sound').isVisible()) await guest.locator('#allow-sound').click();
+    await expect(guest.locator('#screen #allow-sound')).toBeVisible();
+    await guest.screenshot({ path: 'test-results/watch-sound.png', fullPage: true });
+    await guest.locator('#allow-sound').click();
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused), { timeout: 15_000 }).toBe(false);
     await expect.poll(() => host.locator('video').evaluate(video => video.currentTime)).toBeGreaterThan(2);
     const times = await Promise.all([host, guest].map(page => page.locator('video').evaluate(video => video.currentTime)));
     expect(Math.abs(times[0] - times[1])).toBeLessThan(.35);
-    await controls(guest); await guest.locator('[data-plyr=play]').click();
+    await controls(guest); await guest.locator('.plyr__controls [data-plyr=play]').click();
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
-    await guest.locator('#open-settings').click(); await guest.locator('#audio').selectOption('2'); await guest.locator('#subtitles').selectOption('0'); await guest.locator('#close-settings').click();
+    await guest.locator('#open-settings').click(); await guest.locator('#audio').selectOption('2'); await guest.locator('#subtitles').selectOption('0');
+    await expect(guest.locator('#audio')).toBeInViewport(); await expect(guest.locator('#subtitles')).toBeInViewport();
+    // Opening the overlay must never apply an image filter to video or an ancestor.
+    for (const page of [host, guest]) expect(await page.locator('video').evaluate(video => {
+      for (let node = video; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (style.filter !== 'none' || style.opacity !== '1' || style.mixBlendMode !== 'normal') return false;
+      }
+      return true;
+    })).toBe(true);
+    await guest.screenshot({ path: 'test-results/watch-settings.png', fullPage: true });
+    await guest.locator('#close-settings').click();
+    await expect(guest.locator('#player-settings select')).toHaveCount(2);
     await expect(host.locator('#audio')).toHaveValue('0');
     await host.locator('[data-plyr=seek]').fill('20'); await host.locator('[data-plyr=seek]').dispatchEvent('input');
     await expect.poll(() => guest.locator('video').evaluate(video => video.currentTime)).toBeGreaterThan(9);
-    await host.locator('[data-plyr=play]').click();
+    await host.locator('#screen').focus(); await host.keyboard.press('k');
     await expect.poll(() => guest.locator('video').evaluate(video => Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.text === 'Un sous-titre lisible.' && cue.line === 84 && !cue.snapToLines)))).toBe(true);
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     await expect(guest.locator('#buffering-overlay')).toBeHidden();
     for (const [width, height, name] of [[390,844,'mobile'],[820,1180,'tablet'],[1440,1000,'desktop']]) {
       await guest.setViewportSize({ width, height });
       expect(await guest.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await controls(guest);
+      if (width === 390) await expect.poll(() => guest.locator('video').evaluate(video =>
+        Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.line < 80)))).toBe(true);
       await guest.screenshot({ path: `test-results/watch-${name}.png`, fullPage: true });
     }
     await controls(host); await host.locator('[data-plyr=fullscreen]').click();
@@ -90,6 +125,12 @@ test('admin manages a film and two named viewers join in their language with one
     await host.screenshot({ path: 'test-results/watch-fullscreen.png' }); await host.evaluate(() => document.exitFullscreen());
     await b.setOffline(true); await expect.poll(() => host.locator('video').evaluate(video => video.paused), { timeout: 6000 }).toBe(true);
     expect(errors).toEqual([]);
-  } catch (error) { console.log('Failure:', error.message, 'Browser errors:', errors, 'State:', latest.get(host)?.state); throw error; }
+  } catch (error) {
+    console.log('Failure:', error.message, 'Browser errors:', errors, 'State:', latest.get(host)?.state,
+      'Media:', await host.locator('video').evaluate(video => ({ ready: video.readyState, error: video.error?.message,
+        source: video.currentSrc, buffered: video.buffered.length, nativeHls: video.canPlayType('application/vnd.apple.mpegurl'),
+        mse: window.Hls.isSupported(), vendor: navigator.vendor, platform: navigator.platform })));
+    throw error;
+  }
   finally { releaseMedia(); await guest.unrouteAll({ behavior: 'ignoreErrors' }); await a.close(); await b.close(); }
 });
