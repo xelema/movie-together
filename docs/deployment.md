@@ -21,7 +21,7 @@ Dans le projet Google Cloud choisi par le propriétaire :
    un point de départ à mesurer pour servir des films déjà préparés. La préparation des fichiers se termine avant la lecture.
 2. Réserver une IP externe et faire pointer un sous-domaine dessus.
 3. Attacher un disque persistant pour les films, sans suppression automatique avec
-   la VM. Additionner originaux, versions remuxées et audios, plus une
+   la VM. Additionner originaux, copie vidéo segmentée et audios, plus une
    marge pour les préparations et sauvegardes (voir le README).
 4. Monter ce disque à `/mnt/movie-data` et configurer son montage persistant dans
    `/etc/fstab` suivant le [guide Google Cloud](https://docs.cloud.google.com/compute/docs/disks/add-persistent-disk).
@@ -82,7 +82,7 @@ les limites mémoire du navigateur. Safari natif gère lui-même cette réserve.
 Les segments peuvent être réutilisés depuis le cache privé du navigateur après
 vérification des droits auprès du serveur ; les listes de lecture ne sont pas
 conservées. Cela évite de retransférer les mêmes données lors d'un retour en arrière.
-La vidéo reste inchangée.
+Chaque spectateur reçoit la même vidéo d'origine, segmentée avant la séance.
 
 Pour une installation existante, régler `MIN_BUFFER_SECONDS=20` et
 `LOW_BUFFER_SECONDS=5` dans `.env` puis redémarrer l'application hors séance.
@@ -127,8 +127,9 @@ Pour revenir en arrière, retirer le fichier sysctl dédié, rétablir les deux
 valeurs notées avec `sudo sysctl -w`, puis recréer le proxy avec Compose seul.
 
 Mesurer ensuite depuis la connexion coréenne avec un film représentatif. Un
-film de 15 Go sur deux heures représente environ 17 Mbit/s en moyenne, avec
-des pointes : prévoir une marge et additionner les débits pour plusieurs personnes.
+film conserve son débit vidéo d'origine, avec des pointes : prévoir une marge
+et additionner les débits pour plusieurs personnes. Par exemple, 15 Go en deux
+heures représentent environ 17 Mbit/s par spectateur avant marge.
 Si le débit reste insuffisant, envisager un hébergement des médias plus proche
 ou un CDN vidéo avec accès privé signé. Un proxy inverse sur la même VM ne
 raccourcit pas le trajet international. Aucun CDN ni relais payant n'est créé.

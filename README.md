@@ -4,7 +4,8 @@ Bibliothèque privée et séances à plusieurs, avec langues et sous-titres indi
 
 ## Démarrage
 
-Node.js 22.20+, FFmpeg et FFprobe 5.1+ sont nécessaires.
+Node.js 22.20+, FFmpeg et FFprobe 5.1+ sont nécessaires, avec l'encodeur AAC.
+La vidéo n'est jamais réencodée. Les tests créent leurs extraits avec libx264.
 
 ```sh
 npm ci
@@ -32,6 +33,8 @@ FFmpeg et FFmpeg Full installés avec Chocolatey sous Windows.
 Le drapeau en haut de la page permet de choisir français ou coréen. Ce choix
 reste dans la session de l'onglet, y compris après un rechargement. Le menu ⚙
 du lecteur contient le choix de la langue du film et des sous-titres.
+Aucun réglage d'image ni filtre CSS n'est appliqué à la vidéo : ces effets peuvent
+changer le traitement HDR du navigateur et dégrader les couleurs.
 
 Les pseudos sont librement choisis et ne constituent pas une identité vérifiée.
 Les codes personnalisés acceptent 4 à 32 lettres, chiffres ou tirets, sans
@@ -39,12 +42,24 @@ distinction de casse. Un code plus long est moins facile à deviner.
 
 ## Préparation des médias
 
-La vidéo est copiée en HLS/fMP4 sans réencodage ni changement de résolution.
-H.264, HEVC, AV1 et VP9 sont acceptés, selon les capacités du navigateur utilisé.
-H.264 8 bits et AAC stéréo offrent la compatibilité la plus large.
+Une seule version est préparée en HLS/fMP4 pour tous, en copiant la vidéo
+originale : aucun réencodage, redimensionnement, changement de cadence ou filtre
+de couleur. La préparation relit le fichier et écrit ses segments ; sa durée
+dépend surtout de la taille du fichier, du disque et des éventuelles conversions
+audio. La durée des segments dépend des images clés de l'original.
 
-Les pistes AAC-LC mono/stéréo à 44,1 ou 48 kHz sont copiées ; les autres pistes
-audio sont converties en AAC stéréo. Les fichiers audio externes commencent au
+H.264, HEVC, AV1 et VP9 peuvent être préparés, mais leur lecture dépend des
+décodeurs du navigateur et de l'appareil. Pour la compatibilité la plus large,
+privilégier un fichier source H.264 SDR 8 bits. Il n'existe pas de version de
+secours. HDR10, HLG et Dolby Vision ne sont pas convertis en SDR : leur rendu
+dépend du navigateur, du système et de l'écran. Le rendu HDR n'est pas identique
+entre Chrome et Firefox sur tous les appareils. Voir [les recherches](docs/playback.md).
+
+Les pistes intégrées AAC-LC mono/stéréo à 44,1 ou 48 kHz sont copiées à l'identique.
+Les autres pistes audio sont converties en une seule passe en AAC-LC stéréo
+48 kHz à 256 kbit/s, avec mixage des voix centrales. Aucune analyse intégrale
+préalable, normalisation en deux passes, égalisation ou spatialisation artificielle.
+Les fichiers audio externes sont convertis et commencent au
 début du film, sont tronqués à sa durée ou complétés par du silence. Il faut
 fournir un fichier correspondant au même montage du film ; aucun alignement
 automatique des dialogues n'est effectué.
@@ -54,7 +69,8 @@ pas pris en charge. Les fichiers ajoutés restent disponibles après une nouvell
 préparation. Les sous-titres utilisent du texte blanc avec une ombre, sans fond
 opaque, légèrement remonté au-dessus du bord inférieur.
 
-L'original envoyé reste intact. Un seul film est préparé à la fois ; toutes les
+L'original envoyé reste intact. Un film préparé avec l'ancien réencodage doit être
+préparé à nouveau pour retrouver sa vidéo d'origine. Un seul film est préparé à la fois ; toutes les
 opérations se terminent avant la séance. Les uploads sont reprenables en
 resélectionnant le même fichier. Une préparation réussie remplace sa génération
 précédente. Aucun média n'est servi par un bucket public.
@@ -79,11 +95,12 @@ AirPlay et Picture-in-Picture ne font pas partie de la lecture synchronisée.
 
 ```sh
 npm test
-npx playwright install chromium
+npx playwright install chromium firefox webkit
 npm run test:e2e
 ```
 
-Les tests vérifient les accès, la copie vidéo, les pistes externes, les langues,
+Les tests vérifient les accès, la copie exacte des flux vidéo et AAC, les
+métadonnées SDR/HDR, l'absence de filtres sur le lecteur, les voix centrales, les pistes externes, les langues,
 le départ commun, la pause, les sous-titres et les formats d'écran.
 Voir [la validation sur appareils physiques](docs/validation.md) et
 [le guide de déploiement](docs/deployment.md).

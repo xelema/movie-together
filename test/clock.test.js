@@ -49,3 +49,23 @@ test('audio authorization reports readiness without issuing a group play command
   reject = false; await player.activate();
   assert.equal(player.activated, true); assert.equal(player.activationBlocked, false); assert.equal(commands, 0);
 });
+
+test('an old playback promise cannot activate a new movie', async () => {
+  let finish;
+  const player = Object.assign(Object.create(SyncPlayer.prototype), {
+    movie: { id: 'old' }, loadToken: 1, video: { play: () => new Promise(resolve => { finish = resolve; }) },
+    pauseLocal() { assert.fail('Old playback must not pause the new movie'); },
+    onStatus() {}, onActivation() { assert.fail('Old playback must not activate the new movie'); }, reconcile() {}, report() {},
+  });
+  const pending = player.activate();
+  player.movie = { id: 'new' }; player.loadToken++; player.activating = false;
+  finish(); await pending;
+  assert.notEqual(player.activated, true);
+});
+
+test('a permanent decoder error stays visible when play is pressed again', async () => {
+  const player = Object.assign(Object.create(SyncPlayer.prototype), {
+    movie: { id: 'test' }, failure: 'Unsupported decoder', video: { play() { assert.fail('No working decoder'); } },
+  });
+  await player.activate(); assert.equal(player.failure, 'Unsupported decoder');
+});

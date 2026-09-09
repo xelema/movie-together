@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, writeFile, readdir, stat, statfs, rm } from 'node:fs/promises';
+import { mkdir, open, readFile, writeFile, readdir, stat, statfs, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress } = {}) {
+export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, includeStderr = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '', expired = false;
@@ -21,7 +21,7 @@ export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress } =
     child.on('error', error => { clearTimeout(timer); reject(error); });
     child.on('close', code => {
       clearTimeout(timer);
-      if (code === 0) resolve(stdout);
+      if (code === 0) resolve(includeStderr ? { stdout, stderr } : stdout);
       else reject(new Error(expired ? 'Traitement trop long.' : `${binary} : ${stderr.slice(-3000)}`));
     });
   });
@@ -30,11 +30,17 @@ export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress } =
 export function inspectProbe(probe) {
   const streams = probe.streams ?? [];
   const video = streams.find(stream => stream.codec_type === 'video' && !stream.disposition?.attached_pic);
+  const sideData = video?.side_data_list ?? [];
+  const dovi = sideData.find(data => data.side_data_type === 'DOVI configuration record');
+  const color = key => !['unknown', 'unspecified', 'reserved'].includes(video?.[key]) ? video?.[key] : undefined;
+  const transfer = color('color_transfer');
+  const hdr = ['smpte2084', 'arib-std-b67'].includes(transfer) || !!dovi;
   const audio = streams.filter(stream => stream.codec_type === 'audio').map(stream => ({
     index: stream.index, codec: stream.codec_name, channels: stream.channels,
     language: stream.tags?.language ?? 'und', label: stream.tags?.title ?? stream.tags?.language ?? `Audio ${stream.index}`,
     compatible: !!stream.codec_name && stream.codec_name !== 'unknown',
-    copy: stream.codec_name === 'aac' && stream.profile === 'LC' && stream.channels <= 2 &&
+    channelLayout: stream.channel_layout, sampleRate: Number(stream.sample_rate),
+    copy: stream.codec_name === 'aac' && stream.profile === 'LC' && stream.channels > 0 && stream.channels <= 2 &&
       [44100, 48000].includes(Number(stream.sample_rate)),
   }));
   const subtitles = streams.filter(stream => stream.codec_type === 'subtitle').map(stream => ({
@@ -45,22 +51,184 @@ export function inspectProbe(probe) {
   const duration = Number(probe.format?.duration);
   const videoCompatible = ['h264', 'hevc', 'av1', 'vp9'].includes(video?.codec_name) && video.width > 0 && video.height > 0;
   const [num, den = 1] = (video?.avg_frame_rate || video?.r_frame_rate || '24/1').split('/').map(Number);
-  return { schema: 3, video: video ? { codec: video.codec_name, pixelFormat: video.pix_fmt,
+  return { schema: 4, video: video ? { codec: video.codec_name, pixelFormat: video.pix_fmt,
     index: video.index, width: video.width, height: video.height, profile: video.profile, level: video.level,
-    frameRate: num / den || 24 } : null,
+    frameRate: Number.isFinite(num / den) && num / den > 0 ? num / den : 24,
+    sampleAspectRatio: video.sample_aspect_ratio,
+    rotation: Number(sideData.find(data => data.rotation !== undefined)?.rotation ?? video.tags?.rotate) || 0,
+    colorPrimaries: color('color_primaries'), colorTransfer: transfer,
+    colorSpace: color('color_space'), colorRange: color('color_range'),
+    hdr, dolbyVision: dovi ? { profile: dovi.dv_profile, level: dovi.dv_level,
+      compatibilityId: dovi.dv_bl_signal_compatibility_id } : null,
+  } : null,
     videoCompatible, audio, subtitles, duration,
     bitrate: Number(probe.format?.bit_rate) || null,
     compatible: videoCompatible && Number.isFinite(duration) && duration > 0 };
 }
 
 export async function probeFile(file) {
-  return inspectProbe(JSON.parse(await run(process.env.FFPROBE_PATH || 'ffprobe', [
+  const probe = JSON.parse(await run(process.env.FFPROBE_PATH || 'ffprobe', [
     '-v', 'error', '-protocol_whitelist', 'file,pipe', '-show_streams', '-show_format', '-of', 'json', file,
-  ], { timeout: 120_000 })));
+  ], { timeout: 120_000 }));
+  return inspectProbe(probe);
 }
 
 function quote(value) { return String(value).replace(/["\r\n\\]/g, '').slice(0, 100); }
 function language(value) { return /^[a-z]{2,3}(-[A-Za-z0-9]+)?$/.test(value) ? value : 'und'; }
+
+// Chromium compresses the whole PQ range down to the peak the file declares, Firefox ignores it.
+// 203 nits is the BT.2408 reference white and Chromium's floor: below it no compression is left,
+// which is the brightest picture it will produce. Raising the value gives highlights back their
+// detail and darkens everything else. See docs/playback.md.
+const TONE_MAP_PEAK_NITS = Math.min(10000, Math.max(203, Number(process.env.HDR_PEAK_NITS) || 203));
+const BOX_CONTAINERS = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl']);
+const VISUAL_SAMPLE_ENTRIES = new Set(['hvc1', 'hev1', 'dvh1', 'dvhe', 'avc1', 'avc3', 'vp09', 'av01']);
+
+function box(type, payload) {
+  const header = Buffer.alloc(8);
+  header.writeUInt32BE(8 + payload.length, 0); header.write(type, 4, 'latin1');
+  return Buffer.concat([header, payload]);
+}
+
+function* boxes(buffer, start, end) {
+  for (let offset = start; offset + 8 <= end;) {
+    const size = buffer.readUInt32BE(offset);
+    if (size < 8 || offset + size > end) return;
+    yield { offset, size, type: buffer.toString('latin1', offset + 4, offset + 8) };
+    offset += size;
+  }
+}
+
+function findVisualEntry(buffer, start, end, ancestors = []) {
+  for (const { offset, size, type } of boxes(buffer, start, end)) {
+    if (BOX_CONTAINERS.has(type)) {
+      const found = findVisualEntry(buffer, offset + 8, offset + size, [...ancestors, offset]);
+      if (found) return found;
+    } else if (type === 'stsd') {
+      for (const entry of boxes(buffer, offset + 16, offset + size)) {
+        // A VisualSampleEntry keeps 78 fixed bytes before its own child boxes.
+        if (VISUAL_SAMPLE_ENTRIES.has(entry.type)) return { entry, ancestors: [...ancestors, offset] };
+      }
+    }
+  }
+  return null;
+}
+
+function toneMapBoxes() {
+  const mastering = Buffer.alloc(24);
+  // Rec. 2020 primaries in units of 0.00002, green then blue then red, then the D65 white point.
+  for (const [index, [x, y]] of [[8500, 39850], [6550, 2300], [35400, 14600], [15635, 16450]].entries()) {
+    mastering.writeUInt16BE(x, index * 4); mastering.writeUInt16BE(y, index * 4 + 2);
+  }
+  mastering.writeUInt32BE(TONE_MAP_PEAK_NITS * 10000, 16); mastering.writeUInt32BE(1, 20);
+  const light = Buffer.alloc(4); light.writeUInt16BE(TONE_MAP_PEAK_NITS, 0);
+  return Buffer.concat([box('mdcv', mastering), box('clli', light)]);
+}
+
+function unescapeRbsp(nal) {
+  const out = Buffer.alloc(nal.length);
+  let length = 0, zeros = 0;
+  for (const byte of nal) {
+    if (zeros === 2 && byte === 3) { zeros = 0; continue; }
+    zeros = byte === 0 ? zeros + 1 : 0;
+    out[length++] = byte;
+  }
+  return out.subarray(0, length);
+}
+
+function escapeRbsp(rbsp) {
+  const out = [];
+  let zeros = 0;
+  for (const byte of rbsp) {
+    if (zeros === 2 && byte <= 3) { out.push(3); zeros = 0; }
+    zeros = byte === 0 ? zeros + 1 : 0;
+    out.push(byte);
+  }
+  return Buffer.from(out);
+}
+
+// Supplemental enhancement information carries the mastering display (137) and content light
+// level (144) messages that Chromium reads for HEVC. Their fields have a fixed width.
+function rewriteSeiPayloads(rbsp) {
+  let offset = 2, rewritten = false;
+  while (offset < rbsp.length - 1 && rbsp[offset] !== 0x80) {
+    let type = 0, size = 0;
+    while (rbsp[offset] === 0xff) { type += 255; offset++; }
+    type += rbsp[offset++];
+    while (rbsp[offset] === 0xff) { size += 255; offset++; }
+    size += rbsp[offset++];
+    if (offset + size > rbsp.length) return rewritten;
+    if (type === 137 && size >= 24) { rbsp.writeUInt32BE(TONE_MAP_PEAK_NITS * 10000, offset + 16); rewritten = true; }
+    if (type === 144 && size >= 4) { rbsp.writeUInt16BE(TONE_MAP_PEAK_NITS, offset); rbsp.writeUInt16BE(0, offset + 2); rewritten = true; }
+    offset += size;
+  }
+  return rewritten;
+}
+
+// Rewrites the peak luminance an HEVC segment announces. Coded pictures are never touched: only
+// the two informational messages that sit before the first slice of the segment change.
+export async function rewriteToneMapSei(file) {
+  const handle = await open(file, 'r+');
+  try {
+    const head = Buffer.alloc(256 * 1024);
+    const { bytesRead } = await handle.read(head, 0, head.length, 0);
+    let media = -1;
+    for (let offset = 0; offset + 8 <= bytesRead;) {
+      const size = head.readUInt32BE(offset);
+      if (head.toString('latin1', offset + 4, offset + 8) === 'mdat') { media = offset + (size === 1 ? 16 : 8); break; }
+      if (size < 8) break;
+      offset += size;
+    }
+    if (media < 0) return false;
+    let rewritten = false;
+    for (let offset = media; offset + 6 <= bytesRead;) {
+      const length = head.readUInt32BE(offset);
+      if (length < 2 || offset + 4 + length > bytesRead) break;
+      const type = (head[offset + 4] >> 1) & 0x3f;
+      if (type < 32) break; // A coded slice ends the leading messages of the segment.
+      if (type === 39 || type === 40) {
+        const nal = head.subarray(offset + 4, offset + 4 + length);
+        const rbsp = unescapeRbsp(nal);
+        if (rewriteSeiPayloads(rbsp)) {
+          const escaped = escapeRbsp(rbsp);
+          // Equal length keeps every sample size in the fragment header valid.
+          if (escaped.length === length) { escaped.copy(head, offset + 4); rewritten = true; }
+        }
+      }
+      offset += 4 + length;
+    }
+    if (rewritten) await handle.write(head, 0, bytesRead, 0);
+    return rewritten;
+  } finally {
+    await handle.close();
+  }
+}
+
+// Rewrites the light level of a PQ initialisation segment. No video sample is read or written.
+export async function writeToneMapMetadata(file) {
+  const buffer = await readFile(file);
+  // Growing the header would move every chunk offset of a progressive file. Initialisation
+  // segments hold no media, so they are the only safe input.
+  for (const { type } of boxes(buffer, 0, buffer.length)) if (type === 'mdat') return false;
+  const found = findVisualEntry(buffer, 0, buffer.length);
+  if (!found) return false;
+  const { entry, ancestors } = found;
+  const body = entry.offset + 8 + 78, kept = [];
+  let perceptualQuantizer = false;
+  for (const child of boxes(buffer, body, entry.offset + entry.size)) {
+    if (child.type === 'colr' && buffer.toString('latin1', child.offset + 8, child.offset + 12) === 'nclx') {
+      perceptualQuantizer = buffer.readUInt16BE(child.offset + 14) === 16;
+    }
+    if (child.type !== 'mdcv' && child.type !== 'clli') kept.push(buffer.subarray(child.offset, child.offset + child.size));
+  }
+  if (!perceptualQuantizer) return false;
+  const replacement = Buffer.concat([...kept, toneMapBoxes()]);
+  const patched = Buffer.concat([buffer.subarray(0, body), replacement, buffer.subarray(entry.offset + entry.size)]);
+  const delta = patched.length - buffer.length;
+  for (const offset of [...ancestors, entry.offset]) patched.writeUInt32BE(patched.readUInt32BE(offset) + delta, offset);
+  await writeFile(file, patched);
+  return true;
+}
 
 export async function writeMaster(directory, audio, subtitles, renditions) {
   const base = await readFile(path.join(directory, 'base.m3u8'), 'utf8');
@@ -68,7 +236,7 @@ export async function writeMaster(directory, audio, subtitles, renditions) {
   const lines = base.trim().split(/\r?\n/).map(line => {
     if (line.startsWith('#EXT-X-MEDIA:TYPE=AUDIO')) {
       const track = audio[audioIndex++];
-      return line.replace(/NAME="[^"]*"/, `NAME="${quote(track.label)}"`);
+      return line.replace(/NAME="[^"]*"/, `NAME="${quote(track.label)}"`).replace(/,CHANNELS="[^"]*"/, '') + `,CHANNELS="${track.channels || 2}"`;
     }
     if (line.startsWith('#EXT-X-STREAM-INF:') && subtitles.length) return `${line},SUBTITLES="subs"`;
     return line;
@@ -86,6 +254,7 @@ export async function writeMaster(directory, audio, subtitles, renditions) {
       if (index < 1) throw new Error('Manifeste vidéo incomplet.');
       let info = lines[index - 1];
       info = info.replace(/,VIDEO-RANGE=[^,]+/, '');
+      if (rendition.videoRange) info += `,VIDEO-RANGE=${rendition.videoRange}`;
       rendition.codecs = info.match(/CODECS="([^"]+)"/)?.[1] ?? '';
       const subs = [];
       for (const track of subtitles) {
@@ -100,9 +269,8 @@ export async function writeMaster(directory, audio, subtitles, renditions) {
       await writeFile(path.join(directory, `${rendition.manifest}.tmp`), [...shared, ...subs, info, lines[index]].join('\n') + '\n');
       await rename(path.join(directory, `${rendition.manifest}.tmp`), path.join(directory, rendition.manifest));
     }
-    // Keep existing prepared libraries readable.
-    const fallback = renditions[0];
-    await writeFile(path.join(directory, 'master.m3u8.tmp'), await readFile(path.join(directory, fallback.manifest)));
+    // Both entry points reference the same video bytes.
+    await writeFile(path.join(directory, 'master.m3u8.tmp'), await readFile(path.join(directory, renditions[0].manifest)));
     await rename(path.join(directory, 'master.m3u8.tmp'), path.join(directory, 'master.m3u8'));
   }
 }
@@ -139,9 +307,10 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   if (movie.probe.audio.length && !audio.length) throw new Error('Choisir au moins une piste audio.');
   const video = movie.probe.video;
   const renditions = [{ id: 'original', manifest: 'master_original.m3u8', streamIndex: 0,
-    codec: video.codec, width: video.width, height: video.height }];
+    codec: video.codec, width: video.width, height: video.height,
+    videoRange: video.colorTransfer === 'smpte2084' ? 'PQ' : video.colorTransfer === 'arib-std-b67' ? 'HLG' : undefined }];
   const disk = await statfs(store.root);
-  const estimated = (movie.originalBytes ?? (await stat(source)).size) + movie.probe.duration * audio.length * 192_000 / 8;
+  const estimated = (movie.originalBytes ?? (await stat(source)).size) + movie.probe.duration * audio.length * 256_000 / 8;
   if (disk.bavail * disk.bsize < estimated * 1.15 + 256 * 1024 ** 2) throw new Error('Espace disque insuffisant pour les versions préparées.');
   const generation = randomUUID();
   const directory = path.join(store.directory(movie.id), generation);
@@ -155,8 +324,11 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   args.push('-c', 'copy');
   if (video.codec === 'hevc') args.push('-tag:v:0', 'hvc1');
   for (const [index, track] of audio.entries()) {
-    if (track.input > 0) args.push(`-filter:a:${index}`, `apad,atrim=duration=${movie.probe.duration}`);
-    if (!track.copy) args.push(`-c:a:${index}`, 'aac', `-ac:a:${index}`, '2', `-ar:a:${index}`, '48000', `-b:a:${index}`, '192k');
+    if (!track.copy) {
+      const filter = 'aresample=48000:ochl=stereo:rematrix_maxval=1' + (track.input > 0 ? `,apad,atrim=duration=${movie.probe.duration}` : '');
+      args.push(`-filter:a:${index}`, filter, `-c:a:${index}`, 'aac', `-profile:a:${index}`, 'aac_low',
+        `-ac:a:${index}`, '2', `-ar:a:${index}`, '48000', `-b:a:${index}`, '256k');
+    }
   }
   args.push('-f', 'hls', '-hls_time', '4', '-hls_playlist_type', 'vod',
     '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init_%v.mp4',
@@ -165,7 +337,12 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
     [...renditions.map((track, index) => `v:${index}${audio.length ? ',agroup:audio' : ''}`), ...audio.map((track, index) => `a:${index},agroup:audio,language:${language(track.language)},default:${index === 0 ? 'yes' : 'no'}`)].join(' '),
     path.join(directory, 'stream_%v.m3u8'));
   try {
-  await run(process.env.FFMPEG_PATH || 'ffmpeg', args, { cwd: directory, onProgress: seconds => options.onProgress?.({ stage: 'video', percent: Math.min(95, Math.round(seconds / movie.probe.duration * 95)) }) });
+  await run(process.env.FFMPEG_PATH || 'ffmpeg', args, { cwd: directory, onProgress: seconds => options.onProgress?.({ stage: 'packaging', percent: Math.min(95, Math.round(seconds / movie.probe.duration * 95)) }) });
+  if (video.colorTransfer === 'smpte2084') for (const file of await readdir(directory)) {
+    if (/^init_\d+\.mp4$/.test(file)) await writeToneMapMetadata(path.join(directory, file));
+    // Chromium ignores the container boxes for HEVC and reads the segments instead.
+    else if (video.codec === 'hevc' && file.startsWith(`segment_${renditions[0].streamIndex}_`)) await rewriteToneMapSei(path.join(directory, file));
+  }
   for (const rendition of renditions) {
     const playlist = path.join(directory, `stream_${rendition.streamIndex}.m3u8`);
     const probe = JSON.parse(await run(process.env.FFPROBE_PATH || 'ffprobe', ['-v', 'error', '-i', playlist,
@@ -189,7 +366,8 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
     await writeFile(path.join(directory, `sub_${track.id}.m3u8`), await readFile(path.join(store.directory(movie.id), movie.generation, `sub_${track.id}.m3u8`)));
     subtitles.push(track);
   }
-  const preparedAudio = audio.map(track => ({ ...track, sourceCodec: track.codec, codec: 'aac', channels: track.copy ? track.channels : 2, converted: !track.copy }));
+  const preparedAudio = audio.map(track => ({ ...track, sourceCodec: track.codec, codec: 'aac', channels: track.copy ? track.channels : 2,
+    sampleRate: track.copy ? track.sampleRate : 48000, channelLayout: track.copy ? track.channelLayout : 'stereo', converted: !track.copy }));
   await writeMaster(directory, preparedAudio, subtitles, renditions);
   // Surface long GOPs: remuxing cannot create extra keyframes to shorten them.
   const playlist = await readFile(path.join(directory, 'stream_0.m3u8'), 'utf8');
