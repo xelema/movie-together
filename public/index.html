@@ -23,12 +23,12 @@
     <section id="watch" hidden>
       <div class="heading"><h1 id="movie-title"></h1><button id="leave" data-fr="Quitter" data-ko="나가기"></button></div>
       <aside class="room-presence"><h2><span data-fr="Avec vous" data-ko="함께 보는 사람"></span> <span id="member-count"></span></h2><ul id="participants"></ul></aside>
-      <div id="screen"><div class="video-stage"><video id="video" playsinline preload="auto" disablepictureinpicture></video><div id="buffering-overlay" hidden><span class="spinner" aria-hidden="true"></span><span id="buffering-label"></span></div></div>
+      <div id="screen" tabindex="0" aria-label="Lecteur vidéo / 동영상 플레이어"><div class="video-stage"><video id="video" playsinline preload="auto" disablepictureinpicture disableremoteplayback></video><div id="buffering-overlay" hidden><div class="playback-message"><span id="playback-spinner" class="spinner" aria-hidden="true"></span><span id="buffering-label" role="status" aria-live="polite"></span><button id="allow-sound" type="button" data-fr="Autoriser le son" data-ko="소리 허용" hidden></button></div></div></div>
         <div id="player-settings" class="track-controls" role="region" hidden><div class="heading"><strong data-fr="Réglages" data-ko="설정"></strong><button id="close-settings" type="button" aria-label="Fermer / 닫기">×</button></div>
           <label><span data-fr="Langue du film" data-ko="음성 언어"></span><select id="audio"></select></label><label><span data-fr="Sous-titres" data-ko="자막"></span><select id="subtitles"></select></label>
         </div>
       </div>
-      <p id="playback-status" role="status"></p><button id="allow-sound" type="button" data-fr="Autoriser le son" data-ko="소리 허용" hidden></button>
+      <p id="playback-status" role="status"></p>
       <form id="choose-film" hidden><label><span data-fr="Changer de film" data-ko="영화 변경"></span><select id="room-movie"></select></label><button data-fr="Choisir" data-ko="선택"></button></form>
     </section>
     <dialog id="name-dialog"><form method="dialog"><h2 data-fr="Votre pseudo" data-ko="닉네임"></h2><input id="room-name" required maxlength="40" autocomplete="nickname" aria-label="Pseudo / 닉네임"><button data-fr="Rejoindre" data-ko="입장"></button></form></dialog>

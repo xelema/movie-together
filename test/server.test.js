@@ -18,7 +18,7 @@ test('accepts supported video without resolution restrictions and converts audio
   assert.equal(inspect({ ...video, codec_name: 'unknown' }, audio), false);
 });
 
-test('authenticated upload, real lossless packaging, private rooms and access control', { timeout: 60_000 }, async t => {
+test('authenticated upload, original video and audio, private rooms and access control', { timeout: 60_000 }, async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
   const origin = 'http://localhost:3000';
   const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin });
@@ -38,7 +38,7 @@ test('authenticated upload, real lossless packaging, private rooms and access co
   assert.equal(login.status, 200);
   const cookie = login.headers.get('set-cookie').split(';')[0];
   const file = path.join(dataDir, 'fixture.mp4');
-  // Only this synthetic test pattern is encoded; movie import always uses stream copy.
+  // Use a small synthetic source for a real preparation and access-control check.
   await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=25',
     '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000',
     '-t', '20', '-map', '0:v', '-map', '1:a', '-map', '2:a', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '50',
@@ -75,10 +75,15 @@ test('authenticated upload, real lossless packaging, private rooms and access co
   const range = await request(`/media/${movie.id}/init_0.mp4`, { cookie, headers: { Range: 'bytes=0-31' } });
   assert.equal(range.status, 206);
   assert.equal((await range.arrayBuffer()).byteLength, 32);
-  const hashStream = (input, stream) => run(process.env.FFMPEG_PATH || 'ffmpeg', ['-v', 'error', '-i', input, '-map', stream, '-c', 'copy', '-f', 'hash', '-hash', 'sha256', '-']);
-  const directory = path.join(instance.store.directory(movie.id), prepared.generation);
-  assert.equal(await hashStream(path.join(directory, 'stream_0.m3u8'), '0:v:0'), await hashStream(file, '0:v:0'));
-  assert.equal(await hashStream(path.join(directory, 'stream_1.m3u8'), '0:a:0'), await hashStream(file, '0:a:0'));
+  assert.deepEqual(await readFile(path.join(instance.store.directory(movie.id), 'source')), bytes);
+  assert.equal(prepared.renditions.length, 1);
+  assert.equal(prepared.renditions[0].codec, 'h264');
+  const hashStream = (input, stream) => run(process.env.FFMPEG_PATH || 'ffmpeg', [
+    '-v', 'error', '-i', input, '-map', stream, '-c', 'copy', '-f', 'hash', '-hash', 'sha256', '-']);
+  for (const [index, stream] of ['0:v:0', '0:a:0', '0:a:1'].entries()) {
+    assert.equal(await hashStream(file, stream), await hashStream(path.join(instance.store.directory(movie.id), prepared.generation, `stream_${index}.m3u8`), '0:0'));
+  }
+  assert.ok(prepared.audio.every(track => !track.converted));
   const subtitle = await request(`/api/movies/${movie.id}/subtitles?label=English&language=en`, { cookie, method: 'POST',
     headers: { 'Content-Type': 'text/plain' }, body: Buffer.from('1\n00:00:01,000 --> 00:00:03,000\nA subtitle.\n') });
   assert.equal(subtitle.status, 200);
