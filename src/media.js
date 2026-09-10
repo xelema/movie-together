@@ -30,7 +30,9 @@ export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, in
 export function inspectProbe(probe) {
   const streams = probe.streams ?? [];
   const video = streams.find(stream => stream.codec_type === 'video' && !stream.disposition?.attached_pic);
-  const sideData = video?.side_data_list ?? [];
+  // HEVC carries mastering and light level as SEI: they only show up on a decoded frame.
+  const sideData = [...(video?.side_data_list ?? []),
+    ...(probe.frames?.find(frame => frame.media_type === 'video')?.side_data_list ?? [])];
   const dovi = sideData.find(data => data.side_data_type === 'DOVI configuration record');
   const mastering = sideData.find(data => data.side_data_type === 'Mastering display metadata');
   const light = sideData.find(data => data.side_data_type === 'Content light level metadata');
@@ -71,7 +73,8 @@ export function inspectProbe(probe) {
 
 export async function probeFile(file) {
   const probe = JSON.parse(await run(process.env.FFPROBE_PATH || 'ffprobe', [
-    '-v', 'error', '-protocol_whitelist', 'file,pipe', '-show_streams', '-show_format', '-of', 'json', file,
+    '-v', 'error', '-protocol_whitelist', 'file,pipe', '-show_streams', '-show_format',
+    '-show_frames', '-read_intervals', '%+#1', '-of', 'json', file,
   ], { timeout: 120_000 }));
   return inspectProbe(probe);
 }
@@ -180,9 +183,10 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   const embeddedSubs = select(movie.probe.subtitles, subtitleIndices, 'subtitles');
   if (movie.probe.audio.length && !audio.length) throw new Error('Choisir au moins une piste audio.');
   const video = movie.probe.video;
+  const transport = transportMetadata(video);
   const renditions = [{ id: 'original', manifest: 'master_original.m3u8', streamIndex: 0,
     codec: video.codec, width: video.width, height: video.height,
-    videoRange: video.colorTransfer === 'smpte2084' ? 'PQ' : video.colorTransfer === 'arib-std-b67' ? 'HLG' : undefined }];
+    videoRange: transport.videoRange, color: transport.color }];
   const disk = await statfs(store.root);
   const estimated = (movie.originalBytes ?? (await stat(source)).size) + movie.probe.duration * audio.length * 256_000 / 8;
   if (disk.bavail * disk.bsize < estimated * 1.15 + 256 * 1024 ** 2) throw new Error('Espace disque insuffisant pour les versions préparées.');
@@ -195,8 +199,7 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   for (const track of audio.filter(track => track.input > 0)) args.push('-protocol_whitelist', 'file,pipe', '-i', path.join(store.directory(movie.id), track.filename));
   args.push('-map', `0:${video.index}`);
   for (const track of audio) args.push('-map', `${track.input}:${track.index}`);
-  args.push('-c', 'copy');
-  if (video.codec === 'hevc') args.push('-tag:v:0', 'hvc1');
+  args.push('-c', 'copy', ...transport.args);
   for (const [index, track] of audio.entries()) {
     if (!track.copy) {
       const filter = 'aresample=48000:ochl=stereo:rematrix_maxval=1' + (track.input > 0 ? `,apad,atrim=duration=${movie.probe.duration}` : '');
@@ -205,18 +208,14 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
     }
   }
   args.push('-f', 'hls', '-hls_time', '4', '-hls_playlist_type', 'vod',
-    '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init_%v.mp4',
+    // FFmpeg only expands %v when the stream map holds more than one variant.
+    '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', audio.length ? 'init_%v.mp4' : 'init_0.mp4',
     '-hls_segment_filename', path.join(directory, 'segment_%v_%06d.m4s'),
     '-master_pl_name', 'base.m3u8', '-var_stream_map',
     [...renditions.map((track, index) => `v:${index}${audio.length ? ',agroup:audio' : ''}`), ...audio.map((track, index) => `a:${index},agroup:audio,language:${language(track.language)},default:${index === 0 ? 'yes' : 'no'}`)].join(' '),
     path.join(directory, 'stream_%v.m3u8'));
   try {
   await run(process.env.FFMPEG_PATH || 'ffmpeg', args, { cwd: directory, onProgress: seconds => options.onProgress?.({ stage: 'packaging', percent: Math.min(95, Math.round(seconds / movie.probe.duration * 95)) }) });
-  if (video.colorTransfer === 'smpte2084') for (const file of await readdir(directory)) {
-    if (/^init_\d+\.mp4$/.test(file)) await writeToneMapMetadata(path.join(directory, file));
-    // Chromium ignores the container boxes for HEVC and reads the segments instead.
-    else if (video.codec === 'hevc' && file.startsWith(`segment_${renditions[0].streamIndex}_`)) await rewriteToneMapSei(path.join(directory, file));
-  }
   for (const rendition of renditions) {
     const playlist = path.join(directory, `stream_${rendition.streamIndex}.m3u8`);
     const probe = JSON.parse(await run(process.env.FFPROBE_PATH || 'ffprobe', ['-v', 'error', '-i', playlist,
