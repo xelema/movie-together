@@ -1,4 +1,8 @@
 const korean = {
+  'Format couleur non pris en charge.': '지원하지 않는 색상 형식입니다.',
+  'Le rendu des couleurs nécessite l’accélération graphique.': '색상 렌더링에 하드웨어 가속이 필요합니다.',
+  'Le rendu des couleurs a été interrompu. Rechargez la page.': '색상 렌더링이 중단되었습니다. 페이지를 새로고침하세요.',
+  'Définition vidéo non prise en charge par le rendu des couleurs.': '이 기기의 색상 렌더링에서 지원하지 않는 동영상 해상도입니다.',
   'Ce code est déjà utilisé.': '이미 사용 중인 코드입니다.',
   'Code : 4 à 32 lettres, chiffres ou tirets.': '영문, 숫자, 하이픈으로 4~32자를 입력하세요.',
   'Mot de passe incorrect.': '비밀번호가 올바르지 않습니다.',

@@ -9,17 +9,18 @@ Ils vérifient les invitations, les droits admin/invité, les fichiers audio et
 sous-titres externes, les pseudos, la langue persistante, le départ commun,
 la pause, le déplacement, le plein écran, l'autorisation du son dans l'overlay
 et la coupure réseau. Les tests FFmpeg comparent les empreintes des flux vidéo
-et AAC avant/après préparation, les métadonnées HDR10/HLG, les niveaux SDR
+et AAC avant/après préparation (hors métadonnées vidéo de transport), les caractéristiques HDR10/HLG, les niveaux SDR
 pleine plage, le mixage des voix centrales et les silences. Les tests navigateur
 vérifient l'absence de curseurs d'image et de filtres sur la vidéo ou ses ancêtres,
 y compris lorsque le menu des pistes est ouvert.
 
-Ces tests de lecture utilisent une source SDR. Les contrôles de métadonnées et
-d'empreintes HDR ne prouvent pas que deux navigateurs affichent les mêmes couleurs.
-Un diagnostic séparé sur un extrait HEVC/PQ du film local a permis de le lire dans
-Chrome 152 et Firefox 155 avec fenêtre sous Windows ; le Firefox automatisé sans
-fenêtre ne décodait pas cet extrait. Le rendu sombre de Chrome est observé,
-mais l'identité perceptuelle entre navigateurs n'est pas résolue.
+Les tests de séance utilisent une source SDR et vérifient également le canvas,
+les sous-titres visibles au-dessus de l'image et la pause sur perte du contexte GPU.
+`npm run test:colors` compare séparément les pixels HDR10, HLG, SDR BT.709 et SDR
+BT.601 dans Chrome et Firefox. Les captures et `report.json` se trouvent dans
+`test-results/colors`. Les mires doivent produire une image non noire ; l'écart
+moyen doit rester inférieur à 1,5 niveau sur 255 et le percentile 99 à 6 niveaux.
+Ce contrôle numérique complète les empreintes des images source.
 
 Les captures couvrent téléphone (390 px), tablette (820 px) et bureau (1440 px).
 Ces dimensions ne remplacent pas les essais sur de vrais appareils.
