@@ -4,7 +4,7 @@ import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
-import { createApplication } from '../src/app.js';
+import { createApplication, cleanTitle } from '../src/app.js';
 import { run, inspectProbe } from '../src/media.js';
 
 test('accepts supported video without resolution restrictions and converts audio when needed', () => {
@@ -16,6 +16,15 @@ test('accepts supported video without resolution restrictions and converts audio
   assert.equal(inspect(video, { ...audio, codec_name: 'dts' }), true);
   assert.equal(inspect({ ...video, pix_fmt: 'yuv420p10le' }, audio), true);
   assert.equal(inspect({ ...video, codec_name: 'unknown' }, audio), false);
+});
+
+test('strips release tags from uploaded file names without eating real titles', () => {
+  assert.equal(cleanTitle('The Social Network (2010) MULTi VFF 2160p 10bit 4KLight DOLBY VISION BluRay AC3 5.1 x265-QTZ.mkv'), 'The Social Network (2010)');
+  assert.equal(cleanTitle('Backrooms.2026.MULTI.VFQ.2160p.WEB.DV.HDR10PLUS.EAC3.5.1.H265-SUPPLY.mkv'), 'Backrooms 2026');
+  assert.equal(cleanTitle('Avatar.de.Feu.et.de.Cendres.2025.MULTI.VF2.1080p.WEB.EAC3.7.1.H265-Slay3R.mkv'), 'Avatar de Feu et de Cendres 2025');
+  assert.equal(cleanTitle('The French Connection 1971 1080p BluRay x264.mkv'), 'The French Connection 1971');
+  assert.equal(cleanTitle('Les Quatre Cents Coups.mp4'), 'Les Quatre Cents Coups');
+  assert.equal(cleanTitle('1080p.mkv'), '1080p');
 });
 
 test('authenticated upload, original video and audio, private rooms and access control', { timeout: 60_000 }, async t => {
