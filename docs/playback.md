@@ -18,10 +18,10 @@ ne corrige donc pas toute la chaîne.
 
 ## Rendu commun
 
-1. FFmpeg copie les paquets et uniformise leurs indications de transport en
-   BT.709/sRGB. La plage complète ou limitée reste celle de la source. Les messages
-   de mastering HDR et RPU Dolby Vision sont retirés du transport HEVC compatible
-   pour éviter une seconde interprétation HDR.
+1. FFmpeg copie les paquets sans les modifier et écrit BT.709/sRGB dans la boîte
+   `colr` de la piste. Le flux codé n'est pas touché : sa VUI décrit toujours la
+   source. Les navigateurs testés lisent la boîte du conteneur, qui prime sur la
+   VUI d'après ISO/IEC 14496-12. La plage complète ou limitée reste celle de la source.
 2. `rendition.color` conserve les caractéristiques couleur originales. Ce
    transport doit être lu avec le lecteur de l'application : ce n'est pas une
    conversion SDR exportable.
@@ -41,8 +41,20 @@ WebCodecs ni nouvelle dépendance. `requestVideoFrameCallback` cadence le rendu.
 Une défaillance WebGL interrompt la lecture et affiche une erreur au lieu de
 montrer silencieusement le transport avec de mauvaises couleurs.
 
-Références : [bitstream filters FFmpeg](https://ffmpeg.org/ffmpeg-bitstream-filters.html)
-et [paramètres d'import WebGL](https://registry.khronos.org/webgl/specs/latest/1.0/#PIXEL_STORAGE_PARAMETERS).
+Aucun filtre de bitstream n'est utilisé. Sur un fichier HEVC Main 10 Dolby Vision
+profil 8 réel, tout filtre modifiant les paquets casse le décodage : `hevc_metadata`,
+mais aussi `filter_units` qui ne fait que retirer des unités NAL sans importance pour
+le décodeur. Le flux sort alors avec `alignment_bit_equal_to_one=0` puis
+`Error constructing the frame RPS`, ce qui donne une image verte ou pas d'image du
+tout. Une passe CBS sans modification est propre, l'écriture ne l'est pas. La
+préparation décode donc les premières secondes de chaque version avant de la servir
+et refuse une version illisible.
+
+Comme le bitstream n'est plus touché, les messages SEI de mastering HDR et le RPU
+Dolby Vision restent présents. Les mesures montrent qu'ils ne changent pas le rendu :
+le chemin WebGL n'utilise pas ces métadonnées.
+
+Référence : [paramètres d'import WebGL](https://registry.khronos.org/webgl/specs/latest/1.0/#PIXEL_STORAGE_PARAMETERS).
 WebGL utilise ici le décodeur de l'élément vidéo sans dépendre de la disponibilité
 de `VideoDecoder` pour HEVC.
 
@@ -58,20 +70,16 @@ Firefox fourni par Playwright (Chrome 152, Firefox 155) :
 
 | Mire | Écart moyen | p99 | Maximum |
 | --- | --- | --- | --- |
-| HDR10 (PQ, BT.2020) | 0,000 | 0 | 0 |
-| HLG (BT.2020) | 0,000 | 0 | 0 |
+| HDR10 (PQ, BT.2020) | 0,190 | 1 | 1 |
+| HLG (BT.2020) | 0,190 | 1 | 1 |
 | SDR BT.709 | 0,104 | 1 | 5 |
-| SDR BT.601 | 0,103 | 1 | 5 |
+| SDR BT.601 | 0,225 | 2 | 5 |
 
-Les valeurs sont en niveaux sur 255 par canal. Les deux mires HDR sont identiques
-au pixel près. L'écart résiduel en SDR 8 bits vient de l'arrondi YUV vers RGB des
-décodeurs, avant le shader. Ces mesures concernent cette machine et ce chemin de
-décodage.
-
-L'enregistrement de paramètres HEVC (`hvcC`) peut encore contenir les messages SEI
-de la source : FFmpeg ne les retire que des paquets, pas de l'en-tête de piste. Le
-flux codé, lui, n'en contient plus, et la mesure ci-dessus montre que ce reliquat
-ne change pas le rendu.
+Les valeurs sont en niveaux sur 255 par canal. L'écart résiduel vient de l'arrondi
+YUV vers RGB des décodeurs, avant le shader. Sur un extrait réel du film en HEVC
+4K HDR10 Dolby Vision profil 8, l'écart moyen mesuré au même horodatage est de
+0,428 sur 255 pour un maximum de 3. Ces mesures concernent cette machine et ce
+chemin de décodage.
 
 Les images compressées conservent leur profondeur. L'import de texture utilisé
 ici passe toutefois par RGBA 8 bits : il ne garantit pas un intermédiaire 10 bits

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -9,6 +9,14 @@ import { run, probeFile, prepareMovie, inspectProbe } from '../src/media.js';
 
 // Retagging rewrites the sequence header, so compare decoded samples: no picture may change.
 const decodedVideo = input => run(process.env.FFMPEG_PATH || 'ffmpeg', ['-v', 'error', '-i', input, '-map', '0:v:0', '-f', 'framemd5', '-']);
+// Browsers read the colour box of the track, not the sequence header, so that is what preparation sets.
+const colourBox = async directory => {
+  const bytes = await readFile(path.join(directory, 'init_0.mp4'));
+  const at = bytes.indexOf('colrnclx') + 8;
+  assert.ok(at > 8, 'aucune boîte colr nclx');
+  return { primaries: bytes.readUInt16BE(at), transfer: bytes.readUInt16BE(at + 2),
+    matrix: bytes.readUInt16BE(at + 4), fullRange: !!(bytes[at + 6] & 0x80) };
+};
 
 test('copies 4K video exactly and prepares external audio and subtitles on the same timeline', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-media-'));
@@ -35,6 +43,7 @@ test('copies 4K video exactly and prepares external audio and subtitles on the s
   assert.equal(audio.streams[0].channels, 2); assert.equal(audio.streams[0].sample_rate, '48000');
   assert.match(await readFile(path.join(prepared, result.subtitles[0].filename), 'utf8'), /Bonjour/);
   assert.match(await readFile(path.join(prepared, 'master.m3u8'), 'utf8'), /VIDEO-RANGE=SDR/);
+  assert.deepEqual(await colourBox(prepared), { primaries: 1, transfer: 13, matrix: 1, fullRange: false });
   assert.match(await readFile(path.join(prepared, 'master.m3u8'), 'utf8'), /CHANNELS="2"/);
   assert.ok(result.maxSegmentSeconds <= 4.05);
 });
@@ -73,9 +82,11 @@ test('serves PQ and HLG as sRGB transport while keeping the source colour metada
     assert.equal(result.renditions.length, 1);
     assert.equal(await decodedVideo(source), await decodedVideo(prepared));
     const video = (await probeFile(prepared)).video;
+    // The coded stream is untouched: its sequence header still describes the source.
+    assert.equal(video.colorTransfer, transfer); assert.equal(video.pixelFormat, 'yuv420p10le');
     // The transport is what every browser decodes the same way; the shader restores the source.
-    assert.equal(video.colorTransfer, 'iec61966-2-1'); assert.equal(video.colorPrimaries, 'bt709');
-    assert.equal(video.colorSpace, 'bt709'); assert.equal(video.pixelFormat, 'yuv420p10le');
+    assert.deepEqual(await colourBox(path.dirname(prepared)),
+      { primaries: 1, transfer: 13, matrix: 1, fullRange: false });
     assert.deepEqual(result.renditions[0].color, { version: 1, transfer, primaries: 'bt2020',
       matrix: 'bt2020nc', fullRange: false, bitDepth: 10, peakNits: 1000 });
     const master = await readFile(path.join(store.directory(movie.id), result.generation, 'master.m3u8'), 'utf8');
@@ -83,7 +94,7 @@ test('serves PQ and HLG as sRGB transport while keeping the source colour metada
   }
 });
 
-test('drops HDR mastering messages from the transport and reports the source peak', async t => {
+test('tags the transport in the container only and reports the source peak', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-tonemap-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -100,17 +111,12 @@ test('drops HDR mastering messages from the transport and reports the source pea
   assert.equal(await decodedVideo(source), await decodedVideo(prepared));
   assert.equal(result.renditions[0].color.peakNits, 1033);
   assert.equal(result.renditions[0].color.transfer, 'smpte2084');
-  // No SEI survives in the coded stream: mastering display, light level and Dolby Vision RPU are gone.
-  const directory = path.join(store.directory(movie.id), result.generation);
-  const segment = (await readdir(directory)).find(file => file.startsWith('segment_0_'));
-  const bytes = await readFile(path.join(directory, segment));
-  const types = new Set();
-  for (let offset = bytes.indexOf('mdat') + 4; offset + 4 <= bytes.length;) {
-    const size = bytes.readUInt32BE(offset);
-    if (!size || offset + 4 + size > bytes.length) break;
-    types.add((bytes[offset + 4] >> 1) & 0x3f); offset += 4 + size;
-  }
-  assert.ok(types.size); for (const type of [39, 40, 62, 63]) assert.ok(!types.has(type), `NAL ${type} left in the segment`);
+  assert.deepEqual(await colourBox(path.dirname(prepared)),
+    { primaries: 1, transfer: 13, matrix: 1, fullRange: false });
+  // The coded stream is byte-identical: no bitstream filter runs, so no source can be corrupted.
+  const compressed = input => run(process.env.FFMPEG_PATH || 'ffmpeg',
+    ['-v', 'error', '-i', input, '-map', '0:v:0', '-c', 'copy', '-f', 'hash', '-hash', 'sha256', '-']);
+  assert.equal(await compressed(source), await compressed(prepared));
 });
 
 test('downmixes center-channel dialogue to both speakers in one pass and preserves silence', async t => {
