@@ -16,6 +16,21 @@ const ID = /^[a-f0-9-]{36}$/;
 const TTL = 12 * 3600_000;
 const CHUNK = 8 * 1024 * 1024;
 const fail = (status, message) => Object.assign(new Error(message), { status });
+// Release names carry encoding jargon that has no place in the interface.
+const FORMAT_TAG = /^(2160p|1440p|1080[pi]|720p|576p|480p|4k|4klight|uhd|hdr10?(\+|plus)?|hlg|dovi|10bits?|8bits?|bluray|blu|brrip|bdrip|bdremux|remux|webrip|webdl|web|hdtv|dvdrip|dvdscr|x26[45]|h26[45]|hevc|avc|av1|vp9|xvid|divx|aac\d?|ac3|eac3|ddp?\d?|dts|dtshd|truehd|atmos|flac|opus|mp3)$/i;
+const EDITION_TAG = /^(multi\d?|vf[fqi2]?|vo|vost|vostfr|subfrench|french|truefrench|english|repack|proper|extended|unrated|uncut|imax|limited|integrale|amzn|nf|dsnp|hmax|atvp|itunes|dv|sdr)$/i;
+const tag = word => word.replace(/^[[(<]+/, '').replace(/[\])>]+$/, '').split('-')[0];
+export function cleanTitle(filename) {
+  const words = filename.replace(/\.[^.]+$/, '').replace(/[._]+/g, ' ').split(/\s+/).filter(Boolean);
+  const cut = words.findIndex(word => FORMAT_TAG.test(tag(word)));
+  const kept = cut > 0 ? words.slice(0, cut) : [...words];
+  while (kept.length > 1 && EDITION_TAG.test(tag(kept.at(-1)))) kept.pop();
+  return kept.join(' ').replace(/[\s\-–—[({]+$/, '').trim().slice(0, 150) || filename.slice(0, 150);
+}
+const trackNames = source => Object.fromEntries(Object.entries(source ?? {})
+  .filter(([index]) => /^\d{1,3}$/.test(index))
+  .map(([index, value]) => [index, String(value ?? '').trim().slice(0, 60)])
+  .filter(([, value]) => value).slice(0, 48));
 const publicMovie = movie => ({ id: movie.id, title: movie.title, status: movie.status,
   duration: movie.duration, audio: movie.audio, subtitles: movie.subtitles,
   maxSegmentSeconds: movie.maxSegmentSeconds, bitrate: movie.probe?.bitrate, renditions: movie.renditions, generation: movie.generation });
@@ -72,7 +87,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     sessions.set(token, session);
     res.cookie('sid', token, { httpOnly: true, sameSite: 'strict', secure, maxAge: TTL, path: '/' });
   };
-  const roomState = room => ({ type: 'state', roomId: room.id, serverNow: performance.now(),
+  const roomState = room => ({ type: 'state', roomId: room.id, code: room.code, serverNow: performance.now(),
     state: room.engine.snapshot(), movie: room.movieId ? publicMovie(getMovie(room.movieId)) : null,
     members: [...room.engine.members.entries()].map(([id, member]) => ({ id,
       name: [...room.clients].find(client => client.memberId === id)?.displayName ?? 'Invité / 게스트',
@@ -225,7 +240,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         store.save(movie); await rm(uploadPath(id), { recursive: true, force: true });
         res.json(movie); return;
       }
-      const movie = { id, title: info.name.replace(/\.[^.]+$/, ''), status: 'probing', originalBytes: info.size };
+      const movie = { id, title: cleanTitle(info.name), status: 'probing', originalBytes: info.size };
       store.save(movie);
       await rename(source, path.join(store.directory(id), 'source'));
       await rm(uploadPath(id), { recursive: true, force: true });
@@ -250,6 +265,10 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.post('/api/movies/:id/prepare', admin, async (req, res) => {
     const movie = idleMovie(req.params.id);
     if (processing) throw fail(409, 'Un import est déjà en cours.');
+    if (req.body.names !== undefined) {
+      if (typeof req.body.names !== 'object' || req.body.names === null) throw fail(400, 'Noms de pistes invalides.');
+      movie.trackNames = { audio: trackNames(req.body.names.audio), subtitles: trackNames(req.body.names.subtitles) };
+    }
     processing = true; movie.status = 'processing'; movie.error = null; store.save(movie);
     res.status(202).json({ ok: true });
     try {

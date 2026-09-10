@@ -32,6 +32,9 @@ $('close-settings').addEventListener('click', event => showSettings(false, event
 document.addEventListener('pointerdown', event => { if (!$('player-settings').contains(event.target) && !settingsButton.contains(event.target)) showSettings(false); });
 $('screen').addEventListener('keydown', event => { if (event.key === 'Escape' && !$('player-settings').hidden) { event.preventDefault(); event.stopPropagation(); showSettings(false, true); } });
 playbackUI.on('enterfullscreen exitfullscreen', () => showSettings(false));
+// The page chrome follows the player controls: visible in pause and on hover, gone during playback.
+playbackUI.on('controlsshown', () => { $('watch').dataset.chrome = 'true'; });
+playbackUI.on('controlshidden', () => { $('watch').dataset.chrome = 'false'; });
 // Route transport shortcuts through the shared clock, not Plyr's local playback.
 $('screen').addEventListener('keydown', event => {
   if (!player || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
@@ -76,7 +79,7 @@ function translate() {
   $('room-name').setAttribute('aria-label', t('Votre pseudo', '닉네임'));
   $('screen').setAttribute('aria-label', t('Lecteur vidéo', '동영상 플레이어'));
   if (player) player.tracks();
-  updatePlayback(player);
+  updatePlayback(player); updateFilmMeta();
 }
 
 function updatePlayback(controller) {
@@ -99,7 +102,8 @@ function updatePlayback(controller) {
   $('allow-sound').hidden = !needsSound || !!controller.failure;
   $('playback-status').textContent = overlay ? '' : phase === 'paused' ? t('En pause', '일시정지') : '';
   const playing = controller.activated && ['playing', 'buffering'].includes(phase);
-  $('screen').dataset.playing = String(playing);
+  $('watch').dataset.playing = String(playing);
+  if (!playing) $('watch').dataset.chrome = 'true';
   for (const control of playbackUI.elements.buttons.play ?? []) {
     const text = playing ? t('Pause', '일시정지') : t('Lecture', '재생');
     control.setAttribute('aria-label', text);
@@ -107,6 +111,13 @@ function updatePlayback(controller) {
   }
 }
 function notice(message = '') { $('notice').textContent = label(message); }
+// Sections are shown by clearing [hidden]; replay the entrance animation whenever that happens.
+new MutationObserver(records => {
+  for (const { target } of records) {
+    if (target.hidden || target.tagName !== 'SECTION') continue;
+    target.classList.remove('enter'); void target.offsetWidth; target.classList.add('enter');
+  }
+}).observe(document.querySelector('main'), { attributes: true, subtree: true, attributeFilter: ['hidden'] });
 async function api(url, { body, method = 'GET', ...options } = {}) {
   const response = await fetch(url, { method, ...options, headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...options.headers }, body: body === undefined ? undefined : JSON.stringify(body) });
   const result = await response.json();
@@ -123,8 +134,30 @@ function selectOptions(select, choices) {
   if (choices.some(([value]) => String(value) === previous)) select.value = previous;
 }
 function trackName(track) {
-  const names = { fr: t('Français', '프랑스어'), fra: t('Français', '프랑스어'), fre: t('Français', '프랑스어'), en: t('Anglais', '영어'), eng: t('Anglais', '영어'), ko: t('Coréen', '한국어'), kor: t('Coréen', '한국어') };
+  const names = { fr: t('Français', '프랑스어'), fra: t('Français', '프랑스어'), fre: t('Français', '프랑스어'),
+    en: t('Anglais', '영어'), eng: t('Anglais', '영어'), ko: t('Coréen', '한국어'), kor: t('Coréen', '한국어'),
+    es: t('Espagnol', '스페인어'), spa: t('Espagnol', '스페인어'), de: t('Allemand', '독일어'), deu: t('Allemand', '독일어'), ger: t('Allemand', '독일어'),
+    it: t('Italien', '이탈리아어'), ita: t('Italien', '이탈리아어'), pt: t('Portugais', '포르투갈어'), por: t('Portugais', '포르투갈어'),
+    ja: t('Japonais', '일본어'), jpn: t('Japonais', '일본어'), zh: t('Chinois', '중국어'), zho: t('Chinois', '중국어'), chi: t('Chinois', '중국어'),
+    nl: t('Néerlandais', '네덜란드어'), nld: t('Néerlandais', '네덜란드어'), dut: t('Néerlandais', '네덜란드어'),
+    ru: t('Russe', '러시아어'), rus: t('Russe', '러시아어'), ar: t('Arabe', '아랍어'), ara: t('Arabe', '아랍어'),
+    tr: t('Turc', '터키어'), tur: t('Turc', '터키어'), pl: t('Polonais', '폴란드어'), pol: t('Polonais', '폴란드어') };
   return names[track.label] || track.label;
+}
+function defaultTrackName(track, position, kind) {
+  const named = trackName({ label: track.language ?? 'und' });
+  if (named && named !== 'und') return named;
+  return kind === 'audio' ? t(`Piste ${position + 1}`, `트랙 ${position + 1}`) : t(`Sous-titres ${position + 1}`, `자막 ${position + 1}`);
+}
+function runtime(seconds) {
+  const total = Math.round(seconds / 60), hours = Math.floor(total / 60), minutes = total % 60;
+  return hours ? t(`${hours} h ${String(minutes).padStart(2, '0')}`, `${hours}시간 ${minutes}분`) : t(`${minutes} min`, `${minutes}분`);
+}
+function updateFilmMeta() {
+  const duration = roomMessage?.movie?.duration;
+  const audio = $('audio').selectedOptions[0]?.textContent;
+  const subtitles = $('subtitles').value === '-1' ? t('Sans sous-titres', '자막 없음') : $('subtitles').selectedOptions[0]?.textContent;
+  $('movie-meta').textContent = [duration ? runtime(duration) : '', audio, subtitles].filter(Boolean).join(' · ');
 }
 async function refresh() {
   session = await api('/api/session');
@@ -141,7 +174,7 @@ async function refresh() {
   $('rooms').replaceChildren(...rooms.map(room => {
     const card = el('div', undefined, 'card');
     card.append(el('p', `${movies.find(movie => movie.id === room.movieId)?.title ?? ''} · ${room.participants} ${t('personne(s)', '명')}`), el('code', room.code),
-      button(t('Ouvrir', '열기'), () => enterRoom(room.id)), button(t('Copier le lien', '링크 복사'), async () => { await navigator.clipboard.writeText(room.link); notice(t('Lien copié.', '링크를 복사했습니다.')); }),
+      button(t('Ouvrir', '열기'), () => enterRoom(room.id, undefined, { code: room.code, title: movies.find(movie => movie.id === room.movieId)?.title })), button(t('Copier le lien', '링크 복사'), async () => { await navigator.clipboard.writeText(room.link); notice(t('Lien copié.', '링크를 복사했습니다.')); }),
       button(t('Fermer la séance', '시청방 닫기'), async () => { await api(`/api/rooms/${room.id}`, { method: 'DELETE' }); await refresh(); }, 'danger'));
     return card;
   }));
@@ -160,19 +193,31 @@ function movieCard(movie) {
     $('create-code').value = '';
     const code = await askDialog('create-dialog', 'create-code'); if (!code) return;
     const room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code } });
-    notice(`${t('Invitation', '초대')}: ${room.link}`); await enterRoom(room.id);
+    notice(`${t('Invitation', '초대')}: ${room.link}`); await enterRoom(room.id, undefined, { code: room.code, title: movie.title });
   }));
   if (['processing', 'probing'].includes(movie.status)) return card;
   const details = el('details'); details.append(el('summary', t('Modifier le film', '영화 수정')));
   const title = el('input'); title.value = movie.title; title.maxLength = 150;
   details.append(field(t('Titre', '제목'), title), button(t('Enregistrer le titre', '제목 저장'), async () => { await api(`/api/movies/${movie.id}`, { method: 'PATCH', body: { title: title.value } }); await refresh(); }));
   const audio = [], subtitles = [];
-  for (const [tracks, selected, name] of [[movie.probe?.audio ?? [], audio, t('Langues du film', '음성 언어')], [movie.probe?.subtitles ?? [], subtitles, t('Sous-titres', '자막')]]) {
-    details.append(el('h3', name));
-    for (const track of tracks) {
+  for (const [tracks, selected, heading, kind] of [
+    [movie.probe?.audio ?? [], audio, t('Langues du film', '음성 언어'), 'audio'],
+    [movie.probe?.subtitles ?? [], subtitles, t('Sous-titres', '자막'), 'subtitles']]) {
+    if (!tracks.length) continue;
+    details.append(el('h3', heading), el('p', t('Ces noms sont ceux que verront les participants.', '참가자에게 표시되는 이름입니다.')));
+    for (const [position, track] of tracks.entries()) {
       const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.checked = track.compatible; checkbox.disabled = !track.compatible;
-      selected.push({ checkbox, index: track.index });
-      const row = el('label'); row.append(checkbox, document.createTextNode(` ${trackName(track)}${track.compatible ? '' : t(' (indisponible)', ' (사용 불가)')}`)); details.append(row);
+      checkbox.setAttribute('aria-label', t('Garder cette piste', '이 트랙 사용'));
+      const fallback = defaultTrackName(track, position, kind);
+      const field = el('input'); field.maxLength = 60; field.disabled = !track.compatible;
+      field.value = movie.trackNames?.[kind]?.[track.index] ?? fallback;
+      field.setAttribute('aria-label', `${heading} ${position + 1}`);
+      selected.push({ checkbox, index: track.index, field, fallback });
+      const row = el('div', undefined, 'track-row'); row.append(checkbox, field);
+      const origin = track.label && track.label !== track.language ? track.label : '';
+      if (!track.compatible) row.append(el('small', t('Indisponible', '사용 불가'), 'track-hint'));
+      else if (origin) row.append(el('small', `${t('Nom d’origine', '원본 이름')} : ${origin}`, 'track-hint'));
+      details.append(row);
     }
   }
   details.append(el('h3', t('Ajouter une langue ou des sous-titres', '음성 또는 자막 추가')));
@@ -186,7 +231,14 @@ function movieCard(movie) {
   for (const track of movie.externalTracks ?? []) details.append(el('p', `${t('Fichier ajouté', '추가된 파일')} : ${track.label}`));
   details.append(el('p', t('Après vos modifications, préparez le film pour pouvoir le regarder.', '변경 후 영화를 준비하면 시청할 수 있습니다.')));
   if (movie.probe?.compatible) details.append(button(t('Préparer le film', '영화 준비'), async () => {
-    await api(`/api/movies/${movie.id}/prepare`, { method: 'POST', body: { audio: audio.filter(item => item.checkbox.checked).map(item => item.index), subtitles: subtitles.filter(item => item.checkbox.checked).map(item => item.index) } }); await refresh();
+    const chosen = list => list.filter(item => item.checkbox.checked);
+    const naming = list => Object.fromEntries(chosen(list)
+      .filter(item => item.field.value.trim() && item.field.value.trim() !== item.fallback)
+      .map(item => [item.index, item.field.value.trim()]));
+    await api(`/api/movies/${movie.id}/prepare`, { method: 'POST', body: {
+      audio: chosen(audio).map(item => item.index), subtitles: chosen(subtitles).map(item => item.index),
+      names: { audio: naming(audio), subtitles: naming(subtitles) },
+    } }); await refresh();
   }));
   else details.append(button(t('Vérifier le fichier', '파일 확인'), async () => { await api(`/api/movies/${movie.id}/probe`, { method: 'POST', body: {} }); await refresh(); }));
   details.append(button(t('Supprimer le film', '영화 삭제'), async () => {
@@ -194,12 +246,15 @@ function movieCard(movie) {
   }, 'danger')); card.append(details); return card;
 }
 
-async function enterRoom(id, name) {
+async function enterRoom(id, name, context = {}) {
   if (!name) {
     $('room-name').value = sessionStorage.getItem('nickname') || '';
+    $('name-context').hidden = !context.code;
+    $('name-code').textContent = context.code ?? ''; $('name-movie').textContent = context.title ?? '';
     name = await askDialog('name-dialog', 'room-name');
     if (!name) return;
   }
+  $('room-code').textContent = context.code ?? '';
   sessionStorage.setItem('nickname', name); showSettings(false);
   await api(`/api/rooms/${id}`); session = await api('/api/session');
   player?.dispose(); activeRoom = id; roomMessage = null;
@@ -212,12 +267,21 @@ async function enterRoom(id, name) {
       selectOptions($('audio'), audio.length ? audio.map(track => [track.index, trackName(track)]) : [[-1, t('Sans son', '음성 없음')]]); $('audio').disabled = audio.length < 2;
       selectOptions($('subtitles'), [[-1, t('Sans sous-titres', '자막 없음')], ...subtitles.map(track => [track.index, trackName(track)])]); $('subtitles').disabled = !subtitles.length;
       if (player) { $('audio').value = String(audio.length ? player.audioChoice : -1); $('subtitles').value = String(player.subtitleChoice); }
+      updateFilmMeta();
     },
     onState: (message, controller) => {
       $('movie-title').textContent = message.movie?.title ?? ''; $('room-movie').value = message.movie?.id ?? '';
-      roomMessage = message; updatePlayback(controller);
-      $('member-count').textContent = `(${message.members.length})`;
-      $('participants').replaceChildren(...message.members.map(member => { const item = el('li'); item.dataset.ready = String(!member.waiting); item.append(el('strong', `${member.name}${member.id === controller.memberId ? t(' · vous', ' · 나') : ''}`), el('span', member.waiting ? t('Chargement…', '준비 중…') : t('Prêt', '준비 완료'))); return item; }));
+      if (message.code) $('room-code').textContent = message.code;
+      roomMessage = message; updatePlayback(controller); updateFilmMeta();
+      const ready = message.members.filter(member => !member.waiting).length, total = message.members.length;
+      $('member-count').textContent = total ? t(`${ready} personne${ready > 1 ? 's' : ''} prête${ready > 1 ? 's' : ''} sur ${total}`, `${total}명 중 ${ready}명 준비 완료`) : '';
+      $('participants').replaceChildren(...message.members.map(member => {
+        const item = el('li'); item.dataset.ready = String(!member.waiting);
+        item.append(el('span', ([...member.name.trim()][0] ?? '?').toUpperCase(), 'avatar'),
+          el('strong', `${member.name}${member.id === controller.memberId ? t(' · vous', ' · 나') : ''}`),
+          el('span', member.waiting ? t('Chargement…', '준비 중…') : t('Prêt', '준비 완료'), member.waiting ? undefined : 'visually-hidden'));
+        return item;
+      }));
     },
   });
   if (session.admin) { movies = await api('/api/movies'); selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title])); }
@@ -226,7 +290,8 @@ $('language').addEventListener('change', handle(async () => { sessionStorage.set
 $('login-form').addEventListener('submit', handle(async event => { await api('/api/login', { method: 'POST', body: { password: new FormData(event.target).get('password') } }); event.target.reset(); notice(); await refresh(); }));
 $('join-form').addEventListener('submit', handle(async event => {
   const data = new FormData(event.target);
-  const room = await api('/api/join', { method: 'POST', body: { code: data.get('code') } }); notice(); await enterRoom(room.id);
+  const room = await api('/api/join', { method: 'POST', body: { code: data.get('code') } }); notice();
+  await enterRoom(room.id, undefined, { code: String(data.get('code')).trim() });
 }));
 $('logout').addEventListener('click', handle(async () => { player?.dispose(); player = null; $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await api('/api/logout', { method: 'POST', body: {} }); await refresh(); }));
 $('refresh').addEventListener('click', handle(refresh));
@@ -287,7 +352,7 @@ async function upload(file, extra = {}) {
     }
     $('upload-status').textContent = label('Analyse du fichier…');
     await api(`/api/uploads/${info.id}/complete`, { method: 'POST', body: {} });
-    $('upload-status').textContent = t('Fichier ajouté. Préparez le film pour l’utiliser.', '파일이 추가되었습니다. 영화를 준비하면 사용할 수 있습니다.');
+    $('upload-status').textContent = t('Fichier ajouté. Préparez le film pour l’utiliser.', '파일이 추가되었습니다. 영화를 준비하면 사용할 수 있습니다.'); $('upload-progress').value = 0;
     await refresh();
   } finally { uploadBusy = false; $('upload-button').disabled = false; }
 }

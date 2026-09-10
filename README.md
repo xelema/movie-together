@@ -20,21 +20,28 @@ FFmpeg et FFmpeg Full installés avec Chocolatey sous Windows.
 
 ## Utilisation
 
-1. Dans l'administration, envoyer un film (20 Go maximum).
-2. Ouvrir « Modifier le film », choisir les langues et sous-titres intégrés.
+1. Dans l'administration, envoyer un film (20 Go maximum). Le titre proposé reprend
+   le nom du fichier sans les mentions d'encodage, et reste modifiable.
+2. Ouvrir « Modifier le film », choisir les langues et sous-titres intégrés, et
+   écrire le nom que chacun verra. Laissé tel quel, le nom suit la langue de la
+   personne qui regarde. Aucun terme technique n'est affiché aux participants.
 3. Ajouter éventuellement des fichiers audio externes (2 Go maximum) ou des
    sous-titres SRT/VTT (2 Mo maximum), puis cliquer sur « Préparer le film ».
 4. Attendre « Prêt à regarder », créer une séance et choisir un code ou utiliser
    « Aléatoire ». Partager le lien ou le code. Les codes expirent après 12 heures.
 5. L'invité saisit le code puis son pseudo. Il ne peut pas choisir un autre film.
 6. Un clic sur Lecture lance tout le monde lorsque chaque lecteur est prêt.
-   Si le navigateur bloque le son, cliquer une fois sur « Autoriser le son ».
+   Si le navigateur bloque le son, cliquer une fois sur « Activer le son ».
 
 Le drapeau en haut de la page permet de choisir français ou coréen. Ce choix
 reste dans la session de l'onglet, y compris après un rechargement. Le menu ⚙
 du lecteur contient le choix de la langue du film et des sous-titres.
 Aucun réglage d'image ni filtre CSS n'est appliqué à la vidéo : ces effets peuvent
 changer le traitement HDR du navigateur et dégrader les couleurs.
+
+L'interface utilise Instrument Sans et IBM Plex Mono, servies depuis `public/fonts`.
+Rien n'est chargé depuis un domaine externe : la politique de sécurité du contenu
+n'autorise que les ressources du serveur.
 
 Les pseudos sont librement choisis et ne constituent pas une identité vérifiée.
 Les codes personnalisés acceptent 4 à 32 lettres, chiffres ou tirets, sans

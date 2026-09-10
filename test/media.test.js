@@ -113,8 +113,13 @@ test('downmixes center-channel dialogue to both speakers in one pass and preserv
     '-f', 'lavfi', '-i', 'aevalsrc=0|0|0.02*sin(2*PI*440*t)|0|0|0:s=48000:c=5.1',
     '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', '12', '-map', '0:v', '-map', '1:a', '-map', '2:a',
     '-c:v', 'libx264', '-c:a', 'pcm_s16le', '-f', 'matroska', path.join(directory, 'source')]);
+  movie.trackNames = { audio: { 1: 'Version originale' } };
   const result = await prepareMovie(store, movie, [1, 2], []);
   const output = path.join(directory, result.generation);
+  const master = await readFile(path.join(output, 'master.m3u8'), 'utf8');
+  assert.match(master, /NAME="Version originale"/);
+  assert.equal(result.audio[0].label, 'Version originale');
+  assert.equal(result.audio[1].label, 'Piste 2');
   const measure = async (stream, filters) => (await run(ffmpeg, ['-hide_banner', '-nostats', '-i', path.join(output, `stream_${stream}.m3u8`),
     '-af', filters, '-f', 'null', '-'], { includeStderr: true })).stderr;
   const channels = [...(await measure(1, 'astats')).matchAll(/RMS level dB: ([-\d.]+)/g)].map(match => Number(match[1]));
