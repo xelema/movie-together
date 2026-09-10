@@ -82,19 +82,13 @@ export async function probeFile(file) {
 function quote(value) { return String(value).replace(/["\r\n\\]/g, '').slice(0, 100); }
 function language(value) { return /^[a-z]{2,3}(-[A-Za-z0-9]+)?$/.test(value) ? value : 'und'; }
 
+// Only the container colour box changes. Rewriting the bitstream is not an option: any FFmpeg
+// bitstream filter that touches the packets corrupts some real HEVC files. See docs/playback.md.
 export function transportMetadata(video) {
   const doviBase = { 1: 'smpte2084', 2: 'bt709', 4: 'arib-std-b67' }[video.dolbyVision?.compatibilityId];
-  const unsupportedDovi = video.dolbyVision && !doviBase;
-  const bitstreamFilter = unsupportedDovi ? 'hevc_mp4toannexb,extract_extradata=remove=1' : {
-    h264: 'h264_mp4toannexb,h264_metadata=colour_primaries=1:transfer_characteristics=13:matrix_coefficients=1,extract_extradata=remove=1',
-    hevc: 'hevc_mp4toannexb,hevc_metadata=colour_primaries=1:transfer_characteristics=13:matrix_coefficients=1,filter_units=remove_types=39|40|62|63,extract_extradata=remove=1',
-    av1: 'av1_metadata=color_primaries=1:transfer_characteristics=13:matrix_coefficients=1',
-    vp9: 'vp9_metadata=color_space=2',
-  }[video.codec];
-  if (!bitstreamFilter) throw new Error('Codec vidéo incompatible.');
-  const args = ['-bsf:v:0', bitstreamFilter];
-  if (video.codec === 'hevc') args.push('-tag:v:0', 'hvc1');
-  if (unsupportedDovi) return { args, color: undefined,
+  const args = video.codec === 'hevc' ? ['-tag:v:0', 'hvc1'] : [];
+  // Dolby Vision without a standard base layer is not decodable as HDR10, HLG or SDR: leave it native.
+  if (video.dolbyVision && !doviBase) return { args, color: undefined,
     videoRange: video.colorTransfer === 'smpte2084' ? 'PQ' : video.colorTransfer === 'arib-std-b67' ? 'HLG' : undefined };
   args.push('-color_primaries', 'bt709', '-color_trc', 'iec61966-2-1', '-colorspace', 'bt709');
   return { args, videoRange: 'SDR', color: { version: 1, transfer: video.colorTransfer || doviBase || 'bt709',
@@ -222,6 +216,10 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
       '-select_streams', 'v:0', '-show_streams', '-show_frames', '-read_intervals', '%+#32', '-of', 'json'], { timeout: 120_000 }));
     const frame = probe.frames?.find(frame => Number.isFinite(Number(frame.best_effort_timestamp_time)));
     if (!frame) throw new Error('Version préparée illisible.');
+    // A muxer accepts streams no decoder can read. Decode the opening seconds before serving them.
+    const { stderr } = await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-v', 'error', '-i', playlist,
+      '-map', '0:v:0', '-t', '2', '-f', 'null', '-'], { includeStderr: true, timeout: 300_000 });
+    if (stderr.trim()) throw new Error('Version préparée illisible.');
     rendition.timelineOffset = Number(frame.best_effort_timestamp_time);
     rendition.width = probe.streams[0].width; rendition.height = probe.streams[0].height;
   }
