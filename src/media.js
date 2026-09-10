@@ -292,18 +292,22 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   // Reprobe old uploads: compatibility must not depend on a previous application's filter.
   movie.probe = await probeFile(source);
   if (!movie.probe.compatible) throw new Error('Aucune vidéo exploitable ou durée invalide.');
-  const select = (tracks, indices) => {
+  // Names shown to viewers come from the administrator; a bare language code lets the page translate it.
+  const select = (tracks, indices, kind) => {
     if (!Array.isArray(indices) || indices.length > 24 || new Set(indices).size !== indices.length) throw new Error('Sélection invalide.');
-    return indices.map(index => {
+    return indices.map((index, position) => {
       const track = tracks.find(item => item.index === index && item.compatible);
       if (!track) throw new Error('Piste incompatible.');
-      return track;
+      const chosen = movie.trackNames?.[kind]?.[index];
+      const fallback = track.language && track.language !== 'und' ? track.language
+        : kind === 'audio' ? `Piste ${position + 1}` : `Sous-titres ${position + 1}`;
+      return { ...track, label: quote(chosen || fallback) };
     });
   };
   const external = movie.externalTracks ?? [];
-  const audio = [...select(movie.probe.audio, audioIndices).map(track => ({ ...track, input: 0 })),
+  const audio = [...select(movie.probe.audio, audioIndices, 'audio').map(track => ({ ...track, input: 0 })),
     ...external.filter(track => track.kind === 'audio').map((track, index) => ({ ...track, input: index + 1, copy: false }))];
-  const embeddedSubs = select(movie.probe.subtitles, subtitleIndices);
+  const embeddedSubs = select(movie.probe.subtitles, subtitleIndices, 'subtitles');
   if (movie.probe.audio.length && !audio.length) throw new Error('Choisir au moins une piste audio.');
   const video = movie.probe.video;
   const renditions = [{ id: 'original', manifest: 'master_original.m3u8', streamIndex: 0,
