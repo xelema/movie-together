@@ -53,10 +53,25 @@ en HLS, puis mesure les pixels dans Chrome et Firefox. Les captures et mesures
 sont écrites dans `test-results/colors`. Sous Windows, les navigateurs sont ouverts
 avec fenêtre : le Firefox sans fenêtre ne décode pas le HEVC testé.
 
-La première mesure locale sur une mire PQ a donné un écart nul entre Chrome et
-Firefox. Sur l'extrait local du film, après réduction à 512 pixels de large,
-l'écart moyen entre canaux est de 0,35 sur 255. Ces mesures concernent cette
-machine et ce chemin de décodage ; le test reproductible complète ce diagnostic.
+Mesures obtenues sur la machine Windows de développement, Chrome 141 et le
+Firefox fourni par Playwright (Chrome 152, Firefox 155) :
+
+| Mire | Écart moyen | p99 | Maximum |
+| --- | --- | --- | --- |
+| HDR10 (PQ, BT.2020) | 0,000 | 0 | 0 |
+| HLG (BT.2020) | 0,000 | 0 | 0 |
+| SDR BT.709 | 0,104 | 1 | 5 |
+| SDR BT.601 | 0,103 | 1 | 5 |
+
+Les valeurs sont en niveaux sur 255 par canal. Les deux mires HDR sont identiques
+au pixel près. L'écart résiduel en SDR 8 bits vient de l'arrondi YUV vers RGB des
+décodeurs, avant le shader. Ces mesures concernent cette machine et ce chemin de
+décodage.
+
+L'enregistrement de paramètres HEVC (`hvcC`) peut encore contenir les messages SEI
+de la source : FFmpeg ne les retire que des paquets, pas de l'en-tête de piste. Le
+flux codé, lui, n'en contient plus, et la mesure ci-dessus montre que ce reliquat
+ne change pas le rendu.
 
 Les images compressées conservent leur profondeur. L'import de texture utilisé
 ici passe toutefois par RGBA 8 bits : il ne garantit pas un intermédiaire 10 bits

@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createStore } from '../src/storage.js';
 import { run, probeFile, prepareMovie, inspectProbe } from '../src/media.js';
 
-const hashVideo = input => run(process.env.FFMPEG_PATH || 'ffmpeg', ['-v', 'error', '-i', input, '-map', '0:v:0', '-c', 'copy', '-f', 'hash', '-hash', 'sha256', '-']);
+// Retagging rewrites the sequence header, so compare decoded samples: no picture may change.
+const decodedVideo = input => run(process.env.FFMPEG_PATH || 'ffmpeg', ['-v', 'error', '-i', input, '-map', '0:v:0', '-f', 'framemd5', '-']);
 
 test('copies 4K video exactly and prepares external audio and subtitles on the same timeline', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-media-'));
@@ -27,13 +28,13 @@ test('copies 4K video exactly and prepares external audio and subtitles on the s
   const video = await probeFile(path.join(prepared, 'stream_0.m3u8'));
   assert.equal(video.video.codec, 'h264'); assert.equal(video.video.pixelFormat, 'yuv420p');
   assert.equal(video.video.frameRate, 2);
-  assert.equal(await hashVideo(source), await hashVideo(path.join(prepared, 'stream_0.m3u8')));
+  assert.equal(await decodedVideo(source), await decodedVideo(path.join(prepared, 'stream_0.m3u8')));
   // HLS demuxing needs its own protocol allowlist, unlike uploaded files.
   const audio = JSON.parse(await run(process.env.FFPROBE_PATH || 'ffprobe', ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', path.join(prepared, 'stream_1.m3u8')]));
   assert.ok(Math.abs(Number(audio.format.duration) - 2) < 0.1);
   assert.equal(audio.streams[0].channels, 2); assert.equal(audio.streams[0].sample_rate, '48000');
   assert.match(await readFile(path.join(prepared, result.subtitles[0].filename), 'utf8'), /Bonjour/);
-  assert.doesNotMatch(await readFile(path.join(prepared, 'master.m3u8'), 'utf8'), /VIDEO-RANGE=/);
+  assert.match(await readFile(path.join(prepared, 'master.m3u8'), 'utf8'), /VIDEO-RANGE=SDR/);
   assert.match(await readFile(path.join(prepared, 'master.m3u8'), 'utf8'), /CHANNELS="2"/);
   assert.ok(result.maxSegmentSeconds <= 4.05);
 });
@@ -56,7 +57,7 @@ test('reads color metadata without guessing or treating Dolby Vision as SDR', ()
   }
 });
 
-test('preserves PQ and HLG video packets and color tags with no tone mapping', async t => {
+test('serves PQ and HLG as sRGB transport while keeping the source colour metadata', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-hdr-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -70,16 +71,19 @@ test('preserves PQ and HLG video packets and color tags with no tone mapping', a
     const result = await prepareMovie(store, movie, [], []);
     const prepared = path.join(store.directory(movie.id), result.generation, 'stream_0.m3u8');
     assert.equal(result.renditions.length, 1);
-    assert.equal(await hashVideo(source), await hashVideo(prepared));
+    assert.equal(await decodedVideo(source), await decodedVideo(prepared));
     const video = (await probeFile(prepared)).video;
-    assert.equal(video.colorTransfer, transfer); assert.equal(video.colorPrimaries, 'bt2020');
-    assert.equal(video.colorSpace, 'bt2020nc'); assert.equal(video.pixelFormat, 'yuv420p10le');
+    // The transport is what every browser decodes the same way; the shader restores the source.
+    assert.equal(video.colorTransfer, 'iec61966-2-1'); assert.equal(video.colorPrimaries, 'bt709');
+    assert.equal(video.colorSpace, 'bt709'); assert.equal(video.pixelFormat, 'yuv420p10le');
+    assert.deepEqual(result.renditions[0].color, { version: 1, transfer, primaries: 'bt2020',
+      matrix: 'bt2020nc', fullRange: false, bitDepth: 10, peakNits: 1000 });
     const master = await readFile(path.join(store.directory(movie.id), result.generation, 'master.m3u8'), 'utf8');
-    assert.match(master, new RegExp(`VIDEO-RANGE=${transfer === 'smpte2084' ? 'PQ' : 'HLG'}`));
+    assert.match(master, /VIDEO-RANGE=SDR/);
   }
 });
 
-test('declares one peak luminance for every browser without touching the coded pictures', async t => {
+test('drops HDR mastering messages from the transport and reports the source peak', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-tonemap-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -88,19 +92,25 @@ test('declares one peak luminance for every browser without touching the coded p
   await run(ffmpeg, ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=gray:size=128x72:rate=24', '-t', '1',
     '-vf', 'format=yuv420p10le,setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=limited',
     '-c:v', 'libx265', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p10le',
-    '-x265-params', 'colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1):max-cll=1033,311:repeat-headers=1',
+    '-x265-params', 'colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,1):max-cll=1033,311:repeat-headers=1',
     '-color_primaries', 'bt2020', '-color_trc', 'smpte2084', '-colorspace', 'bt2020nc', '-color_range', 'tv',
     '-tag:v', 'hvc1', '-f', 'mp4', source]);
   const result = await prepareMovie(store, movie, [], []);
   const prepared = path.join(store.directory(movie.id), result.generation, 'stream_0.m3u8');
-  // Rewriting the announced peak must not re-encode a single picture.
-  const decoded = input => run(ffmpeg, ['-v', 'error', '-i', input, '-map', '0:v:0', '-f', 'framemd5', '-']);
-  assert.equal(await decoded(source), await decoded(prepared));
-  const probe = JSON.parse(await run(process.env.FFPROBE_PATH || 'ffprobe', ['-v', 'error', '-i', prepared,
-    '-select_streams', 'v:0', '-show_frames', '-read_intervals', '%+#1', '-of', 'json']));
-  const sideData = probe.frames[0].side_data_list ?? [];
-  assert.equal(sideData.find(data => data.side_data_type === 'Mastering display metadata')?.max_luminance, '2030000/10000');
-  assert.equal(sideData.find(data => data.side_data_type === 'Content light level metadata')?.max_content, 203);
+  assert.equal(await decodedVideo(source), await decodedVideo(prepared));
+  assert.equal(result.renditions[0].color.peakNits, 1033);
+  assert.equal(result.renditions[0].color.transfer, 'smpte2084');
+  // No SEI survives in the coded stream: mastering display, light level and Dolby Vision RPU are gone.
+  const directory = path.join(store.directory(movie.id), result.generation);
+  const segment = (await readdir(directory)).find(file => file.startsWith('segment_0_'));
+  const bytes = await readFile(path.join(directory, segment));
+  const types = new Set();
+  for (let offset = bytes.indexOf('mdat') + 4; offset + 4 <= bytes.length;) {
+    const size = bytes.readUInt32BE(offset);
+    if (!size || offset + 4 + size > bytes.length) break;
+    types.add((bytes[offset + 4] >> 1) & 0x3f); offset += 4 + size;
+  }
+  assert.ok(types.size); for (const type of [39, 40, 62, 63]) assert.ok(!types.has(type), `NAL ${type} left in the segment`);
 });
 
 test('downmixes center-channel dialogue to both speakers in one pass and preserves silence', async t => {
@@ -145,5 +155,6 @@ test('preserves full-range SDR black and white and the original color metadata',
   assert.match(stats, /lavfi.signalstats.YMAX=255\r?\n/);
   const video = (await probeFile(output)).video;
   assert.equal(video.colorRange, 'pc'); assert.equal(video.colorPrimaries, 'bt709');
-  assert.equal(await hashVideo(path.join(directory, 'source')), await hashVideo(output));
+  assert.equal(result.renditions[0].color.fullRange, true);
+  assert.equal(await decodedVideo(path.join(directory, 'source')), await decodedVideo(output));
 });

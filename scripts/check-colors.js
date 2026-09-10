@@ -64,8 +64,11 @@ try {
           let failure;
           window.renderer = new ColorRenderer(video, rendition.color, message => { failure = message; });
           window.hls = new Hls({ enableWorker: false });
+          let fatal;
+          hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) fatal = `${data.type}/${data.details}: ${data.error?.message ?? ''}`; });
           hls.loadSource(`/${name}/${rendition.manifest}`); hls.attachMedia(video);
-          await Promise.race([video.play(), new Promise((_, reject) => setTimeout(() => reject(Error(video.error?.message || 'Decoder timeout')), 15000))]);
+          await Promise.race([video.play(), new Promise((_, reject) => setTimeout(() =>
+            reject(Error(fatal || video.error?.message || `Decoder timeout (readyState ${video.readyState}, support ${MediaSource.isTypeSupported(`video/mp4; codecs="${rendition.codecs}"`)})`)), 15000))]);
           video.pause(); await new Promise(resolve => setTimeout(resolve, 100)); renderer.draw();
           if (failure) throw Error(failure);
           const { gl, canvas } = renderer, pixels = new Uint8Array(canvas.width * canvas.height * 4);
