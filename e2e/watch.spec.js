@@ -76,6 +76,8 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(host.locator('#buffering-label')).toContainText('민지');
     releaseMedia();
     await expect.poll(() => guest.locator('video').evaluate(video => video.readyState)).toBeGreaterThanOrEqual(3);
+    await expect(host.locator('.color-canvas')).toHaveAttribute('data-ready', 'true');
+    await expect(guest.locator('.color-canvas')).toHaveAttribute('data-ready', 'true');
     await expect(guest.locator('#screen #allow-sound')).toBeVisible();
     await guest.screenshot({ path: 'test-results/watch-sound.png', fullPage: true });
     await guest.locator('#allow-sound').click();
@@ -103,6 +105,7 @@ test('admin manages a film and two named viewers join in their language with one
     await expect.poll(() => guest.locator('video').evaluate(video => video.currentTime)).toBeGreaterThan(9);
     await host.locator('#screen').focus(); await host.keyboard.press('k');
     await expect.poll(() => guest.locator('video').evaluate(video => Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.text === 'Un sous-titre lisible.' && cue.line === 84 && !cue.snapToLines)))).toBe(true);
+    await expect(guest.locator('.color-captions')).toHaveText('Un sous-titre lisible.');
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     await expect(guest.locator('#buffering-overlay')).toBeHidden();
     for (const [width, height, name] of [[390,844,'mobile'],[820,1180,'tablet'],[1440,1000,'desktop']]) {
@@ -124,6 +127,9 @@ test('admin manages a film and two named viewers join in their language with one
     await host.mouse.move(0,0); await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/);
     await host.screenshot({ path: 'test-results/watch-fullscreen.png' }); await host.evaluate(() => document.exitFullscreen());
     await b.setOffline(true); await expect.poll(() => host.locator('video').evaluate(video => video.paused), { timeout: 6000 }).toBe(true);
+    await host.locator('.color-canvas').evaluate(canvas => canvas.getContext('webgl').getExtension('WEBGL_lose_context').loseContext());
+    await expect(host.locator('#buffering-label')).toContainText('rendu des couleurs');
+    await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
     expect(errors).toEqual([]);
   } catch (error) {
     console.log('Failure:', error.message, 'Browser errors:', errors, 'State:', latest.get(host)?.state,

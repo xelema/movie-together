@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, open, readFile, writeFile, readdir, stat, statfs, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, stat, statfs, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -32,6 +32,8 @@ export function inspectProbe(probe) {
   const video = streams.find(stream => stream.codec_type === 'video' && !stream.disposition?.attached_pic);
   const sideData = video?.side_data_list ?? [];
   const dovi = sideData.find(data => data.side_data_type === 'DOVI configuration record');
+  const mastering = sideData.find(data => data.side_data_type === 'Mastering display metadata');
+  const light = sideData.find(data => data.side_data_type === 'Content light level metadata');
   const color = key => !['unknown', 'unspecified', 'reserved'].includes(video?.[key]) ? video?.[key] : undefined;
   const transfer = color('color_transfer');
   const hdr = ['smpte2084', 'arib-std-b67'].includes(transfer) || !!dovi;
@@ -58,6 +60,7 @@ export function inspectProbe(probe) {
     rotation: Number(sideData.find(data => data.rotation !== undefined)?.rotation ?? video.tags?.rotate) || 0,
     colorPrimaries: color('color_primaries'), colorTransfer: transfer,
     colorSpace: color('color_space'), colorRange: color('color_range'),
+    peakNits: Number(light?.max_content) || (() => { const [n, d = 1] = String(mastering?.max_luminance ?? '').split('/').map(Number); return n / d || undefined; })(),
     hdr, dolbyVision: dovi ? { profile: dovi.dv_profile, level: dovi.dv_level,
       compatibilityId: dovi.dv_bl_signal_compatibility_id } : null,
   } : null,
@@ -76,158 +79,25 @@ export async function probeFile(file) {
 function quote(value) { return String(value).replace(/["\r\n\\]/g, '').slice(0, 100); }
 function language(value) { return /^[a-z]{2,3}(-[A-Za-z0-9]+)?$/.test(value) ? value : 'und'; }
 
-// Chromium compresses the whole PQ range down to the peak the file declares, Firefox ignores it.
-// 203 nits is the BT.2408 reference white and Chromium's floor: below it no compression is left,
-// which is the brightest picture it will produce. Raising the value gives highlights back their
-// detail and darkens everything else. See docs/playback.md.
-const TONE_MAP_PEAK_NITS = Math.min(10000, Math.max(203, Number(process.env.HDR_PEAK_NITS) || 203));
-const BOX_CONTAINERS = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl']);
-const VISUAL_SAMPLE_ENTRIES = new Set(['hvc1', 'hev1', 'dvh1', 'dvhe', 'avc1', 'avc3', 'vp09', 'av01']);
-
-function box(type, payload) {
-  const header = Buffer.alloc(8);
-  header.writeUInt32BE(8 + payload.length, 0); header.write(type, 4, 'latin1');
-  return Buffer.concat([header, payload]);
-}
-
-function* boxes(buffer, start, end) {
-  for (let offset = start; offset + 8 <= end;) {
-    const size = buffer.readUInt32BE(offset);
-    if (size < 8 || offset + size > end) return;
-    yield { offset, size, type: buffer.toString('latin1', offset + 4, offset + 8) };
-    offset += size;
-  }
-}
-
-function findVisualEntry(buffer, start, end, ancestors = []) {
-  for (const { offset, size, type } of boxes(buffer, start, end)) {
-    if (BOX_CONTAINERS.has(type)) {
-      const found = findVisualEntry(buffer, offset + 8, offset + size, [...ancestors, offset]);
-      if (found) return found;
-    } else if (type === 'stsd') {
-      for (const entry of boxes(buffer, offset + 16, offset + size)) {
-        // A VisualSampleEntry keeps 78 fixed bytes before its own child boxes.
-        if (VISUAL_SAMPLE_ENTRIES.has(entry.type)) return { entry, ancestors: [...ancestors, offset] };
-      }
-    }
-  }
-  return null;
-}
-
-function toneMapBoxes() {
-  const mastering = Buffer.alloc(24);
-  // Rec. 2020 primaries in units of 0.00002, green then blue then red, then the D65 white point.
-  for (const [index, [x, y]] of [[8500, 39850], [6550, 2300], [35400, 14600], [15635, 16450]].entries()) {
-    mastering.writeUInt16BE(x, index * 4); mastering.writeUInt16BE(y, index * 4 + 2);
-  }
-  mastering.writeUInt32BE(TONE_MAP_PEAK_NITS * 10000, 16); mastering.writeUInt32BE(1, 20);
-  const light = Buffer.alloc(4); light.writeUInt16BE(TONE_MAP_PEAK_NITS, 0);
-  return Buffer.concat([box('mdcv', mastering), box('clli', light)]);
-}
-
-function unescapeRbsp(nal) {
-  const out = Buffer.alloc(nal.length);
-  let length = 0, zeros = 0;
-  for (const byte of nal) {
-    if (zeros === 2 && byte === 3) { zeros = 0; continue; }
-    zeros = byte === 0 ? zeros + 1 : 0;
-    out[length++] = byte;
-  }
-  return out.subarray(0, length);
-}
-
-function escapeRbsp(rbsp) {
-  const out = [];
-  let zeros = 0;
-  for (const byte of rbsp) {
-    if (zeros === 2 && byte <= 3) { out.push(3); zeros = 0; }
-    zeros = byte === 0 ? zeros + 1 : 0;
-    out.push(byte);
-  }
-  return Buffer.from(out);
-}
-
-// Supplemental enhancement information carries the mastering display (137) and content light
-// level (144) messages that Chromium reads for HEVC. Their fields have a fixed width.
-function rewriteSeiPayloads(rbsp) {
-  let offset = 2, rewritten = false;
-  while (offset < rbsp.length - 1 && rbsp[offset] !== 0x80) {
-    let type = 0, size = 0;
-    while (rbsp[offset] === 0xff) { type += 255; offset++; }
-    type += rbsp[offset++];
-    while (rbsp[offset] === 0xff) { size += 255; offset++; }
-    size += rbsp[offset++];
-    if (offset + size > rbsp.length) return rewritten;
-    if (type === 137 && size >= 24) { rbsp.writeUInt32BE(TONE_MAP_PEAK_NITS * 10000, offset + 16); rewritten = true; }
-    if (type === 144 && size >= 4) { rbsp.writeUInt16BE(TONE_MAP_PEAK_NITS, offset); rbsp.writeUInt16BE(0, offset + 2); rewritten = true; }
-    offset += size;
-  }
-  return rewritten;
-}
-
-// Rewrites the peak luminance an HEVC segment announces. Coded pictures are never touched: only
-// the two informational messages that sit before the first slice of the segment change.
-export async function rewriteToneMapSei(file) {
-  const handle = await open(file, 'r+');
-  try {
-    const head = Buffer.alloc(256 * 1024);
-    const { bytesRead } = await handle.read(head, 0, head.length, 0);
-    let media = -1;
-    for (let offset = 0; offset + 8 <= bytesRead;) {
-      const size = head.readUInt32BE(offset);
-      if (head.toString('latin1', offset + 4, offset + 8) === 'mdat') { media = offset + (size === 1 ? 16 : 8); break; }
-      if (size < 8) break;
-      offset += size;
-    }
-    if (media < 0) return false;
-    let rewritten = false;
-    for (let offset = media; offset + 6 <= bytesRead;) {
-      const length = head.readUInt32BE(offset);
-      if (length < 2 || offset + 4 + length > bytesRead) break;
-      const type = (head[offset + 4] >> 1) & 0x3f;
-      if (type < 32) break; // A coded slice ends the leading messages of the segment.
-      if (type === 39 || type === 40) {
-        const nal = head.subarray(offset + 4, offset + 4 + length);
-        const rbsp = unescapeRbsp(nal);
-        if (rewriteSeiPayloads(rbsp)) {
-          const escaped = escapeRbsp(rbsp);
-          // Equal length keeps every sample size in the fragment header valid.
-          if (escaped.length === length) { escaped.copy(head, offset + 4); rewritten = true; }
-        }
-      }
-      offset += 4 + length;
-    }
-    if (rewritten) await handle.write(head, 0, bytesRead, 0);
-    return rewritten;
-  } finally {
-    await handle.close();
-  }
-}
-
-// Rewrites the light level of a PQ initialisation segment. No video sample is read or written.
-export async function writeToneMapMetadata(file) {
-  const buffer = await readFile(file);
-  // Growing the header would move every chunk offset of a progressive file. Initialisation
-  // segments hold no media, so they are the only safe input.
-  for (const { type } of boxes(buffer, 0, buffer.length)) if (type === 'mdat') return false;
-  const found = findVisualEntry(buffer, 0, buffer.length);
-  if (!found) return false;
-  const { entry, ancestors } = found;
-  const body = entry.offset + 8 + 78, kept = [];
-  let perceptualQuantizer = false;
-  for (const child of boxes(buffer, body, entry.offset + entry.size)) {
-    if (child.type === 'colr' && buffer.toString('latin1', child.offset + 8, child.offset + 12) === 'nclx') {
-      perceptualQuantizer = buffer.readUInt16BE(child.offset + 14) === 16;
-    }
-    if (child.type !== 'mdcv' && child.type !== 'clli') kept.push(buffer.subarray(child.offset, child.offset + child.size));
-  }
-  if (!perceptualQuantizer) return false;
-  const replacement = Buffer.concat([...kept, toneMapBoxes()]);
-  const patched = Buffer.concat([buffer.subarray(0, body), replacement, buffer.subarray(entry.offset + entry.size)]);
-  const delta = patched.length - buffer.length;
-  for (const offset of [...ancestors, entry.offset]) patched.writeUInt32BE(patched.readUInt32BE(offset) + delta, offset);
-  await writeFile(file, patched);
-  return true;
+export function transportMetadata(video) {
+  const doviBase = { 1: 'smpte2084', 2: 'bt709', 4: 'arib-std-b67' }[video.dolbyVision?.compatibilityId];
+  const unsupportedDovi = video.dolbyVision && !doviBase;
+  const bitstreamFilter = unsupportedDovi ? 'hevc_mp4toannexb,extract_extradata=remove=1' : {
+    h264: 'h264_mp4toannexb,h264_metadata=colour_primaries=1:transfer_characteristics=13:matrix_coefficients=1,extract_extradata=remove=1',
+    hevc: 'hevc_mp4toannexb,hevc_metadata=colour_primaries=1:transfer_characteristics=13:matrix_coefficients=1,filter_units=remove_types=39|40|62|63,extract_extradata=remove=1',
+    av1: 'av1_metadata=color_primaries=1:transfer_characteristics=13:matrix_coefficients=1',
+    vp9: 'vp9_metadata=color_space=2',
+  }[video.codec];
+  if (!bitstreamFilter) throw new Error('Codec vidéo incompatible.');
+  const args = ['-bsf:v:0', bitstreamFilter];
+  if (video.codec === 'hevc') args.push('-tag:v:0', 'hvc1');
+  if (unsupportedDovi) return { args, color: undefined,
+    videoRange: video.colorTransfer === 'smpte2084' ? 'PQ' : video.colorTransfer === 'arib-std-b67' ? 'HLG' : undefined };
+  args.push('-color_primaries', 'bt709', '-color_trc', 'iec61966-2-1', '-colorspace', 'bt709');
+  return { args, videoRange: 'SDR', color: { version: 1, transfer: video.colorTransfer || doviBase || 'bt709',
+    primaries: video.colorPrimaries || 'bt709', matrix: video.colorSpace || (video.height < 720 ? 'smpte170m' : 'bt709'),
+    fullRange: video.colorRange === 'pc', bitDepth: Number(video.pixelFormat?.match(/(10|12)(?:le|be)?$/)?.[1]) || 8,
+    peakNits: video.peakNits || 1000 } };
 }
 
 export async function writeMaster(directory, audio, subtitles, renditions) {

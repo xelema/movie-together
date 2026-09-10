@@ -119,7 +119,11 @@ html[lang=ko] #screen .track-controls strong,html[lang=ko] #participants span:no
 .video-stage{position:relative;min-height:180px}
 video{display:block;width:100%;max-height:72vh;object-fit:contain}
 .plyr{width:100%}
-/* Keep video and its ancestors free of filters or opacity: they change the native HDR rendering path. */
+.color-canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;pointer-events:none}
+.color-captions{position:absolute;left:4%;right:4%;bottom:16%;pointer-events:none;text-align:center;white-space:pre-line;
+  color:#fff;font-family:Arial,"Segoe UI",sans-serif;font-size:clamp(18px,2.4vw,36px);font-weight:500;line-height:1.3;
+  text-shadow:-1px -1px 2px #000,1px -1px 2px #000,-1px 1px 2px #000,1px 1px 2px #000,0 2px 4px #000}
+.color-captions:empty{display:none}
 #screen{--plyr-video-control-color:var(--white);--plyr-video-control-color-hover:#0b0b0d;--plyr-video-control-background-hover:var(--white);
   --plyr-range-track-height:3px;--plyr-range-thumb-height:11px;--plyr-range-thumb-background:#fff;--plyr-range-fill-background:var(--white);
   --plyr-video-progress-buffered-background:rgba(255,255,255,.22);--plyr-control-icon-size:16px;
