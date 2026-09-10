@@ -1,3 +1,5 @@
+import { ColorRenderer } from './color-renderer.js';
+
 export class Clock {
   constructor() { this.samples = []; }
   sample(sentAt, receivedAt, serverNow) {
@@ -70,6 +72,7 @@ export class SyncPlayer {
     for (const track of this.video.textTracks) for (const cue of track.activeCues ?? []) {
       cue.snapToLines = false; cue.line = line; cue.lineAlign = 'end';
     }
+    this.colorRenderer?.updateCaptions();
   }
   serverTime() { return performance.now() + this.clock.offset; }
   position() { return Math.max(0, this.video.currentTime - this.offset); }
@@ -123,7 +126,7 @@ export class SyncPlayer {
     const activated = sameMovie && this.activated;
     if (!sameMovie) { this.audioChoice = 0; this.subtitleChoice = -1; }
     clearTimeout(this.startTimer); this.scheduled = null;
-    this.pauseLocal(); this.hls?.destroy(); this.hls = null;
+    this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.hls?.destroy(); this.hls = null;
     this.loadToken = (this.loadToken || 0) + 1; this.activating = false; this.recovering = false;
     this.networkRecoveries = 0; this.mediaRecoveries = 0;
     this.movie = movie; this.failure = null; this.activated = activated; this.autoActivationTried = false; this.activationBlocked = false; this.onActivation(activated);
@@ -132,6 +135,10 @@ export class SyncPlayer {
     const versions = movie.renditions?.length ? movie.renditions : [{ id: 'original', manifest: 'master.m3u8', timelineOffset: 0 }];
     this.rendition = versions[0];
     this.offset = this.rendition.timelineOffset ?? 0;
+    if (this.rendition.color) {
+      try { this.colorRenderer = new ColorRenderer(this.video, this.rendition.color, message => this.failPlayback(message)); }
+      catch (error) { this.failPlayback(error.message); return; }
+    }
     const url = `/media/${movie.id}/${this.rendition.manifest}`;
     // Prefer native HLS on Safari; its media policies and audio track API differ from MSE.
     if (this.video.canPlayType('application/vnd.apple.mpegurl') &&
@@ -247,7 +254,7 @@ export class SyncPlayer {
   async begin() {
     this.startTimer = null;
     if (!this.state || this.state.phase !== 'playing' || this.state.startsAt !== this.scheduled || !this.activated ||
-      document.hidden || performance.now() - this.lastMessage > 1500) return;
+      this.failure || document.hidden || performance.now() - this.lastMessage > 1500) return;
     if (this.serverTime() < this.state.startsAt) {
       this.startTimer = setTimeout(() => this.begin(), Math.ceil(this.state.startsAt - this.serverTime())); return;
     }
@@ -258,7 +265,7 @@ export class SyncPlayer {
     if (!this.state) return;
     const position = this.position();
     const running = this.state.phase === 'playing' && this.serverTime() > this.state.startsAt + 200;
-    const ready = force !== false && !this.recovering && this.activated && this.clock.ready && !document.hidden && navigator.onLine !== false &&
+    const ready = force !== false && !this.failure && (!this.colorRenderer || (this.colorRenderer.ready && !this.colorRenderer.failed)) && !this.recovering && this.activated && this.clock.ready && !document.hidden && navigator.onLine !== false &&
       performance.now() - this.lastMessage < 1500 && !this.video.seeking && this.video.readyState >= 3 &&
       (!running || (!this.video.paused && Math.abs(position - this.target()) <= 0.35));
     this.send({ type: 'report', epoch: this.state.epoch, sequence: this.sequence++, position,
@@ -268,6 +275,6 @@ export class SyncPlayer {
   dispose() {
     this.disposed = true; clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings);
     clearTimeout(this.startTimer); clearTimeout(this.retry); this.listeners.forEach(remove => remove());
-    this.ws?.close(1000); this.pauseLocal(); this.hls?.destroy(); this.video.removeAttribute('src'); this.video.load();
+    this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.hls?.destroy(); this.video.removeAttribute('src'); this.video.load();
   }
 }

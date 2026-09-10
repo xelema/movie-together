@@ -36,8 +36,9 @@ FFmpeg et FFmpeg Full installés avec Chocolatey sous Windows.
 Le drapeau en haut de la page permet de choisir français ou coréen. Ce choix
 reste dans la session de l'onglet, y compris après un rechargement. Le menu ⚙
 du lecteur contient le choix de la langue du film et des sous-titres.
-Aucun réglage d'image ni filtre CSS n'est appliqué à la vidéo : ces effets peuvent
-changer le traitement HDR du navigateur et dégrader les couleurs.
+Le lecteur affiche une image sRGB calculée par WebGL sur l'appareil. La même
+conversion HDR10/HLG et la même courbe de hautes lumières sont utilisées pour tous.
+La vidéo conserve son décodeur natif, sa piste sonore et son horloge de synchronisation.
 
 L'interface utilise Instrument Sans et IBM Plex Mono, servies depuis `public/fonts`.
 Rien n'est chargé depuis un domaine externe : la politique de sécurité du contenu
@@ -50,17 +51,19 @@ distinction de casse. Un code plus long est moins facile à deviner.
 ## Préparation des médias
 
 Une seule version est préparée en HLS/fMP4 pour tous, en copiant la vidéo
-originale : aucun réencodage, redimensionnement, changement de cadence ou filtre
-de couleur. La préparation relit le fichier et écrit ses segments ; sa durée
+originale : aucun réencodage, redimensionnement ni changement de cadence.
+Les indications de couleur du transport sont uniformisées ; les caractéristiques
+originales sont conservées séparément pour le rendu. La préparation relit le fichier et écrit ses segments ; sa durée
 dépend surtout de la taille du fichier, du disque et des éventuelles conversions
 audio. La durée des segments dépend des images clés de l'original.
 
 H.264, HEVC, AV1 et VP9 peuvent être préparés, mais leur lecture dépend des
 décodeurs du navigateur et de l'appareil. Pour la compatibilité la plus large,
 privilégier un fichier source H.264 SDR 8 bits. Il n'existe pas de version de
-secours. HDR10, HLG et Dolby Vision ne sont pas convertis en SDR : leur rendu
-dépend du navigateur, du système et de l'écran. Le rendu HDR n'est pas identique
-entre Chrome et Firefox sur tous les appareils. Voir [les recherches](docs/playback.md).
+secours. HDR10, HLG et les bases compatibles de Dolby Vision sont affichés en SDR
+sRGB par le GPU du spectateur. Le serveur ne calcule ni ne réencode les images.
+WebGL et le décodage du codec source sont nécessaires. Voir [le rendu couleur et
+ses vérifications](docs/playback.md).
 
 Les pistes intégrées AAC-LC mono/stéréo à 44,1 ou 48 kHz sont copiées à l'identique.
 Les autres pistes audio sont converties en une seule passe en AAC-LC stéréo
@@ -104,10 +107,11 @@ AirPlay et Picture-in-Picture ne font pas partie de la lecture synchronisée.
 npm test
 npx playwright install chromium firefox webkit
 npm run test:e2e
+npm run test:colors
 ```
 
 Les tests vérifient les accès, la copie exacte des flux vidéo et AAC, les
-métadonnées SDR/HDR, l'absence de filtres sur le lecteur, les voix centrales, les pistes externes, les langues,
+métadonnées SDR/HDR, les pixels du rendu commun, les voix centrales, les pistes externes, les langues,
 le départ commun, la pause, les sous-titres et les formats d'écran.
 Voir [la validation sur appareils physiques](docs/validation.md) et
 [le guide de déploiement](docs/deployment.md).
