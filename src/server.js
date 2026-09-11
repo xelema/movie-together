@@ -3,11 +3,12 @@ import { probeFile } from './media.js';
 import path from 'node:path';
 
 const port = Number(process.env.PORT || 3000);
+const origin = process.env.APP_ORIGIN || `http://localhost:${port}`;
 const application = createApplication({
   dataDir: process.env.DATA_DIR,
   password: process.env.ADMIN_PASSWORD,
-  origin: process.env.APP_ORIGIN || `http://localhost:${port}`,
-  secure: process.env.NODE_ENV === 'production',
+  origin,
+  secure: origin.startsWith('https://'),
   trustProxy: process.env.TRUST_PROXY === '1',
   syncOptions: { minBuffer: Number(process.env.MIN_BUFFER_SECONDS || 20), lowBuffer: Number(process.env.LOW_BUFFER_SECONDS || 5) },
 });
