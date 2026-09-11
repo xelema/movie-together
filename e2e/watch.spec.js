@@ -135,12 +135,16 @@ test('admin manages a film and two named viewers join in their language with one
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
     expect(errors).toEqual([]);
   } catch (error) {
-    console.log('Failure:', error.message, 'Browser errors:', errors, 'State:', latest.get(host)?.state,
-      'Media:', await host.locator('video').evaluate(video => ({ ready: video.readyState, error: video.error?.message,
+    const dump = async (page, role) => `${role}: ` + JSON.stringify({
+      state: latest.get(page)?.state,
+      media: await page.locator('video').evaluate(video => ({ ready: video.readyState, error: video.error?.message,
+        paused: video.paused, seeking: video.seeking, time: video.currentTime, width: video.videoWidth,
         source: video.currentSrc, buffered: video.buffered.length, nativeHls: video.canPlayType('application/vnd.apple.mpegurl'),
-        mse: window.Hls.isSupported(), vendor: navigator.vendor, platform: navigator.platform })),
-      'Canvas:', await host.locator('.color-canvas').evaluate(canvas => ({ ...canvas.dataset })).catch(() => null),
-      'Label:', await host.locator('#buffering-label').textContent().catch(() => null));
+        mse: window.Hls.isSupported(), vendor: navigator.vendor })).catch(() => null),
+      canvas: await page.locator('.color-canvas').evaluate(canvas => ({ ...canvas.dataset })).catch(() => null),
+      label: await page.locator('#buffering-label').textContent().catch(() => null),
+    });
+    console.log('Failure:', error.message, 'Browser errors:', errors, await dump(host, 'host'), await dump(guest, 'guest'));
     throw error;
   }
   finally { releaseMedia(); await guest.unrouteAll({ behavior: 'ignoreErrors' }); await a.close(); await b.close(); }
