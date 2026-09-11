@@ -81,9 +81,10 @@ test('serves PQ and HLG as sRGB transport while keeping the source colour metada
     const prepared = path.join(store.directory(movie.id), result.generation, 'stream_0.m3u8');
     assert.equal(result.renditions.length, 1);
     assert.equal(await decodedVideo(source), await decodedVideo(prepared));
-    const video = (await probeFile(prepared)).video;
     // The coded stream is untouched: its sequence header still describes the source.
-    assert.equal(video.colorTransfer, transfer); assert.equal(video.pixelFormat, 'yuv420p10le');
+    const frame = JSON.parse(await run(process.env.FFPROBE_PATH || 'ffprobe', ['-v', 'error', '-i', prepared,
+      '-select_streams', 'v:0', '-show_frames', '-read_intervals', '%+#1', '-of', 'json'])).frames[0];
+    assert.equal(frame.color_transfer, transfer); assert.equal(frame.pix_fmt, 'yuv420p10le');
     // The transport is what every browser decodes the same way; the shader restores the source.
     assert.deepEqual(await colourBox(path.dirname(prepared)),
       { primaries: 1, transfer: 13, matrix: 1, fullRange: false });
