@@ -83,8 +83,11 @@ test('admin manages a film and two named viewers join in their language with one
     await guest.locator('#allow-sound').click();
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused), { timeout: 15_000 }).toBe(false);
     await expect.poll(() => host.locator('video').evaluate(video => video.currentTime)).toBeGreaterThan(2);
-    const times = await Promise.all([host, guest].map(page => page.locator('video').evaluate(video => video.currentTime)));
-    expect(Math.abs(times[0] - times[1])).toBeLessThan(.35);
+    // Starting skew converges through the sync loop rather than being exact from frame one.
+    await expect.poll(async () => {
+      const [a, b] = await Promise.all([host, guest].map(page => page.locator('video').evaluate(video => video.currentTime)));
+      return Math.abs(a - b);
+    }, { timeout: 15_000 }).toBeLessThan(.35);
     await controls(guest); await guest.locator('.plyr__controls [data-plyr=play]').click();
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
     await guest.locator('#open-settings').click(); await guest.locator('#audio').selectOption('2'); await guest.locator('#subtitles').selectOption('0');
