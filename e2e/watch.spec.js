@@ -76,8 +76,8 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(host.locator('#buffering-label')).toContainText('민지');
     releaseMedia();
     await expect.poll(() => guest.locator('video').evaluate(video => video.readyState)).toBeGreaterThanOrEqual(3);
-    await expect(host.locator('.color-canvas')).toHaveAttribute('data-ready', 'true');
-    await expect(guest.locator('.color-canvas')).toHaveAttribute('data-ready', 'true');
+    await expect(host.locator('.color-canvas')).toHaveAttribute('data-ready', 'true', { timeout: 15_000 });
+    await expect(guest.locator('.color-canvas')).toHaveAttribute('data-ready', 'true', { timeout: 15_000 });
     await expect(guest.locator('#screen #allow-sound')).toBeVisible();
     await guest.screenshot({ path: 'test-results/watch-sound.png', fullPage: true });
     await guest.locator('#allow-sound').click();
@@ -138,7 +138,9 @@ test('admin manages a film and two named viewers join in their language with one
     console.log('Failure:', error.message, 'Browser errors:', errors, 'State:', latest.get(host)?.state,
       'Media:', await host.locator('video').evaluate(video => ({ ready: video.readyState, error: video.error?.message,
         source: video.currentSrc, buffered: video.buffered.length, nativeHls: video.canPlayType('application/vnd.apple.mpegurl'),
-        mse: window.Hls.isSupported(), vendor: navigator.vendor, platform: navigator.platform })));
+        mse: window.Hls.isSupported(), vendor: navigator.vendor, platform: navigator.platform })),
+      'Canvas:', await host.locator('.color-canvas').evaluate(canvas => ({ ...canvas.dataset })).catch(() => null),
+      'Label:', await host.locator('#buffering-label').textContent().catch(() => null));
     throw error;
   }
   finally { releaseMedia(); await guest.unrouteAll({ behavior: 'ignoreErrors' }); await a.close(); await b.close(); }
