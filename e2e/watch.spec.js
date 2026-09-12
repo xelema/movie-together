@@ -31,6 +31,7 @@ test('admin manages a film and two named viewers join in their language with one
     await guest.screenshot({ path: 'test-results/home-mobile.png', fullPage: true });
     await host.goto('/admin'); await host.locator('#login-form input').fill('browser-test-password'); await host.locator('#login-form button').click();
     await expect(host.locator('#library')).toBeVisible();
+    await expect(host.locator('#disk-space')).toContainText('libres');
     // Each engine uses the same temporary test server; start with an empty library.
     const headers = { Origin: 'http://localhost:3100' };
     for (const room of await (await host.request.get('/api/rooms')).json()) await host.request.delete(`/api/rooms/${room.id}`, { headers });

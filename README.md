@@ -20,8 +20,10 @@ FFmpeg et FFmpeg Full installés avec Chocolatey sous Windows.
 
 ## Utilisation
 
-1. Dans l'administration, envoyer un film (20 Go maximum). Le titre proposé reprend
-   le nom du fichier sans les mentions d'encodage, et reste modifiable.
+1. Dans l'administration, envoyer un film (20 Go maximum). Le formulaire indique
+   l'espace libre sur le disque du serveur et signale si le fichier choisi n'y
+   tiendrait pas. Le titre proposé reprend le nom du fichier sans les mentions
+   d'encodage, et reste modifiable.
 2. Ouvrir « Gérer le film », choisir les langues et sous-titres intégrés, et
    écrire le nom que chacun verra. Laissé tel quel, le nom est en anglais.
    Aucun terme technique n'est affiché aux participants.

@@ -4,7 +4,7 @@ import { label } from './labels.js';
 const $ = id => document.getElementById(id);
 const t = (fr, ko) => sessionStorage.getItem('language') === 'ko' ? ko : fr;
 const adminPage = location.pathname === '/admin';
-let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null;
+let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null, diskInfo = null;
 const movieCards = new Map(), openPanels = new Set();
 const playbackUI = new window.Plyr($('video'), {
   controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'fullscreen'],
@@ -150,6 +150,24 @@ function runtime(seconds) {
   const total = Math.round(seconds / 60), hours = Math.floor(total / 60), minutes = total % 60;
   return hours ? t(`${hours} h ${String(minutes).padStart(2, '0')}`, `${hours}시간 ${minutes}분`) : t(`${minutes} min`, `${minutes}분`);
 }
+function formatSize(bytes) {
+  const gb = bytes / 1024 ** 3;
+  const text = gb >= 1 ? gb.toFixed(gb < 10 ? 1 : 0) : String(Math.max(1, Math.round(bytes / 1024 ** 2)));
+  return gb >= 1 ? t(`${text} Go`, `${text}GB`) : t(`${text} Mo`, `${text}MB`);
+}
+function renderDisk() {
+  if (!diskInfo) return;
+  // Same margin as POST /api/uploads: the server needs room for the original plus its preparation.
+  const needed = ($('upload-file').files[0]?.size ?? 0) * 2.2;
+  const space = t(`${formatSize(diskInfo.free)} libres sur ${formatSize(diskInfo.total)}`,
+    `${formatSize(diskInfo.total)} 중 ${formatSize(diskInfo.free)} 사용 가능`);
+  const insufficient = needed > diskInfo.free;
+  $('disk-space').textContent = insufficient
+    ? t(`${space}. Espace insuffisant : il faut environ ${formatSize(needed)} pour ce film et sa préparation.`,
+        `${space}. 공간 부족: 이 영화와 준비에는 약 ${formatSize(needed)}가 필요합니다.`)
+    : space;
+  $('disk-space').classList.toggle('insufficient', insufficient);
+}
 function updateFilmMeta() {
   const duration = roomMessage?.movie?.duration;
   const audio = $('audio').selectedOptions[0]?.textContent;
@@ -187,6 +205,8 @@ async function refresh() {
       button(t('Fermer la séance', '시청방 닫기'), async () => { await api(`/api/rooms/${room.id}`, { method: 'DELETE' }); await refresh(); }, 'danger'));
     return card;
   }));
+  diskInfo = await api('/api/storage').catch(() => diskInfo);
+  renderDisk();
   const uploads = await api('/api/uploads');
   $('pending-uploads').replaceChildren(...uploads.map(upload => {
     const card = el('div', undefined, 'card'); card.append(el('p', `${upload.name} · ${Math.round(upload.offset / upload.size * 100)} %`), el('p', t('Choisissez à nouveau le même fichier pour reprendre.', '같은 파일을 선택하면 이어서 업로드합니다.')),
@@ -354,6 +374,7 @@ $('logout').addEventListener('click', handle(async () => { player?.dispose(); pl
 $('refresh').addEventListener('click', handle(refresh));
 $('allow-sound').addEventListener('click', handle(() => player?.activate()));
 $('upload-form').addEventListener('submit', handle(() => upload($('upload-file').files[0])));
+$('upload-file').addEventListener('change', renderDisk);
 $('audio').addEventListener('change', () => player?.changeTrack('audio', Number($('audio').value)));
 $('subtitles').addEventListener('change', () => player?.changeTrack('subtitles', Number($('subtitles').value)));
 $('leave').addEventListener('click', handle(async () => { player?.dispose(); player = null; activeRoom = null; $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await refresh(); }));

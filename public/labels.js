@@ -53,6 +53,8 @@ const korean = {
   'Ce navigateur ne permet pas la lecture HLS.': '이 브라우저는 HLS 재생을 지원하지 않습니다.',
   'Touchez à nouveau « Activer mon lecteur » pour autoriser la lecture.': '재생을 허용하려면 플레이어 활성화를 다시 누르세요.',
   'Piste changée pour vous. Relancez la séance quand vous êtes prêt.': '트랙이 변경되었습니다. 준비되면 다시 재생하세요.',
+  'Espace disque insuffisant pour l’original et sa préparation.': '원본 파일과 준비된 버전을 저장할 디스크 공간이 부족합니다.',
+  'Espace disque insuffisant pour les versions préparées.': '준비된 버전을 저장할 디스크 공간이 부족합니다.',
   'Analyse du fichier…': '파일 분석 중…',
   'Envoi terminé. Choisissez les pistes.': '업로드 완료. 트랙을 선택하세요.',
   'Préparation lancée. La bibliothèque se mettra à jour automatiquement.': '준비가 시작되었습니다. 목록은 자동으로 갱신됩니다.',
