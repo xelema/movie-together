@@ -119,8 +119,14 @@ test('admin manages a film and two named viewers join in their language with one
         Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.line < 80)))).toBe(true);
       await guest.screenshot({ path: `test-results/watch-${name}.png`, fullPage: true });
     }
-    await controls(host); await host.locator('[data-plyr=fullscreen]').click();
-    await expect.poll(() => host.evaluate(() => document.fullscreenElement?.id)).toBe('screen');
+    // Controls auto-hide while playing; hover until they are shown before clicking fullscreen.
+    await expect(async () => {
+      if (await host.evaluate(() => document.fullscreenElement?.id) !== 'screen') {
+        await controls(host);
+        await host.locator('.plyr:not(.plyr--hide-controls) [data-plyr=fullscreen]').click({ timeout: 3000 });
+      }
+      await expect.poll(() => host.evaluate(() => document.fullscreenElement?.id), { timeout: 3000 }).toBe('screen');
+    }).toPass({ timeout: 20_000 });
     await expect(host.locator('#player-settings')).toBeHidden();
     await host.mouse.move(0,0); await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 5000 });
     await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '0');
