@@ -130,7 +130,7 @@ export class ColorRenderer {
       video.parentElement.append(this.canvas, this.captions);
       this.listen(this.canvas, 'webglcontextlost', event => { event.preventDefault(); this.failed = true; onFailure('Le rendu des couleurs a été interrompu. Rechargez la page.'); });
       this.listen(this.canvas, 'webglcontextrestored', () => onFailure('Le rendu des couleurs a été interrompu. Rechargez la page.'));
-      for (const event of ['loadeddata', 'seeked', 'pause', 'resize']) this.listen(video, event, () => this.draw());
+      for (const event of ['loadeddata', 'canplay', 'seeked', 'pause', 'resize']) this.listen(video, event, () => this.draw());
       this.listen(video.textTracks, 'change', () => this.updateCaptions());
       this.listen(video.textTracks, 'addtrack', event => this.watchTrack(event.track));
       for (const track of video.textTracks) this.watchTrack(track);
@@ -166,11 +166,15 @@ export class ColorRenderer {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       if (gl.getError() !== gl.NO_ERROR) throw new Error('Le rendu des couleurs a été interrompu. Rechargez la page.');
-      this.lastTime = video.currentTime; this.ready = true; canvas.dataset.ready = 'true';
-    } catch (error) { this.failed = true; this.onFailure(error.message); }
+      this.lastTime = video.currentTime; this.ready = true; this.drawErrors = 0; canvas.dataset.ready = 'true';
+    } catch (error) {
+      // Texture upload can fail while the first frame is still being presented; retry before giving up.
+      if ((this.drawErrors = (this.drawErrors || 0) + 1) < 8) { clearTimeout(this.retryTimer); this.retryTimer = setTimeout(() => this.draw(), 400); }
+      else { this.failed = true; this.onFailure(error.message); }
+    }
   }
   dispose() {
-    this.disposed = true; this.listeners.forEach(remove => remove());
+    this.disposed = true; clearTimeout(this.retryTimer); this.listeners.forEach(remove => remove());
     if (this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.callback); else cancelAnimationFrame(this.callback);
     if (this.gl) {
       this.gl.deleteTexture(this.texture); this.gl.deleteBuffer(this.buffer); this.gl.deleteProgram(this.program);
