@@ -22,6 +22,7 @@ Single Node process, no build step, no framework.
 - Types seen in history: `feat`, `fix`, `docs`, `test`, `ci`, `perf`.
   Scopes: `ui`, `media`, `server`, `color`, `e2e`, `ci`, `deploy`, `streaming`.
 - No `Co-Authored-By` or any AI/agent mention in commit messages.
+- Commit at each major step of a task so progress is never lost.
 - Never commit `data/`, `.env` or `test-results/`. Do not push unless asked.
 
 ## Coding conventions
