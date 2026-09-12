@@ -121,6 +121,10 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   });
   app.get('/api/movies', authenticated, (req, res) => res.json([...store.movies.values()]
     .filter(movie => req.session.admin || [...req.session.rooms].some(id => rooms.get(id)?.movieId === movie.id)).map(movie => req.session.admin ? movie : publicMovie(movie))));
+  app.get('/api/storage', admin, async (req, res) => {
+    const disk = await statfs(store.root);
+    res.json({ free: disk.bavail * disk.bsize, total: disk.blocks * disk.bsize });
+  });
   app.post('/api/rooms', admin, (req, res) => {
     if (rooms.size >= 20) throw fail(409, 'Fermer une room avant d’en créer une autre.');
     const movie = getMovie(req.body.movieId);
