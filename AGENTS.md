@@ -61,3 +61,21 @@ Single Node process, no build step, no framework.
 - `npm run test:colors` when touching the colour pipeline or shaders.
 - FFmpeg and FFprobe must be installed. `npm run setup` finds them, also via
   Chocolatey on Windows.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on `xelema/movie-together`, managed via the `gh`
+CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles map to identical label strings:
+`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`.
+See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout: one `CONTEXT.md` plus `docs/adr/` at the repo root.
+See `docs/agents/domain.md`.
