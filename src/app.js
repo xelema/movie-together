@@ -52,7 +52,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   if (trustProxy) app.set('trust proxy', 1);
   app.use(helmet({ contentSecurityPolicy: { directives: {
     defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"],
-    mediaSrc: ["'self'", 'blob:', 'data:'], workerSrc: ["'self'", 'blob:'],
+    mediaSrc: ["'self'", 'blob:'], workerSrc: ["'self'", 'blob:'],
     connectSrc: ["'self'"], upgradeInsecureRequests: secure ? [] : null,
   } }, strictTransportSecurity: secure ? undefined : false }));
   const sessionFor = request => {
