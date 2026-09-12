@@ -167,7 +167,7 @@ export class SyncPlayer {
     const audio = this.hls ? this.hls.audioTracks.map((track, index) => ({ index, label: track.name || track.lang })) :
       Array.from(this.video.audioTracks ?? []).map((track, index) => ({ index, label: track.label || track.language || `Audio ${index + 1}` }));
     const subtitles = this.hls ? this.hls.subtitleTracks.map((track, index) => ({ index, label: track.name || track.lang })) :
-      Array.from(this.video.textTracks ?? []).map((track, index) => ({ index, label: track.label || track.language || `Sous-titres ${index + 1}` }));
+      Array.from(this.video.textTracks ?? []).map((track, index) => ({ index, label: track.label || track.language || `Subtitles ${index + 1}` }));
     this.onTracks(audio, subtitles);
   }
   async activate() {

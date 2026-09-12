@@ -53,8 +53,8 @@ input:hover:not([type=checkbox]),select:hover{border-color:#2e3038}
 input:focus,select:focus{border-color:var(--line-strong);outline:none;background:#12141a}
 input::placeholder{color:#5a5a63}
 input[type=checkbox]{accent-color:var(--white);width:16px;height:16px;vertical-align:middle;margin-right:8px}
-input[type=file]{font-size:13px!important;max-width:100%;padding:11px 12px;min-height:0}
-input::file-selector-button{border:0;border-radius:6px;padding:7px 12px;background:#22242b;color:var(--text);margin-right:12px;font-size:13px;cursor:pointer}
+input[type=file]{font-size:13px!important;max-width:100%;padding:8px 12px;min-height:46px;display:flex;align-items:center;gap:12px}
+input::file-selector-button{border:0;border-radius:6px;padding:7px 12px;background:#22242b;color:var(--text);margin:0;font-size:13px;cursor:pointer;flex-shrink:0}
 input::file-selector-button:hover{background:#2b2d35}
 
 #notice:empty{display:none}
@@ -83,12 +83,38 @@ input::file-selector-button:hover{background:#2b2d35}
 .card button{margin:10px 8px 0 0;font-size:14px;min-height:40px;padding:9px 16px}
 .card code,#room-code,.room-pill code{font-family:var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--text)}
 .card code{display:block;font-size:15px;margin:14px 0;overflow-wrap:anywhere}
-#upload-form{margin:22px 0}#upload-form>label{max-width:620px}#upload-form>button{margin-top:18px}
-#upload-progress{width:100%;height:2px;border:0;background:var(--line-soft);display:block;margin:20px 0 10px;accent-color:var(--text-3)}
+#upload-form{margin:22px 0}
+.upload-row{display:flex;align-items:flex-end;gap:14px}
+.upload-row label{flex:1;min-width:0;max-width:620px;margin:0}
+.upload-row button{flex-shrink:0}
+.section-heading{font-family:var(--mono);font-size:11px;font-weight:400;letter-spacing:.18em;text-transform:uppercase;color:var(--label);margin:40px 0 14px}
+progress{width:100%;height:2px;border:0;background:var(--line-soft);display:block;accent-color:var(--text-3)}
+progress::-webkit-progress-bar{background:var(--line-soft)}
+progress::-webkit-progress-value{background:var(--text-3)}
+progress::-moz-progress-bar{background:var(--text-3)}
+#upload-progress{margin:20px 0 10px}
 #upload-progress[value="0"]{opacity:0}
-#upload-progress::-webkit-progress-bar{background:var(--line-soft)}
-#upload-progress::-webkit-progress-value{background:var(--text-3)}
+.card-progress{margin:10px 0 2px}
 #upload-status{font-size:12px;color:var(--text-3)}
+.status{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--text-2);margin:10px 0 4px}
+.status .dot{width:8px;height:8px;border-radius:50%;background:var(--text-3);flex-shrink:0}
+.status[data-tone=ready] .dot{background:var(--ready)}
+.status[data-tone=pending] .dot{background:var(--pending)}
+.status[data-tone=danger] .dot{background:var(--danger)}
+.status[data-tone=danger]{color:var(--danger)}
+.hint{font-size:12px;color:var(--text-4);margin:4px 0}
+.title-row{display:flex;gap:10px;margin-top:8px}
+.title-row input{flex:1;min-width:0}
+.title-row button,.add-row button{flex-shrink:0;margin:0}
+.add-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+.add-row select{flex:0 0 120px;width:auto;min-width:0}
+.add-row input{flex:1 1 150px;width:auto}
+.track-name{flex:1;min-width:0;font-size:14px;color:var(--text-2);overflow-wrap:anywhere}
+.track-tag{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--pending);flex-shrink:0}
+.track-row button{flex-shrink:0;margin:0;min-height:36px;padding:7px 14px;font-size:13px}
+.panel-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:26px}
+.panel-actions button{margin:0}
+.panel-actions .danger{margin-left:auto}
 #rooms-section{margin-top:44px}
 #rooms{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),420px));justify-content:start;gap:16px}
 details{margin-top:18px;border-top:1px solid var(--line-soft);padding-top:14px}
@@ -236,6 +262,9 @@ dialog button{width:100%}
   #leave{flex-shrink:0}
   #entry{min-height:calc(100svh - 150px)}
   #join-form input{font-size:17px;letter-spacing:.16em}
+  .upload-row{flex-direction:column;align-items:stretch}
+  .upload-row button{width:100%}
+  .panel-actions .danger{margin-left:0}
   .card,#upload-form,#choose-film{padding:18px}
   video{max-height:62vh}
   #screen{border-radius:6px}
