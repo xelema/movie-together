@@ -64,6 +64,17 @@ test('authenticated upload, original video and audio, private rooms and access c
   assert.equal((await put(cut, bytes.subarray(cut))).status, 200);
   const movie = await (await request(`/api/uploads/${upload.id}/complete`, { cookie, method: 'POST', body: {} })).json();
   assert.equal(movie.status, 'uploaded', movie.error);
+  const sub = Buffer.from('1\n00:00:01,000 --> 00:00:03,000\nA pending subtitle.\n');
+  const subUpload = await (await request('/api/uploads', { cookie, method: 'POST',
+    body: { name: 'pending.srt', size: sub.length, kind: 'subtitle', movieId: movie.id, label: 'French', language: 'fr' } })).json();
+  assert.equal((await request(`/api/uploads/${subUpload.id}`, { cookie, method: 'PUT',
+    headers: { 'Content-Type': 'application/octet-stream', 'Upload-Offset': '0' }, body: sub })).status, 200);
+  const withTrack = await (await request(`/api/uploads/${subUpload.id}/complete`, { cookie, method: 'POST', body: {} })).json();
+  assert.equal(withTrack.externalTracks.length, 1);
+  const afterDelete = await (await request(`/api/movies/${movie.id}/external/${withTrack.externalTracks[0].id}`, { cookie, method: 'DELETE' })).json();
+  assert.equal(afterDelete.externalTracks.length, 0);
+  assert.equal((await request('/api/uploads', { cookie, method: 'POST',
+    body: { name: 'voice.mka', size: 10, kind: 'audio', movieId: movie.id, label: 'x', language: 'fr' } })).status, 400);
   assert.equal((await request(`/api/movies/${movie.id}/prepare`, { cookie, method: 'POST', body: { audio: [1, 2], subtitles: [] } })).status, 202);
   let prepared;
   for (let count = 0; count < 100; count++) {
