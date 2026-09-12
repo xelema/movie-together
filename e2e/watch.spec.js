@@ -41,16 +41,22 @@ test('admin manages a film and two named viewers join in their language with one
     await openDetails();
     await host.locator('#movies input[type=file]').setInputFiles({ name: 'dialogue.srt', mimeType: 'text/plain', buffer: Buffer.from('1\n00:00:00,000 --> 00:00:49,000\nUn sous-titre lisible.\n') });
     await host.getByLabel('Nom affiché').fill('Français');
-    await host.getByRole('button', { name: 'Ajouter le fichier' }).click();
-    await expect(host.locator('#movies')).toContainText('Fichier ajouté : Français');
+    await host.getByRole('button', { name: 'Ajouter', exact: true }).click();
+    await expect(host.locator('#movies')).toContainText('Français · fr');
     await openDetails();
-    await host.getByLabel('Type de fichier').selectOption('audio');
-    await host.locator('#movies input[type=file]').setInputFiles({ name: 'external.wav', mimeType: 'audio/wav', buffer: await readFile('data/e2e/external.wav') });
-    await host.getByLabel('Nom affiché').fill('한국어'); await host.getByLabel('Langue', { exact: true }).selectOption('ko');
-    await host.getByRole('button', { name: 'Ajouter le fichier' }).click();
-    await expect(host.locator('#movies')).toContainText('Fichier ajouté : 한국어');
-    await openDetails(); await host.getByRole('button', { name: 'Préparer le film' }).click();
+    await host.getByRole('button', { name: 'Retirer' }).click();
+    await expect(host.locator('#movies')).not.toContainText('Français · fr');
+    await host.locator('#movies input[type=file]').setInputFiles({ name: 'dialogue.srt', mimeType: 'text/plain', buffer: Buffer.from('1\n00:00:00,000 --> 00:00:49,000\nUn sous-titre lisible.\n') });
+    await host.getByLabel('Nom affiché').fill('Français');
+    await host.getByRole('button', { name: 'Ajouter', exact: true }).click();
+    await expect(host.locator('#movies')).toContainText('Français · fr');
+    await openDetails(); await host.getByRole('button', { name: 'Préparer le film' }).first().click();
     await expect(host.getByRole('button', { name: 'Créer une séance', exact: true })).toBeVisible({ timeout: 45_000 });
+    await openDetails();
+    await host.locator('#movies input[type=file]').setInputFiles({ name: 'extra.srt', mimeType: 'text/plain', buffer: Buffer.from('1\n00:00:10,000 --> 00:00:12,000\nExtra subtitle.\n') });
+    await host.getByLabel('Nom affiché').fill('English'); await host.getByLabel('Langue', { exact: true }).selectOption('en');
+    await host.getByRole('button', { name: 'Ajouter', exact: true }).click();
+    await expect(host.locator('#movies')).toContainText('English · en');
     await host.screenshot({ path: 'test-results/admin-desktop.png', fullPage: true });
     await host.setViewportSize({ width: 390, height: 844 });
     expect(await host.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -90,7 +96,7 @@ test('admin manages a film and two named viewers join in their language with one
     }, { timeout: 15_000 }).toBeLessThan(.35);
     await controls(guest); await guest.locator('.plyr__controls [data-plyr=play]').click();
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
-    await guest.locator('#open-settings').click(); await guest.locator('#audio').selectOption('2'); await guest.locator('#subtitles').selectOption('0');
+    await guest.locator('#open-settings').click(); await guest.locator('#audio').selectOption('1'); await guest.locator('#subtitles').selectOption('0');
     await expect(guest.locator('#audio')).toBeInViewport(); await expect(guest.locator('#subtitles')).toBeInViewport();
     // Opening the overlay must never apply an image filter to video or an ancestor.
     for (const page of [host, guest]) expect(await page.locator('video').evaluate(video => {

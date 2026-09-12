@@ -36,12 +36,16 @@
       <div class="heading"><h1 data-fr="Bibliothèque" data-ko="영화 목록"></h1><button id="refresh" class="ghost" data-fr="Actualiser" data-ko="새로고침"></button></div>
       <form id="upload-form">
         <h2 data-fr="Ajouter un film" data-ko="영화 추가"></h2>
-        <label><span data-fr="Fichier du film (20 Go maximum)" data-ko="영화 파일 (최대 20GB)"></span><input id="upload-file" type="file" required></label>
-        <button id="upload-button" data-fr="Envoyer le film" data-ko="영화 업로드"></button>
+        <div class="upload-row">
+          <label><span data-fr="Fichier du film (20 Go maximum)" data-ko="영화 파일 (최대 20GB)"></span><input id="upload-file" type="file" required></label>
+          <button id="upload-button" data-fr="Envoyer le film" data-ko="영화 업로드"></button>
+        </div>
         <progress id="upload-progress" value="0" max="100"></progress><span id="upload-status"></span>
       </form>
-      <div id="pending-uploads"></div><div id="movies" class="columns"></div>
-      <section id="rooms-section"><h2 data-fr="Séances ouvertes" data-ko="열린 시청방"></h2><div id="rooms"></div></section>
+      <div id="pending-uploads"></div>
+      <h2 id="movies-heading" class="section-heading" data-fr="Films" data-ko="영화" hidden></h2>
+      <div id="movies" class="columns"></div>
+      <section id="rooms-section" hidden><h2 data-fr="Séances ouvertes" data-ko="열린 시청방"></h2><div id="rooms"></div></section>
     </section>
 
     <section id="watch" hidden data-chrome="true">
