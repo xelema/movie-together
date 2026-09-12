@@ -107,3 +107,66 @@ Le coût vidéo reste celui d'une lecture et d'une écriture du fichier avec ana
 des en-têtes. Le temps dépend du débit disque et de la taille ; aucun décodage
 vidéo intégral n'est ajouté. Une conversion audio peut encore prendre du temps.
 Voir [les tests sur appareils](validation.md).
+
+## Fluidité et budget mobile
+
+Optimisations du 12 septembre 2026, applicables aussi aux ordinateurs :
+
+| Chemin | Modification | Effet attendu |
+| --- | --- | --- |
+| Rendu couleur | Canvas limité aux pixels physiques affichés, ratio du film conservé, recalcul au redimensionnement et en plein écran | Moins de fragments à traiter lorsque la source dépasse l'écran |
+| GPU | Vérification synchrone des erreurs au démarrage, au redimensionnement, après erreur et toutes les deux secondes | Évite un aller-retour bloquant à chaque image, conserve la détection des erreurs |
+| Shader HDR | Constantes PQ de la source et de l'écran calculées une fois au chargement | Retire quatre puissances du calcul par pixel, sous réserve des optimisations propres au pilote |
+| Présentation | Soumission GPU explicite avec `flush()` | Envoie le travail sans attendre son achèvement |
+| Images inutiles | Pas de dessin dans un onglet masqué ni de nouvelle copie à horodatage inchangé dans la boucle de secours | Moins de travail et de consommation au repos |
+| Interface | Les textes, attributs et participants sont reconstruits seulement quand les valeurs affichées changent | Moins de mutations DOM pendant le film |
+| WebSocket | Les rapports ordinaires utilisent la diffusion de 200 ms déjà existante | En régime stable, environ 5 états par seconde reçus au lieu de 15 à deux participants ou 45 à huit |
+| HLS | Cible minimale de 30 s, plafond cible de 60 s, budget de 60 Mio, historique de 10 s | Réduit la pression mémoire par rapport aux anciennes cibles 120 à 180 s et 120 Mio |
+
+Le budget HLS en octets n'est pas une limite mémoire stricte. Hls.js le combine
+avec la durée et le débit, et un segment entier peut dépasser la cible.
+La réserve plus courte tolère moins longtemps une interruption réseau prolongée.
+Les seuils de synchronisation restent de 8 s au départ et 3 s pendant la lecture.
+Les transitions de lecture et les pauses sont toujours transmises immédiatement.
+
+Exemple de coût graphique, sans prétendre mesurer les FPS : un film 3840 × 2160
+affiché sur 400 pixels CSS de large avec un ratio de pixels de 2 utilise un
+canvas 800 × 450. Cela représente environ 96 % de fragments en moins. Le
+décodage et l'import de texture restent à la résolution source. Le filtrage
+linéaire intervient désormais avant le traitement couleur lorsque le canvas est
+réduit. Les formules de conversion restent les mêmes, mais les pixels aux
+contours ne sont donc pas nécessairement identiques à une réduction après rendu.
+
+Ces choix suivent les [recommandations WebGL de MDN](https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/WebGL_best_practices).
+`requestVideoFrameCallback` reste utilisé pour suivre les images présentées.
+Cette API fonctionne sur le thread principal et ne garantit pas une livraison
+à chaque image : voir [son contrat](https://developer.mozilla.org/en-US/docs/Web/API/HTMLVideoElement/requestVideoFrameCallback).
+
+### Autres leviers examinés
+
+| Piste | Décision et limite |
+| --- | --- |
+| Worker Hls.js | Déjà activé, avec les permissions CSP nécessaires et la bibliothèque servie localement |
+| Adaptation automatique du débit ou de la résolution | Hls.js la propose déjà, mais il faut plusieurs versions vidéo. Le flux unique actuel ne peut pas devenir un 1080p moins lourd avec un réglage du lecteur |
+| Versions mobiles 1080p ou 720p | Réduiraient aussi le décodage, l'import GPU et le débit. Demandent une source alternative ou un réencodage, exclu par la règle actuelle de copie vidéo exacte |
+| Lecture native sans canvas | Évite l'import GPU et le shader, mais le transport actuel porte des métadonnées couleur réécrites. Retirer le canvas seul afficherait des couleurs incorrectes. Un chemin natif distinct demanderait un autre transport et une validation couleur |
+| Shaka Player | Prend en charge HLS et DASH, mais utilise aussi le lecteur du navigateur. Son remplacement ne supprime pas notre shader ni le coût du décodage du même fichier |
+| Media Capabilities | Peut indiquer `supported`, `smooth` et `powerEfficient` pour une configuration. Utile pour choisir entre plusieurs sources, sans garantir la fluidité du canvas ajouté après décodage |
+| OffscreenCanvas, WebCodecs, WebGPU | Déplacement ou remplacement du rendu à envisager si les optimisations simples ne suffisent pas. La gestion des images, leur transfert et la disponibilité du décodeur HEVC demanderaient un autre pipeline |
+| Table de conversion couleur pré calculée | Pourrait réduire les calculs du shader, au prix d'interpolation, de mémoire et de nouveaux tests HDR. Aucun gain garanti face au coût de l'import vidéo |
+| Cache et serveur | Les segments privés sont déjà réutilisables après contrôle d'accès et validation ETag. Aucun changement de confidentialité pour gagner une requête |
+| Préchargement massif ou téléchargement parallèle personnalisé | Augmente mémoire, concurrence réseau et complexité. Le chargement et les reprises restent confiés à Hls.js |
+| Variation de vitesse ou interpolation d'images | Non ajoutées : l'audio doit rester à vitesse normale et les images d'origine doivent être conservées |
+
+Références : [configuration Hls.js](https://github.com/video-dev/hls.js/blob/master/docs/API.md),
+[Shaka Player](https://shaka-project.github.io/shaka-player/docs/api/tutorial-welcome.html),
+[Media Capabilities](https://developer.mozilla.org/en-US/docs/Web/API/Media_Capabilities_API).
+
+Les tests automatiques couvrent la taille du canvas, les vérifications GPU,
+la stabilité du DOM, la diffusion des états, les pauses communes, les pistes,
+le plein écran et les mires couleur. Les 29 tests unitaires et d'intégration,
+les scénarios Chromium et Firefox sous Windows, WebKit sous Ubuntu 24.04 via
+WSL, et les quatre mires Chrome/Firefox ont réussi. Le scénario Linux a utilisé
+Node 22, FFmpeg système et la commande Playwright `test --project=webkit`.
+Ils ne mesurent pas le gain de FPS sur le Xiaomi 15T Pro. Android réel et Safari
+sur appareils Apple restent à valider.

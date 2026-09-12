@@ -85,6 +85,10 @@ test('admin manages a film and two named viewers join in their language with one
     await expect.poll(() => guest.locator('video').evaluate(video => video.readyState)).toBeGreaterThanOrEqual(3);
     await expect(host.locator('.color-canvas')).toHaveAttribute('data-ready', 'true', { timeout: 15_000 });
     await expect(guest.locator('.color-canvas')).toHaveAttribute('data-ready', 'true', { timeout: 15_000 });
+    await expect.poll(() => guest.locator('.color-canvas').evaluate(canvas => {
+      const video = document.querySelector('video');
+      return canvas.width <= Math.ceil(video.getBoundingClientRect().width * devicePixelRatio) && canvas.width < video.videoWidth;
+    })).toBe(true);
     await expect(guest.locator('#screen #allow-sound')).toBeVisible();
     await guest.screenshot({ path: 'test-results/watch-sound.png', fullPage: true });
     await guest.locator('#allow-sound').click();
@@ -95,6 +99,9 @@ test('admin manages a film and two named viewers join in their language with one
       const [a, b] = await Promise.all([host, guest].map(page => page.locator('video').evaluate(video => video.currentTime)));
       return Math.abs(a - b);
     }, { timeout: 15_000 }).toBeLessThan(.35);
+    await guest.evaluate(() => { window.testParticipant = document.querySelector('#participants li'); });
+    await guest.waitForTimeout(1000);
+    expect(await guest.evaluate(() => window.testParticipant === document.querySelector('#participants li'))).toBe(true);
     await controls(guest); await guest.locator('.plyr__controls [data-plyr=play]').click();
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
     await guest.locator('#open-settings').click(); await guest.locator('#audio').selectOption('1'); await guest.locator('#subtitles').selectOption('0');
@@ -135,6 +142,7 @@ test('admin manages a film and two named viewers join in their language with one
       await expect.poll(() => host.evaluate(() => document.fullscreenElement?.id), { timeout: 3000 }).toBe('screen');
     }).toPass({ timeout: 20_000 });
     await expect(host.locator('#player-settings')).toBeHidden();
+    await expect.poll(() => host.locator('.color-canvas').evaluate(canvas => canvas.width === document.querySelector('video').videoWidth)).toBe(true);
     await host.mouse.move(0,0); await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 5000 });
     await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '0');
     await expect(host.locator('video')).toHaveCSS('cursor', 'none');

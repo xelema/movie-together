@@ -164,6 +164,23 @@ test('authenticated upload, original video and audio, private rooms and access c
   });
   const a = await connect(cookie), b = await connect(guest);
   assert.equal(b.message.members.length, 2);
+  // Drain the join broadcast before checking a burst of unchanged reports.
+  const ping = sentAt => new Promise(resolve => {
+    const listener = data => {
+      const message = JSON.parse(data);
+      if (message.type === 'pong' && message.sentAt === sentAt) { a.socket.off('message', listener); resolve(); }
+    };
+    a.socket.on('message', listener); a.socket.send(JSON.stringify({ type: 'ping', sentAt }));
+  });
+  await ping(1);
+  let broadcasts = 0;
+  const count = data => { if (JSON.parse(data).type === 'state') broadcasts++; };
+  a.socket.on('message', count);
+  for (let sequence = 0; sequence < 10; sequence++) a.socket.send(JSON.stringify({
+    type: 'report', epoch: b.message.state.epoch, sequence, position: 0, bufferedUntil: 0, ready: false,
+  }));
+  await ping(2); a.socket.off('message', count);
+  assert.ok(broadcasts <= 2, `Unchanged reports caused ${broadcasts} broadcasts`);
   assert.equal((await request(`/api/movies/${movie.id}`, { cookie, method: 'DELETE' })).status, 409);
   await request(`/api/rooms/${room.id}`, { cookie, method: 'DELETE' });
   assert.equal((await request(`/media/${movie.id}/master.m3u8`, { cookie: guest })).status, 403);
