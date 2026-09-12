@@ -41,11 +41,14 @@ test('authenticated upload, original video and audio, private rooms and access c
     body: body === undefined ? undefined : Buffer.isBuffer(body) ? body : JSON.stringify(body),
   });
   assert.equal((await request('/api/movies')).status, 401);
+  assert.equal((await request('/api/storage')).status, 401);
   assert.equal((await request('/api/login', { method: 'POST', body: { password: 'bad' } })).status, 401);
   assert.equal((await request('/api/login', { method: 'POST', headers: { Origin: 'https://elsewhere.invalid' }, body: { password: 'test-password-long-enough' } })).status, 403);
   const login = await request('/api/login', { method: 'POST', body: { password: 'test-password-long-enough' } });
   assert.equal(login.status, 200);
   const cookie = login.headers.get('set-cookie').split(';')[0];
+  const storage = await (await request('/api/storage', { cookie })).json();
+  assert.ok(storage.free > 0 && storage.total >= storage.free);
   const file = path.join(dataDir, 'fixture.mp4');
   // Use a small synthetic source for a real preparation and access-control check.
   await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=25',
@@ -122,6 +125,7 @@ test('authenticated upload, original video and audio, private rooms and access c
   assert.equal((await request(`/media/${movie.id}/master.m3u8`, { cookie: guest })).status, 200);
   assert.equal((await request(`/media/${movie.id}/source`, { cookie: guest })).status, 404);
   assert.equal((await request('/api/uploads', { cookie: guest })).status, 401);
+  assert.equal((await request('/api/storage', { cookie: guest })).status, 401);
   const connect = cookieValue => new Promise((resolve, reject) => {
     const socket = new WebSocket(`${base.replace('http', 'ws')}/ws?room=${room.id}`, { headers: { Cookie: cookieValue, Origin: origin } });
     sockets.push(socket); socket.on('error', reject); socket.on('message', data => {
