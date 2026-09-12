@@ -18,19 +18,21 @@ const colourBox = async directory => {
     matrix: bytes.readUInt16BE(at + 4), fullRange: !!(bytes[at + 6] & 0x80) };
 };
 
-test('copies 4K video exactly and prepares external audio and subtitles on the same timeline', async t => {
+test('copies 4K video exactly and prepares embedded audio and external subtitles on the same timeline', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-media-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const store = createStore(root), movie = { id: randomUUID(), title: 'Test', status: 'uploaded' }; store.save(movie);
   const directory = store.directory(movie.id), source = path.join(directory, 'source');
-  await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=gray:size=3840x2160:rate=2', '-t', '2', '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '2', '-pix_fmt', 'yuv420p', '-f', 'matroska', source]);
-  await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '1', '-f', 'wav', path.join(directory, 'audio')]);
+  await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=gray:size=3840x2160:rate=2',
+    '-f', 'lavfi', '-i', 'aevalsrc=0.3*sin(2*PI*440*t)|0.3*sin(2*PI*440*t):s=48000', '-t', '2', '-map', '0:v', '-map', '1:a',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '2', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-f', 'matroska', source]);
   await writeFile(path.join(directory, 'subtitles'), '1\n00:00:00,000 --> 00:00:01,500\nBonjour.\n');
-  movie.externalTracks = [{ kind: 'audio', filename: 'audio', label: 'Français', language: 'fr', index: 0 }, { kind: 'subtitle', filename: 'subtitles', label: 'Français', language: 'fr', index: 0 }];
+  movie.externalTracks = [{ kind: 'subtitle', filename: 'subtitles', label: 'French', language: 'fr', index: 0 }];
   const original = await readFile(source);
-  const result = await prepareMovie(store, movie, [], []);
+  const result = await prepareMovie(store, movie, [1], []);
   assert.equal(result.renditions.length, 1); assert.equal(result.renditions[0].width, 3840);
   assert.equal(result.audio[0].codec, 'aac'); assert.equal(result.subtitles.length, 1);
+  assert.equal(result.subtitles[0].external, true); assert.deepEqual(result.externalTracks, []);
   const prepared = path.join(directory, result.generation);
   assert.deepEqual(await readFile(source), original);
   const video = await probeFile(path.join(prepared, 'stream_0.m3u8'));
@@ -136,7 +138,7 @@ test('downmixes center-channel dialogue to both speakers in one pass and preserv
   const master = await readFile(path.join(output, 'master.m3u8'), 'utf8');
   assert.match(master, /NAME="Version originale"/);
   assert.equal(result.audio[0].label, 'Version originale');
-  assert.equal(result.audio[1].label, 'Piste 2');
+  assert.equal(result.audio[1].label, 'Track 2');
   const measure = async (stream, filters) => (await run(ffmpeg, ['-hide_banner', '-nostats', '-i', path.join(output, `stream_${stream}.m3u8`),
     '-af', filters, '-f', 'null', '-'], { includeStderr: true })).stderr;
   const channels = [...(await measure(1, 'astats')).matchAll(/RMS level dB: ([-\d.]+)/g)].map(match => Number(match[1]));

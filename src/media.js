@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, writeFile, readdir, stat, statfs, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, stat, statfs, rm, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -49,7 +49,7 @@ export function inspectProbe(probe) {
   }));
   const subtitles = streams.filter(stream => stream.codec_type === 'subtitle').map(stream => ({
     index: stream.index, codec: stream.codec_name, language: stream.tags?.language ?? 'und',
-    label: stream.tags?.title ?? stream.tags?.language ?? `Sous-titres ${stream.index}`,
+    label: stream.tags?.title ?? stream.tags?.language ?? `Subtitles ${stream.index}`,
     compatible: ['subrip', 'webvtt', 'mov_text', 'ass', 'ssa'].includes(stream.codec_name),
   }));
   const duration = Number(probe.format?.duration);
@@ -167,13 +167,12 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
       if (!track) throw new Error('Piste incompatible.');
       const chosen = movie.trackNames?.[kind]?.[index];
       const fallback = track.language && track.language !== 'und' ? track.language
-        : kind === 'audio' ? `Piste ${position + 1}` : `Sous-titres ${position + 1}`;
+        : kind === 'audio' ? `Track ${position + 1}` : `Subtitles ${position + 1}`;
       return { ...track, label: quote(chosen || fallback) };
     });
   };
   const external = movie.externalTracks ?? [];
-  const audio = [...select(movie.probe.audio, audioIndices, 'audio').map(track => ({ ...track, input: 0 })),
-    ...external.filter(track => track.kind === 'audio').map((track, index) => ({ ...track, input: index + 1, copy: false }))];
+  const audio = select(movie.probe.audio, audioIndices, 'audio');
   const embeddedSubs = select(movie.probe.subtitles, subtitleIndices, 'subtitles');
   if (movie.probe.audio.length && !audio.length) throw new Error('Choisir au moins une piste audio.');
   const video = movie.probe.video;
@@ -190,14 +189,12 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   const threads = Math.max(1, Math.min(8, Number(process.env.ENCODE_THREADS) || 2));
   const args = ['-y', '-v', 'error', '-progress', 'pipe:1', '-nostats', '-filter_threads', String(threads)];
   args.push('-threads', String(threads), '-protocol_whitelist', 'file,pipe', '-i', source);
-  for (const track of audio.filter(track => track.input > 0)) args.push('-protocol_whitelist', 'file,pipe', '-i', path.join(store.directory(movie.id), track.filename));
   args.push('-map', `0:${video.index}`);
-  for (const track of audio) args.push('-map', `${track.input}:${track.index}`);
+  for (const track of audio) args.push('-map', `0:${track.index}`);
   args.push('-c', 'copy', ...transport.args);
   for (const [index, track] of audio.entries()) {
     if (!track.copy) {
-      const filter = 'aresample=48000:ochl=stereo:rematrix_maxval=1' + (track.input > 0 ? `,apad,atrim=duration=${movie.probe.duration}` : '');
-      args.push(`-filter:a:${index}`, filter, `-c:a:${index}`, 'aac', `-profile:a:${index}`, 'aac_low',
+      args.push(`-filter:a:${index}`, 'aresample=48000:ochl=stereo:rematrix_maxval=1', `-c:a:${index}`, 'aac', `-profile:a:${index}`, 'aac_low',
         `-ac:a:${index}`, '2', `-ar:a:${index}`, '48000', `-b:a:${index}`, '256k');
     }
   }
@@ -227,8 +224,9 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   for (const track of embeddedSubs) {
     subtitles.push(await addSubtitle(directory, source, { ...track, duration: movie.probe.duration }));
   }
-  for (const track of external.filter(track => track.kind === 'subtitle')) {
-    subtitles.push(await addSubtitle(directory, path.join(store.directory(movie.id), track.filename), { ...track, duration: movie.probe.duration }));
+  const consumedExternal = external.filter(track => track.kind === 'subtitle');
+  for (const track of consumedExternal) {
+    subtitles.push({ ...await addSubtitle(directory, path.join(store.directory(movie.id), track.filename), { ...track, duration: movie.probe.duration }), external: true });
   }
   options.onProgress?.({ stage: 'subtitles', percent: 96 });
   // Keep administrator-added subtitle files when rebuilding versions.
@@ -245,7 +243,10 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   const durations = [...playlist.matchAll(/#EXTINF:([\d.]+)/g)].map(match => Number(match[1]));
   let bytes = 0;
   for (const file of await readdir(directory)) bytes += (await stat(path.join(directory, file))).size;
+  // Consumed external files become flagged prepared subtitles; the source files are no longer needed.
+  for (const track of consumedExternal) await unlink(path.join(store.directory(movie.id), track.filename)).catch(() => {});
   return { generation, audio: preparedAudio, subtitles, renditions, duration: movie.probe.duration, preparedBytes: bytes,
+    externalTracks: external.filter(track => track.kind !== 'subtitle'),
     maxSegmentSeconds: Math.max(...durations) };
   } catch (error) {
     // A generation is never served before it is complete. Remove only this fresh UUID directory.
