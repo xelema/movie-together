@@ -126,7 +126,8 @@ Optimisations du 12 septembre 2026, applicables aussi aux ordinateurs :
 Le budget HLS en octets n'est pas une limite mémoire stricte. Hls.js le combine
 avec la durée et le débit, et un segment entier peut dépasser la cible.
 La réserve plus courte tolère moins longtemps une interruption réseau prolongée.
-Les seuils de synchronisation restent de 8 s au départ et 3 s pendant la lecture.
+Les seuils de synchronisation restent ceux du moteur : 8 s au départ et 3 s
+pendant la lecture par défaut, 20 s et 5 s en production.
 Les transitions de lecture et les pauses sont toujours transmises immédiatement.
 
 Exemple de coût graphique, sans prétendre mesurer les FPS : un film 3840 × 2160

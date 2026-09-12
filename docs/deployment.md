@@ -77,8 +77,8 @@ Valider un petit film puis un original de taille habituelle avec la
 
 ### Lecture depuis la Corée du Sud
 
-Le lecteur HLS.js vise deux minutes d'avance, jusqu'à trois selon le débit et
-les limites mémoire du navigateur. Safari natif gère lui-même cette réserve.
+Le lecteur HLS.js garde 30 à 60 secondes d'avance dans un budget de 60 Mio.
+Safari natif gère lui-même cette réserve.
 Les segments peuvent être réutilisés depuis le cache privé du navigateur après
 vérification des droits auprès du serveur ; les listes de lecture ne sont pas
 conservées. Cela évite de retransférer les mêmes données lors d'un retour en arrière.
