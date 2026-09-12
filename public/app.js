@@ -230,7 +230,7 @@ function movieCard(movie) {
     const bar = el('progress', undefined, 'card-progress'); bar.max = 100; bar.value = movie.progress.percent;
     card.append(bar, el('p', `${movie.progress.percent} %`, 'hint'));
   }
-  if (movie.error) card.append(el('p', movie.error, 'media-error'));
+  if (movie.error) card.append(el('p', label(movie.error), 'media-error'));
   if (['processing', 'probing'].includes(movie.status)) return card;
   const audio = [], subtitles = [];
   const prepare = async () => {
