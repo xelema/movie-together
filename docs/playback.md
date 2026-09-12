@@ -100,8 +100,8 @@ leur ancien chemin de lecture pendant la migration.
 ## Son et préparation
 
 AAC-LC intégré mono/stéréo 44,1/48 kHz est copié. Le reste de l'audio est converti
-en une seule passe AAC-LC stéréo 48 kHz à 256 kbit/s. Les fichiers audio externes
-sont ajustés à la durée du film. Aucune analyse sonore intégrale ni seconde passe.
+en une seule passe AAC-LC stéréo 48 kHz à 256 kbit/s.
+Aucune analyse sonore intégrale ni seconde passe.
 
 Le coût vidéo reste celui d'une lecture et d'une écriture du fichier avec analyse
 des en-têtes. Le temps dépend du débit disque et de la taille ; aucun décodage
