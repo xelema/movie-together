@@ -147,8 +147,8 @@ export class SyncPlayer {
       this.offset = 0;
       this.video.src = url;
     } else if (window.Hls?.isSupported()) {
-      this.hls = new window.Hls({ maxBufferLength: 120, maxMaxBufferLength: 180,
-        maxBufferSize: 120 * 1024 * 1024, backBufferLength: 10, enableWorker: true });
+      this.hls = new window.Hls({ maxBufferLength: 30, maxMaxBufferLength: 60,
+        maxBufferSize: 60 * 1024 * 1024, backBufferLength: 10, enableWorker: true });
       this.hls.loadSource(url); this.hls.attachMedia(this.video);
       this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => { if (this.video.readyState >= 3) this.recovering = false; });
       for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) this.hls.on(window.Hls.Events[name], () => { this.applyTrackChoices(); this.tracks(); });
