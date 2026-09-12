@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createStore } from '../src/storage.js';
-import { run, probeFile, prepareMovie, inspectProbe } from '../src/media.js';
+import { run, probeFile, prepareMovie, inspectProbe, decodeSubtitleText, subtitleFileFormat, addSubtitle } from '../src/media.js';
 
 // Retagging rewrites the sequence header, so compare decoded samples: no picture may change.
 const decodedVideo = input => run(process.env.FFMPEG_PATH || 'ffmpeg', ['-v', 'error', '-i', input, '-map', '0:v:0', '-f', 'framemd5', '-']);
@@ -48,6 +48,45 @@ test('copies 4K video exactly and prepares embedded audio and external subtitles
   assert.deepEqual(await colourBox(prepared), { primaries: 1, transfer: 13, matrix: 1, fullRange: false });
   assert.match(await readFile(path.join(prepared, 'master.m3u8'), 'utf8'), /CHANNELS="2"/);
   assert.ok(result.maxSegmentSeconds <= 4.05);
+});
+
+test('decodes legacy subtitle charsets to UTF-8', () => {
+  // EUC-KR bytes for « 안녕하세요. 반갑습니다. 한국어 자막입니다 » repeated for confident detection.
+  const korean = '안녕하세요. 반갑습니다. 한국어 자막입니다';
+  const eucKr = Buffer.from([0xBE, 0xC8, 0xB3, 0xE7, 0xC7, 0xCF, 0xBC, 0xBC, 0xBF, 0xE4, 0x2E, 0x20,
+    0xB9, 0xDD, 0xB0, 0xA9, 0xBD, 0xC0, 0xB4, 0xCF, 0xB4, 0xD9, 0x2E, 0x20,
+    0xC7, 0xD1, 0xB1, 0xB9, 0xBE, 0xEE, 0x20, 0xC0, 0xDA, 0xB8, 0xB7, 0xC0, 0xD4, 0xB4, 0xCF, 0xB4, 0xD9]);
+  assert.equal(decodeSubtitleText(eucKr), korean);
+  assert.equal(decodeSubtitleText(Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from('Café', 'utf8')])), 'Café');
+  assert.equal(decodeSubtitleText(Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from('Café', 'utf16le')])), 'Café');
+  assert.equal(decodeSubtitleText(Buffer.from('Caf\xE9 \xE0 la f\xEAte', 'latin1')), 'Café à la fête');
+  assert.equal(decodeSubtitleText(Buffer.from('1\n00:00:01,000 --> 00:00:03,000\nPlain.\n')), '1\n00:00:01,000 --> 00:00:03,000\nPlain.\n');
+});
+
+test('identifies subtitle files without extension by converting them', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-subs-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const input = path.join(root, 'external_test');
+  await writeFile(input, '<SAMI>\n<BODY>\n<SYNC Start=1000><P Class=KRCC>안녕\n<SYNC Start=3000><P Class=KRCC>다시\n</BODY>\n</SAMI>\n');
+  assert.deepEqual(await subtitleFileFormat(input, ['sami']), { format: 'sami' });
+  await writeFile(input, '{25}{75}MicroDVD line\n{100}{150}Other\n');
+  assert.deepEqual(await subtitleFileFormat(input, ['microdvd', 'subviewer']), { format: 'microdvd' });
+  await writeFile(input, '[INFORMATION]\n[TITLE]x\n[END INFORMATION]\n[SUBTITLE]\n00:00:01.00,00:00:03.00\nSubViewer line\n');
+  assert.deepEqual(await subtitleFileFormat(input, ['microdvd', 'subviewer']), { format: 'subviewer' });
+  await writeFile(input, Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x01, 0x02, 0x03]));
+  assert.equal(await subtitleFileFormat(input, ['microdvd', 'subviewer']), null);
+});
+
+test('converts a forced-format subtitle file and rejects one with no cues', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-addsub-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const input = path.join(root, 'subtitle-input');
+  await writeFile(input, '<SAMI>\n<BODY>\n<SYNC Start=1000><P Class=KRCC>안녕하세요\n</BODY>\n</SAMI>\n');
+  const track = await addSubtitle(root, input, { label: 'Korean', language: 'ko', index: 0, duration: 60, format: 'sami' });
+  const vtt = await readFile(path.join(root, track.filename), 'utf8');
+  assert.match(vtt, /WEBVTT/); assert.match(vtt, /안녕하세요/); assert.match(vtt, /00:01\.000 --> /);
+  await writeFile(input, 'no timed text here\n');
+  await assert.rejects(addSubtitle(root, input, { label: 'x', language: 'und', index: 0, duration: 60, format: 'sami' }), /piste utilisable/);
 });
 
 test('reads color metadata without guessing or treating Dolby Vision as SDR', () => {
