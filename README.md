@@ -5,7 +5,7 @@ Bibliothèque privée et séances à plusieurs, avec langues et sous-titres indi
 ## Démarrage
 
 Node.js 22.20+, FFmpeg et FFprobe 5.1+ sont nécessaires, avec l'encodeur AAC.
-La vidéo n'est jamais réencodée. Les tests créent leurs extraits avec libx264.
+La vidéo n'est jamais réencodée. Les tests créent leurs extraits avec libx264 et libx265.
 
 ```sh
 npm ci
@@ -33,6 +33,8 @@ FFmpeg et FFmpeg Full installés avec Chocolatey sous Windows.
    sous-titres sont immédiats.
 4. Attendre « Prêt à regarder », créer une séance et choisir un code ou utiliser
    « Aléatoire ». Partager le lien ou le code. Les codes expirent après 12 heures.
+   Une séance accepte huit participants au plus et vingt séances peuvent rester
+   ouvertes en parallèle.
 5. L'invité saisit le code puis son pseudo. Il ne peut pas choisir un autre film.
 6. Un clic sur Lecture lance tout le monde lorsque chaque lecteur est prêt.
    Si le navigateur bloque le son, cliquer une fois sur « Activer le son ».
@@ -95,7 +97,7 @@ tous les participants. Les rapports des lecteurs arrivent toutes les 200 ms.
 - Un lecteur bloqué, absent ou décalé de plus de 350 ms provoque une pause commune.
 - Vitesse fixe, sans accélérations audio pour corriger les petits écarts.
 - Une pause manuelle ou une déconnexion exige une reprise explicite.
-- Hls.js vise deux minutes en avance ; le lecteur natif Apple contrôle sa réserve.
+- Hls.js garde 30 à 60 secondes d'avance dans un budget de 60 Mio ; le lecteur natif Apple contrôle sa réserve.
 
 La latence réseau et les horloges des appareils empêchent de garantir un écart
 nul. Le débit doit dépasser celui du film à long terme. Garder la page visible ;

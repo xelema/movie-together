@@ -33,9 +33,9 @@ Single Node process, no build step, no framework.
   up by `translate()` and dynamic strings use `t(french, korean)` inline. Server
   errors stay in French and map to Korean in `public/labels.js`. Track display
   names are always English (`French`, `Subtitles 2`).
-- Nothing loads from external domains. The CSP allows `'self'` only, so fonts
-  and vendor libs (`hls.js`, `plyr`) are served from `public/` and
-  `node_modules`.
+- Nothing loads from external domains. The CSP allows `'self'` plus `blob:`
+  for media and the hls.js worker, so fonts and vendor libs (`hls.js`, `plyr`)
+  are served from `public/` and `node_modules`.
 - Compact code, small helpers (`el`, `button`, `field` in `app.js`), error
   handling at boundaries only (`handle()` wraps UI actions into `#notice`).
 - The video stream is copied byte-exact into HLS/fMP4, never re-encoded. Only the
