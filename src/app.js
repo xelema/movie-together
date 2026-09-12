@@ -315,7 +315,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     try { await rm(store.directory(movie.id), { recursive: true, force: true }); store.movies.delete(movie.id); res.json({ ok: true }); }
     finally { mediaLocks.delete(movie.id); }
   });
-  app.post('/api/movies/:id/subtitles', admin, express.raw({ type: 'text/plain', limit: '2mb' }), async (req, res) => {
+  app.post('/api/movies/:id/subtitles', admin, express.raw({ type: 'text/plain', limit: 2 * 1024 ** 2 }), async (req, res) => {
     const movie = idleMovie(req.params.id);
     if (processing || movie.status !== 'ready') throw fail(409, 'Film indisponible.');
     if (!Buffer.isBuffer(req.body) || !req.body.length) throw fail(400, 'Sous-titre vide.');
