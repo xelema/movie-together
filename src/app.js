@@ -172,13 +172,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.post('/api/uploads', admin, async (req, res) => {
     const { size, name, fingerprint } = req.body;
     const { kind = 'movie', movieId, label = name, language = 'und' } = req.body;
-    if (!['movie', 'audio', 'subtitle'].includes(kind)) throw fail(400, 'Fichier invalide.');
+    if (!['movie', 'subtitle'].includes(kind)) throw fail(400, 'Fichier invalide.');
     if (kind !== 'movie') {
       const movie = idleMovie(movieId);
       if ((movie.externalTracks?.length ?? 0) >= 24) throw fail(400, 'Trop de fichiers ajoutés.');
       if (typeof label !== 'string' || !label.trim() || label.length > 100 || !/^[a-z]{2,3}$/.test(language)) throw fail(400, 'Nom ou langue invalide.');
-      if (kind === 'subtitle' && (!/\.(srt|vtt)$/i.test(name) || size > 2 * 1024 ** 2)) throw fail(400, 'Choisir un fichier SRT ou VTT de moins de 2 Mo.');
-      if (kind === 'audio' && size > 2 * 1024 ** 3) throw fail(400, 'Fichier audio limité à 2 Go.');
+      if (!/\.(srt|vtt)$/i.test(name) || size > 2 * 1024 ** 2) throw fail(400, 'Choisir un fichier SRT ou VTT de moins de 2 Mo.');
     }
     if (!Number.isSafeInteger(size) || size <= 0 || size > 20 * 1024 ** 3 || typeof name !== 'string' || name.length > 250) throw fail(400, 'Fichier invalide (maximum 20 Go).');
     if ((await readdir(path.join(store.root, 'uploads'))).length >= 2) throw fail(409, 'Terminer ou supprimer les uploads précédents.');
@@ -230,7 +229,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       if (info.kind && info.kind !== 'movie') {
         const movie = idleMovie(info.movieId);
         const probe = await probeFile(source);
-        const stream = (info.kind === 'audio' ? probe.audio : probe.subtitles).find(track => track.compatible);
+        const stream = probe.subtitles.find(track => track.compatible);
         if (!stream) throw fail(400, 'Ce fichier ne contient aucune piste utilisable.');
         const filename = `external_${id}`;
         await rename(source, path.join(store.directory(movie.id), filename));
@@ -311,7 +310,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     const input = path.join(directory, 'subtitle-input');
     try {
       await writeFile(input, req.body);
-      const track = await addSubtitle(directory, input, { label: req.query.label || 'Sous-titres',
+      const track = await addSubtitle(directory, input, { label: req.query.label || 'Subtitles',
         language: req.query.language || 'und', duration: movie.duration });
       track.external = true;
       movie.subtitles.push(track); await writeMaster(directory, movie.audio, movie.subtitles, movie.renditions); store.save(movie);
@@ -334,6 +333,18 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         for (const ext of ['vtt', 'm3u8']) await rm(path.join(directory, `sub_${track.id}_${rendition.id}.${ext}`), { force: true });
       }
       res.json(movie);
+    } finally { mediaLocks.delete(movie.id); }
+  });
+  app.delete('/api/movies/:id/external/:track', admin, async (req, res) => {
+    const movie = idleMovie(req.params.id);
+    if (processing) throw fail(409, 'Un import est déjà en cours.');
+    const track = movie.externalTracks?.find(item => item.id === req.params.track);
+    if (!track) throw fail(404, 'Piste introuvable.');
+    mediaLocks.add(movie.id);
+    try {
+      movie.externalTracks = movie.externalTracks.filter(item => item !== track);
+      await unlink(path.join(store.directory(movie.id), track.filename)).catch(() => {});
+      store.save(movie); res.json(movie);
     } finally { mediaLocks.delete(movie.id); }
   });
   app.get('/media/:id/:file', authenticated, (req, res, next) => {
