@@ -244,7 +244,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         movie.externalTracks ??= [];
         movie.externalTracks.push({ id, kind: info.kind, filename, label: info.label, language: info.language,
           format: found.format ?? undefined, index: found.format ? 0 : 's:0' });
-        movie.status = 'uploaded';
+        // A file queued for the next preparation must not unserve a working one.
+        if (movie.status !== 'ready') movie.status = 'uploaded';
         store.save(movie); await rm(uploadPath(id), { recursive: true, force: true });
         res.json(movie); return;
       }
@@ -295,7 +296,11 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
           await rm(path.join(store.directory(movie.id), entry.name), { recursive: true, force: true });
         }
       }
-    } catch (error) { movie.status = 'failed'; movie.error = error.message; }
+    } catch (error) {
+      // A failed run never replaces a working one: a previous generation keeps playing.
+      const servable = movie.generation && await stat(path.join(store.directory(movie.id), movie.generation)).then(() => true, () => false);
+      movie.status = servable ? 'ready' : 'failed'; movie.error = error.message;
+    }
     finally { delete movie.progress; store.save(movie); processing = false; }
   });
   app.patch('/api/movies/:id', admin, (req, res) => {
