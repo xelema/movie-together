@@ -76,6 +76,29 @@ test('authenticated upload, original video and audio, private rooms and access c
   assert.equal(withTrack.externalTracks.length, 1);
   const afterDelete = await (await request(`/api/movies/${movie.id}/external/${withTrack.externalTracks[0].id}`, { cookie, method: 'DELETE' })).json();
   assert.equal(afterDelete.externalTracks.length, 0);
+  // EUC-KR bytes for « 안녕하세요. 반갑습니다 » : SMI uploads arrive in legacy Korean charsets.
+  const smi = Buffer.concat([Buffer.from('<SAMI>\n<BODY>\n<SYNC Start=1000><P Class=KRCC>'),
+    Buffer.from([0xBE, 0xC8, 0xB3, 0xE7, 0xC7, 0xCF, 0xBC, 0xBC, 0xBF, 0xE4, 0x2E, 0x20,
+      0xB9, 0xDD, 0xB0, 0xA9, 0xBD, 0xC0, 0xB4, 0xCF, 0xB4, 0xD9]), Buffer.from('\n</BODY>\n</SAMI>\n')]);
+  const smiUpload = await (await request('/api/uploads', { cookie, method: 'POST',
+    body: { name: 'korean.smi', size: smi.length, kind: 'subtitle', movieId: movie.id, label: 'Korean', language: 'ko' } })).json();
+  assert.equal((await request(`/api/uploads/${smiUpload.id}`, { cookie, method: 'PUT',
+    headers: { 'Content-Type': 'application/octet-stream', 'Upload-Offset': '0' }, body: smi })).status, 200);
+  const withSmi = await (await request(`/api/uploads/${smiUpload.id}/complete`, { cookie, method: 'POST', body: {} })).json();
+  assert.equal(withSmi.externalTracks[0].format, 'sami');
+  const stored = await readFile(path.join(instance.store.directory(movie.id), withSmi.externalTracks[0].filename), 'utf8');
+  assert.match(stored, /안녕하세요/);
+  const afterSmiDelete = await (await request(`/api/movies/${movie.id}/external/${withSmi.externalTracks[0].id}`, { cookie, method: 'DELETE' })).json();
+  assert.equal(afterSmiDelete.externalTracks.length, 0);
+  const junk = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x01, 0x02, 0x03, 0x04]);
+  const junkUpload = await (await request('/api/uploads', { cookie, method: 'POST',
+    body: { name: 'junk.sub', size: junk.length, kind: 'subtitle', movieId: movie.id, label: 'x', language: 'fr' } })).json();
+  assert.equal((await request(`/api/uploads/${junkUpload.id}`, { cookie, method: 'PUT',
+    headers: { 'Content-Type': 'application/octet-stream', 'Upload-Offset': '0' }, body: junk })).status, 200);
+  assert.equal((await request(`/api/uploads/${junkUpload.id}/complete`, { cookie, method: 'POST', body: {} })).status, 400);
+  await request(`/api/uploads/${junkUpload.id}`, { cookie, method: 'DELETE' });
+  assert.equal((await request('/api/uploads', { cookie, method: 'POST',
+    body: { name: 'notes.txt', size: 10, kind: 'subtitle', movieId: movie.id, label: 'x', language: 'fr' } })).status, 400);
   assert.equal((await request('/api/uploads', { cookie, method: 'POST',
     body: { name: 'voice.mka', size: 10, kind: 'audio', movieId: movie.id, label: 'x', language: 'fr' } })).status, 400);
   assert.equal((await request(`/api/movies/${movie.id}/prepare`, { cookie, method: 'POST', body: { audio: [1, 2], subtitles: [] } })).status, 202);
@@ -113,6 +136,13 @@ test('authenticated upload, original video and audio, private rooms and access c
   const withSubtitles = await subtitle.json();
   const vtt = await (await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`, { cookie })).text();
   assert.match(vtt, /WEBVTT/); assert.match(vtt, /A subtitle\./);
+  const smiSub = await request(`/api/movies/${movie.id}/subtitles?label=Korean&language=ko&name=korean.smi`, { cookie, method: 'POST',
+    headers: { 'Content-Type': 'text/plain' }, body: smi });
+  assert.equal(smiSub.status, 200);
+  const smiTrack = (await smiSub.json()).subtitles.at(-1);
+  assert.match(await (await request(`/media/${movie.id}/${smiTrack.filename}`, { cookie })).text(), /안녕하세요/);
+  assert.equal((await request(`/api/movies/${movie.id}/subtitles?label=x&name=evil.exe`, { cookie, method: 'POST',
+    headers: { 'Content-Type': 'text/plain' }, body: smi })).status, 400);
   assert.match(await (await request(`/media/${movie.id}/master.m3u8`, { cookie })).text(), /TYPE=SUBTITLES/);
   assert.equal((await request(`/media/${movie.id}/master.m3u8`)).status, 401);
   const room = await (await request('/api/rooms', { cookie, method: 'POST', body: { movieId: movie.id, code: 'Cinema-Soir' } })).json();

@@ -54,7 +54,7 @@ test('admin manages a film and two named viewers join in their language with one
     await openDetails(); await host.getByRole('button', { name: 'Préparer le film' }).first().click();
     await expect(host.getByRole('button', { name: 'Créer une séance', exact: true })).toBeVisible({ timeout: 45_000 });
     await openDetails();
-    await host.locator('#movies input[type=file]').setInputFiles({ name: 'extra.srt', mimeType: 'text/plain', buffer: Buffer.from('1\n00:00:10,000 --> 00:00:12,000\nExtra subtitle.\n') });
+    await host.locator('#movies input[type=file]').setInputFiles({ name: 'extra.smi', mimeType: 'text/plain', buffer: Buffer.from('<SAMI>\n<BODY>\n<SYNC Start=10000><P Class=ENCC>Extra subtitle.\n</BODY>\n</SAMI>\n') });
     await host.getByLabel('Nom affiché').fill('English'); await host.getByLabel('Langue', { exact: true }).selectOption('en');
     await host.getByRole('button', { name: 'Ajouter', exact: true }).click();
     await expect(host.locator('#movies')).toContainText('English · en');

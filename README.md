@@ -27,9 +27,10 @@ FFmpeg et FFmpeg Full installés avec Chocolatey sous Windows.
 2. Ouvrir « Gérer le film », choisir les langues et sous-titres intégrés, et
    écrire le nom que chacun verra. Laissé tel quel, le nom est en anglais.
    Aucun terme technique n'est affiché aux participants.
-3. Ajouter éventuellement des sous-titres SRT/VTT (2 Mo maximum) dans
-   « Sous-titres ajoutés », puis cliquer sur « Préparer le film ». Sur un film
-   prêt, l'ajout et le retrait de sous-titres sont immédiats.
+3. Ajouter éventuellement des fichiers de sous-titres (SRT, VTT, SMI, ASS,
+   SUB, SBV ou LRC, 2 Mo maximum) dans « Sous-titres ajoutés », puis cliquer
+   sur « Préparer le film ». Sur un film prêt, l'ajout et le retrait de
+   sous-titres sont immédiats.
 4. Attendre « Prêt à regarder », créer une séance et choisir un code ou utiliser
    « Aléatoire ». Partager le lien ou le code. Les codes expirent après 12 heures.
 5. L'invité saisit le code puis son pseudo. Il ne peut pas choisir un autre film.
