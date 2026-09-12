@@ -14,7 +14,7 @@ uniform sampler2D picture;
 uniform vec2 coefficients;
 uniform mat3 gamut;
 uniform int transfer;
-uniform float peak;
+uniform vec3 shoulder;
 
 float pqToNits(float v) {
   float p = pow(max(v, 0.), 1. / 78.84375);
@@ -36,9 +36,7 @@ float inverseSrgb(float v) {
 // BT.2390 EETF, zero display black, 203 cd/m² SDR reference white.
 // The Hermite shoulder preserves shadow exposure and rolls highlights into SDR.
 float mapLuminance(float n) {
-  float source = nitsToPq(max(peak, 203.));
-  float target = nitsToPq(203.) / source;
-  float knee = 1.5 * target - .5;
+  float source = shoulder.x, target = shoulder.y, knee = shoulder.z;
   float x = min(nitsToPq(n) / source, 1.);
   if (x > knee) {
     float t = (x - knee) / (1. - knee);
@@ -90,7 +88,13 @@ export function colorParameters(color) {
   }[color.primaries];
   const transfer = { bt709: 0, smpte170m: 0, bt2020_10: 0, bt2020_12: 0, smpte2084: 1, 'arib-std-b67': 2, 'iec61966-2-1': 3 }[color.transfer];
   if (color.version !== 1 || !coefficients || !gamut || transfer === undefined) throw new Error('Format couleur non pris en charge.');
-  return { coefficients, gamut, transfer, peak: Math.max(203, Math.min(10000, Number(color.peakNits) || 1000)) };
+  const peak = Math.max(203, Math.min(10000, Number(color.peakNits) || 1000));
+  const pq = nits => {
+    const p = (nits / 10000) ** .1593017578125;
+    return ((.8359375 + 18.8515625 * p) / (1 + 18.6875 * p)) ** 78.84375;
+  };
+  const source = pq(peak), target = pq(203) / source;
+  return { coefficients, gamut, transfer, shoulder: [source, target, 1.5 * target - .5] };
 }
 
 export class ColorRenderer {
@@ -120,7 +124,7 @@ export class ColorRenderer {
       gl.uniform2fv(gl.getUniformLocation(program, 'coefficients'), parameters.coefficients);
       gl.uniformMatrix3fv(gl.getUniformLocation(program, 'gamut'), false, parameters.gamut);
       gl.uniform1i(gl.getUniformLocation(program, 'transfer'), parameters.transfer);
-      gl.uniform1f(gl.getUniformLocation(program, 'peak'), parameters.peak);
+      gl.uniform3fv(gl.getUniformLocation(program, 'shoulder'), parameters.shoulder);
       this.texture = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, this.texture);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -131,12 +135,17 @@ export class ColorRenderer {
       this.listen(this.canvas, 'webglcontextlost', event => { event.preventDefault(); this.failed = true; onFailure('Le rendu des couleurs a été interrompu. Rechargez la page.'); });
       this.listen(this.canvas, 'webglcontextrestored', () => onFailure('Le rendu des couleurs a été interrompu. Rechargez la page.'));
       for (const event of ['loadeddata', 'canplay', 'seeked', 'pause', 'resize']) this.listen(video, event, () => this.draw());
+      this.resizeObserver = new ResizeObserver(([entry]) => {
+        this.displayWidth = entry.contentRect.width; this.displayHeight = entry.contentRect.height; this.draw();
+      });
+      this.resizeObserver.observe(video);
+      this.listen(window, 'resize', () => this.draw());
       this.listen(video.textTracks, 'change', () => this.updateCaptions());
       this.listen(video.textTracks, 'addtrack', event => this.watchTrack(event.track));
       for (const track of video.textTracks) this.watchTrack(track);
       const frame = () => {
         if (this.disposed || this.failed) return;
-        this.draw();
+        this.draw(false);
         this.callback = video.requestVideoFrameCallback ? video.requestVideoFrameCallback(frame) : requestAnimationFrame(frame);
       };
       frame();
@@ -153,20 +162,33 @@ export class ColorRenderer {
     const line = cues[0]?.line;
     this.captions.style.bottom = `${typeof line === 'number' && !cues[0].snapToLines ? 100 - line : 16}%`;
   }
-  draw() {
+  draw(force = true) {
     const { video, gl, canvas } = this;
-    if (this.disposed || this.failed || video.readyState < 2 || !video.videoWidth || video.seeking) return;
-    if (!video.requestVideoFrameCallback && !video.paused && this.lastTime === video.currentTime) return;
+    if (this.disposed || this.failed || document.hidden || video.readyState < 2 || !video.videoWidth || video.seeking) return;
+    if (!force && !video.requestVideoFrameCallback && this.lastTime === video.currentTime) return;
     try {
-      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+      // Match physical display pixels, including letterboxing, without upscaling the source.
+      const ratio = window.devicePixelRatio || 1;
+      const scale = Math.min(1, (this.displayWidth || video.videoWidth) * ratio / video.videoWidth,
+        (this.displayHeight || video.videoHeight) * ratio / video.videoHeight);
+      const width = Math.max(1, Math.round(video.videoWidth * scale)), height = Math.max(1, Math.round(video.videoHeight * scale));
+      const resized = canvas.width !== width || canvas.height !== height;
+      if (resized) {
         const maximum = gl.getParameter(gl.MAX_TEXTURE_SIZE);
         if (video.videoWidth > maximum || video.videoHeight > maximum) throw new Error('Définition vidéo non prise en charge par le rendu des couleurs.');
-        canvas.width = video.videoWidth; canvas.height = video.videoHeight; gl.viewport(0, 0, canvas.width, canvas.height);
+        canvas.width = width; canvas.height = height; gl.viewport(0, 0, width, height);
       }
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      if (gl.getError() !== gl.NO_ERROR) throw new Error('Le rendu des couleurs a été interrompu. Rechargez la page.');
-      this.lastTime = video.currentTime; this.ready = true; this.drawErrors = 0; canvas.dataset.ready = 'true';
+      gl.flush();
+      // Keep error detection without a synchronous GPU round trip on every frame.
+      const now = performance.now();
+      if (!this.ready || resized || this.drawErrors || now - this.lastErrorCheck >= 2000) {
+        this.lastErrorCheck = now;
+        if (gl.getError() !== gl.NO_ERROR) throw new Error('Le rendu des couleurs a été interrompu. Rechargez la page.');
+      }
+      this.lastTime = video.currentTime; this.drawErrors = 0;
+      if (!this.ready) { this.ready = true; canvas.dataset.ready = 'true'; }
     } catch (error) {
       // Texture upload can fail while the first frame is still being presented; retry before giving up.
       if ((this.drawErrors = (this.drawErrors || 0) + 1) < 8) { clearTimeout(this.retryTimer); this.retryTimer = setTimeout(() => this.draw(), 400); }
@@ -175,6 +197,7 @@ export class ColorRenderer {
   }
   dispose() {
     this.disposed = true; clearTimeout(this.retryTimer); this.listeners.forEach(remove => remove());
+    this.resizeObserver?.disconnect();
     if (this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.callback); else cancelAnimationFrame(this.callback);
     if (this.gl) {
       this.gl.deleteTexture(this.texture); this.gl.deleteBuffer(this.buffer); this.gl.deleteProgram(this.program);

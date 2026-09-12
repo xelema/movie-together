@@ -421,8 +421,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
           if (message.type === 'ping' && Number.isFinite(message.sentAt)) {
             return ws.send(JSON.stringify({ type: 'pong', sentAt: message.sentAt, serverNow: performance.now() }));
           }
-          if (message.type === 'report') room.engine.report(id, message);
-          else if (message.type === 'command') room.engine.command(id, { ...message, type: message.command });
+          if (message.type === 'report') {
+            const { epoch, phase } = room.engine;
+            room.engine.report(id, message);
+            // Ordinary buffer reports share the ticker, transitions are sent immediately.
+            if (room.engine.epoch === epoch && room.engine.phase === phase) return;
+          } else if (message.type === 'command') room.engine.command(id, { ...message, type: message.command });
           else throw new Error('Message inconnu.');
           broadcast(room);
         } catch { ws.send(JSON.stringify({ type: 'error', error: 'Commande invalide.' })); }

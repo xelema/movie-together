@@ -94,6 +94,10 @@ function updatePlayback(controller) {
     loading ? t('Chargement du film…', '영화를 불러오는 중…') :
     phase === 'buffering' ? waiting.length ? t(`En attente de ${waiting.join(', ')}…`, `${waiting.join(', ')} 님을 기다리는 중…`) : t('La séance va commencer…', '곧 재생됩니다…') : '';
   const overlay = !!message;
+  const playing = controller.activated && ['playing', 'buffering'].includes(phase);
+  const key = JSON.stringify([message, controller.failure, needsSound, phase, playing, t('fr', 'ko')]);
+  if (controller.playbackUIKey === key) return;
+  controller.playbackUIKey = key;
   $('buffering-overlay').hidden = !overlay;
   $('screen').dataset.overlay = String(overlay);
   const busy = overlay && !controller.failure && !needsSound;
@@ -102,7 +106,6 @@ function updatePlayback(controller) {
   if ($('buffering-label').textContent !== message) $('buffering-label').textContent = message;
   $('allow-sound').hidden = !needsSound || !!controller.failure;
   $('playback-status').textContent = overlay ? '' : phase === 'paused' ? t('En pause', '일시정지') : '';
-  const playing = controller.activated && ['playing', 'buffering'].includes(phase);
   $('watch').dataset.playing = String(playing);
   if (!playing) $('watch').dataset.chrome = 'true';
   for (const control of playbackUI.elements.buttons.play ?? []) {
@@ -347,9 +350,14 @@ async function enterRoom(id, name, context = {}) {
       updateFilmMeta();
     },
     onState: (message, controller) => {
+      roomMessage = message; updatePlayback(controller);
+      const key = JSON.stringify([message.movie?.id, message.movie?.title, message.code, controller.memberId,
+        t('fr', 'ko'), message.members.map(({ id, name, waiting }) => [id, name, waiting])]);
+      if (controller.roomUIKey === key) return;
+      controller.roomUIKey = key;
       $('movie-title').textContent = message.movie?.title ?? ''; $('room-movie').value = message.movie?.id ?? '';
       if (message.code) $('room-code').textContent = message.code;
-      roomMessage = message; updatePlayback(controller); updateFilmMeta();
+      updateFilmMeta();
       const ready = message.members.filter(member => !member.waiting).length, total = message.members.length;
       $('member-count').textContent = total ? t(`${ready} personne${ready > 1 ? 's' : ''} prête${ready > 1 ? 's' : ''} sur ${total}`, `${total}명 중 ${ready}명 준비 완료`) : '';
       $('participants').replaceChildren(...message.members.map(member => {
