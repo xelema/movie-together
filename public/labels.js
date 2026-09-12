@@ -12,6 +12,7 @@ const korean = {
   'Un import est déjà en cours.': '다른 파일을 준비 중입니다. 잠시 기다려 주세요.',
   'Choisir un fichier SRT ou VTT de moins de 2 Mo.': '2MB 미만의 SRT 또는 VTT 파일을 선택하세요.',
   'Ce fichier ne contient aucune piste utilisable.': '사용할 수 있는 음성이나 자막이 없는 파일입니다.',
+  'Piste introuvable.': '트랙을 찾을 수 없습니다.',
   'Ouvrir': '열기',
   'Copier le lien': '링크 복사',
   'Fermer la room': '시청방 닫기',

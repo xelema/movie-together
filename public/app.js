@@ -5,6 +5,7 @@ const $ = id => document.getElementById(id);
 const t = (fr, ko) => sessionStorage.getItem('language') === 'ko' ? ko : fr;
 const adminPage = location.pathname === '/admin';
 let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null;
+const movieCards = new Map(), openPanels = new Set();
 const playbackUI = new window.Plyr($('video'), {
   controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'fullscreen'],
   settings: [], storage: { enabled: false }, clickToPlay: false, keyboard: { focused: false, global: false },
@@ -134,20 +135,16 @@ function selectOptions(select, choices) {
   if (choices.some(([value]) => String(value) === previous)) select.value = previous;
 }
 function trackName(track) {
-  const names = { fr: t('Français', '프랑스어'), fra: t('Français', '프랑스어'), fre: t('Français', '프랑스어'),
-    en: t('Anglais', '영어'), eng: t('Anglais', '영어'), ko: t('Coréen', '한국어'), kor: t('Coréen', '한국어'),
-    es: t('Espagnol', '스페인어'), spa: t('Espagnol', '스페인어'), de: t('Allemand', '독일어'), deu: t('Allemand', '독일어'), ger: t('Allemand', '독일어'),
-    it: t('Italien', '이탈리아어'), ita: t('Italien', '이탈리아어'), pt: t('Portugais', '포르투갈어'), por: t('Portugais', '포르투갈어'),
-    ja: t('Japonais', '일본어'), jpn: t('Japonais', '일본어'), zh: t('Chinois', '중국어'), zho: t('Chinois', '중국어'), chi: t('Chinois', '중국어'),
-    nl: t('Néerlandais', '네덜란드어'), nld: t('Néerlandais', '네덜란드어'), dut: t('Néerlandais', '네덜란드어'),
-    ru: t('Russe', '러시아어'), rus: t('Russe', '러시아어'), ar: t('Arabe', '아랍어'), ara: t('Arabe', '아랍어'),
-    tr: t('Turc', '터키어'), tur: t('Turc', '터키어'), pl: t('Polonais', '폴란드어'), pol: t('Polonais', '폴란드어') };
+  const names = { fr: 'French', fra: 'French', fre: 'French', en: 'English', eng: 'English', ko: 'Korean', kor: 'Korean',
+    es: 'Spanish', spa: 'Spanish', de: 'German', deu: 'German', ger: 'German', it: 'Italian', ita: 'Italian',
+    pt: 'Portuguese', por: 'Portuguese', ja: 'Japanese', jpn: 'Japanese', zh: 'Chinese', zho: 'Chinese', chi: 'Chinese',
+    nl: 'Dutch', nld: 'Dutch', dut: 'Dutch', ru: 'Russian', rus: 'Russian', ar: 'Arabic', ara: 'Arabic',
+    tr: 'Turkish', tur: 'Turkish', pl: 'Polish', pol: 'Polish', und: 'Other' };
   return names[track.label] || track.label;
 }
 function defaultTrackName(track, position, kind) {
-  const named = trackName({ label: track.language ?? 'und' });
-  if (named && named !== 'und') return named;
-  return kind === 'audio' ? t(`Piste ${position + 1}`, `트랙 ${position + 1}`) : t(`Sous-titres ${position + 1}`, `자막 ${position + 1}`);
+  if (track.language && track.language !== 'und') return trackName({ label: track.language });
+  return kind === 'audio' ? `Track ${position + 1}` : `Subtitles ${position + 1}`;
 }
 function runtime(seconds) {
   const total = Math.round(seconds / 60), hours = Math.floor(total / 60), minutes = total % 60;
@@ -169,11 +166,23 @@ async function refresh() {
   movies = await api('/api/movies');
   selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title]));
   if (player || !adminPage) return;
-  $('movies').replaceChildren(...movies.map(movieCard));
+  const language = sessionStorage.getItem('language') === 'ko' ? 'ko' : 'fr';
+  const signature = movie => JSON.stringify([language, movie.status, movie.progress, movie.title, movie.error,
+    movie.probe, movie.trackNames, movie.externalTracks, movie.subtitles]);
+  $('movies').replaceChildren(...movies.map(movie => {
+    const key = signature(movie), cached = movieCards.get(movie.id);
+    if (cached?.key === key) return cached.node;
+    const node = movieCard(movie);
+    movieCards.set(movie.id, { key, node });
+    return node;
+  }));
+  for (const id of [...movieCards.keys()]) if (!movies.some(movie => movie.id === id)) { movieCards.delete(id); openPanels.delete(id); }
+  $('movies-heading').hidden = !movies.length;
   const rooms = await api('/api/rooms');
+  $('rooms-section').hidden = !rooms.length;
   $('rooms').replaceChildren(...rooms.map(room => {
     const card = el('div', undefined, 'card');
-    card.append(el('p', `${movies.find(movie => movie.id === room.movieId)?.title ?? ''} · ${room.participants} ${t('personne(s)', '명')}`), el('code', room.code),
+    card.append(el('p', `${movies.find(movie => movie.id === room.movieId)?.title ?? ''} · ${room.participants} ${t('personne(s)', '명')} · ${t('jusqu’à', '까지')} ${new Date(room.expires).toTimeString().slice(0, 5)}`), el('code', room.code),
       button(t('Ouvrir', '열기'), () => enterRoom(room.id, undefined, { code: room.code, title: movies.find(movie => movie.id === room.movieId)?.title })), button(t('Copier le lien', '링크 복사'), async () => { await navigator.clipboard.writeText(room.link); notice(t('Lien copié.', '링크를 복사했습니다.')); }),
       button(t('Fermer la séance', '시청방 닫기'), async () => { await api(`/api/rooms/${room.id}`, { method: 'DELETE' }); await refresh(); }, 'danger'));
     return card;
@@ -186,51 +195,22 @@ async function refresh() {
 }
 function movieCard(movie) {
   const card = el('article', undefined, 'card'); card.append(el('h2', movie.title));
-  const states = { ready: t('Prêt à regarder', '시청 준비 완료'), uploaded: t('À préparer', '준비 필요'), processing: t('Préparation en cours…', '준비 중…'), probing: t('Vérification…', '확인 중…'), failed: t('Préparation échouée. Réessayez.', '준비에 실패했습니다. 다시 시도하세요.'), incompatible: t('Ce fichier ne peut pas être lu.', '이 파일은 재생할 수 없습니다.') };
-  card.append(el('p', `${states[movie.status] || ''}${movie.progress ? ` ${movie.progress.percent} %` : ''}`));
-  if (movie.error) card.append(el('p', movie.error, 'media-error'));
-  if (movie.status === 'ready') card.append(button(t('Créer une séance', '시청방 만들기'), async () => {
-    $('create-code').value = '';
-    const code = await askDialog('create-dialog', 'create-code'); if (!code) return;
-    const room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code } });
-    notice(`${t('Invitation', '초대')}: ${room.link}`); await enterRoom(room.id, undefined, { code: room.code, title: movie.title });
-  }));
-  if (['processing', 'probing'].includes(movie.status)) return card;
-  const details = el('details'); details.append(el('summary', t('Modifier le film', '영화 수정')));
-  const title = el('input'); title.value = movie.title; title.maxLength = 150;
-  details.append(field(t('Titre', '제목'), title), button(t('Enregistrer le titre', '제목 저장'), async () => { await api(`/api/movies/${movie.id}`, { method: 'PATCH', body: { title: title.value } }); await refresh(); }));
-  const audio = [], subtitles = [];
-  for (const [tracks, selected, heading, kind] of [
-    [movie.probe?.audio ?? [], audio, t('Langues du film', '음성 언어'), 'audio'],
-    [movie.probe?.subtitles ?? [], subtitles, t('Sous-titres', '자막'), 'subtitles']]) {
-    if (!tracks.length) continue;
-    details.append(el('h3', heading), el('p', t('Ces noms sont ceux que verront les participants.', '참가자에게 표시되는 이름입니다.')));
-    for (const [position, track] of tracks.entries()) {
-      const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.checked = track.compatible; checkbox.disabled = !track.compatible;
-      checkbox.setAttribute('aria-label', t('Garder cette piste', '이 트랙 사용'));
-      const fallback = defaultTrackName(track, position, kind);
-      const field = el('input'); field.maxLength = 60; field.disabled = !track.compatible;
-      field.value = movie.trackNames?.[kind]?.[track.index] ?? fallback;
-      field.setAttribute('aria-label', `${heading} ${position + 1}`);
-      selected.push({ checkbox, index: track.index, field, fallback });
-      const row = el('div', undefined, 'track-row'); row.append(checkbox, field);
-      const origin = track.label && track.label !== track.language ? track.label : '';
-      if (!track.compatible) row.append(el('small', t('Indisponible', '사용 불가'), 'track-hint'));
-      else if (origin) row.append(el('small', `${t('Nom d’origine', '원본 이름')} : ${origin}`, 'track-hint'));
-      details.append(row);
-    }
+  const states = { ready: [t('Prêt à regarder', '시청 준비 완료'), 'ready'], uploaded: [t('À préparer', '준비 필요'), 'pending'],
+    processing: [t('Préparation en cours…', '준비 중…'), 'pending'], probing: [t('Vérification…', '확인 중…'), 'pending'],
+    failed: [t('Préparation échouée. Réessayez.', '준비에 실패했습니다. 다시 시도하세요.'), 'danger'],
+    incompatible: [t('Ce fichier ne peut pas être lu.', '이 파일은 재생할 수 없습니다.'), 'danger'] };
+  const [statusText, tone] = states[movie.status] ?? ['', 'pending'];
+  const status = el('p', undefined, 'status'); status.dataset.tone = tone;
+  status.append(el('span', undefined, 'dot'), document.createTextNode(statusText));
+  card.append(status);
+  if (movie.progress) {
+    const bar = el('progress', undefined, 'card-progress'); bar.max = 100; bar.value = movie.progress.percent;
+    card.append(bar, el('p', `${movie.progress.percent} %`, 'hint'));
   }
-  details.append(el('h3', t('Ajouter une langue ou des sous-titres', '음성 또는 자막 추가')));
-  const kind = el('select'); selectOptions(kind, [['subtitle', t('Sous-titres', '자막')], ['audio', t('Langue audio', '음성')]]);
-  const file = el('input'); file.type = 'file'; file.accept = '.srt,.vtt';
-  kind.addEventListener('change', () => { file.accept = kind.value === 'subtitle' ? '.srt,.vtt' : 'audio/*,.mka,.ac3,.eac3,.dts'; });
-  const name = el('input'); name.maxLength = 100; name.placeholder = t('Ex. Français', '예: 한국어');
-  const language = el('select'); selectOptions(language, [['fr', t('Français', '프랑스어')], ['ko', t('Coréen', '한국어')], ['en', t('Anglais', '영어')], ['und', t('Autre', '기타')]]);
-  details.append(field(t('Type de fichier', '파일 종류'), kind), field(t('Fichier', '파일'), file), field(t('Langue', '언어'), language), field(t('Nom affiché', '표시 이름'), name),
-    button(t('Ajouter le fichier', '파일 추가'), () => upload(file.files[0], { kind: kind.value, movieId: movie.id, label: name.value.trim() || language.selectedOptions[0].textContent, language: language.value })));
-  for (const track of movie.externalTracks ?? []) details.append(el('p', `${t('Fichier ajouté', '추가된 파일')} : ${track.label}`));
-  details.append(el('p', t('Après vos modifications, préparez le film pour pouvoir le regarder.', '변경 후 영화를 준비하면 시청할 수 있습니다.')));
-  if (movie.probe?.compatible) details.append(button(t('Préparer le film', '영화 준비'), async () => {
+  if (movie.error) card.append(el('p', movie.error, 'media-error'));
+  if (['processing', 'probing'].includes(movie.status)) return card;
+  const audio = [], subtitles = [];
+  const prepare = async () => {
     const chosen = list => list.filter(item => item.checkbox.checked);
     const naming = list => Object.fromEntries(chosen(list)
       .filter(item => item.field.value.trim() && item.field.value.trim() !== item.fallback)
@@ -239,11 +219,88 @@ function movieCard(movie) {
       audio: chosen(audio).map(item => item.index), subtitles: chosen(subtitles).map(item => item.index),
       names: { audio: naming(audio), subtitles: naming(subtitles) },
     } }); await refresh();
+  };
+  if (movie.status === 'ready') card.append(button(t('Créer une séance', '시청방 만들기'), async () => {
+    $('create-code').value = '';
+    const code = await askDialog('create-dialog', 'create-code'); if (!code) return;
+    const room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code } });
+    notice(`${t('Invitation', '초대')}: ${room.link}`); await enterRoom(room.id, undefined, { code: room.code, title: movie.title });
   }));
-  else details.append(button(t('Vérifier le fichier', '파일 확인'), async () => { await api(`/api/movies/${movie.id}/probe`, { method: 'POST', body: {} }); await refresh(); }));
-  details.append(button(t('Supprimer le film', '영화 삭제'), async () => {
+  else if (['uploaded', 'failed'].includes(movie.status) && movie.probe?.compatible) card.append(button(t('Préparer le film', '영화 준비'), prepare));
+  const details = el('details'); details.open = openPanels.has(movie.id);
+  details.addEventListener('toggle', () => { if (details.open) openPanels.add(movie.id); else openPanels.delete(movie.id); });
+  details.append(el('summary', t('Gérer le film', '영화 관리')));
+  const title = el('input'); title.value = movie.title; title.maxLength = 150; title.setAttribute('aria-label', t('Titre', '제목'));
+  const titleRow = el('div', undefined, 'title-row');
+  titleRow.append(title, button(t('Enregistrer', '저장'), async () => { await api(`/api/movies/${movie.id}`, { method: 'PATCH', body: { title: title.value } }); await refresh(); }));
+  const titleLabel = el('label'); titleLabel.append(el('span', t('Titre', '제목')), titleRow);
+  details.append(titleLabel, el('p', t('Ces noms sont ceux que verront les participants.', '참가자에게 표시되는 이름입니다.'), 'hint'));
+  for (const [tracks, selected, heading, kind] of [
+    [movie.probe?.audio ?? [], audio, t('Langues du film', '음성 언어'), 'audio'],
+    [movie.probe?.subtitles ?? [], subtitles, t('Sous-titres du film', '영화 자막'), 'subtitles']]) {
+    if (!tracks.length) continue;
+    details.append(el('h3', heading));
+    for (const [position, track] of tracks.entries()) {
+      const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.checked = track.compatible; checkbox.disabled = !track.compatible;
+      checkbox.setAttribute('aria-label', t('Garder cette piste', '이 트랙 사용'));
+      const fallback = defaultTrackName(track, position, kind);
+      const nameField = el('input'); nameField.maxLength = 60; nameField.disabled = !track.compatible;
+      nameField.value = movie.trackNames?.[kind]?.[track.index] ?? fallback;
+      nameField.setAttribute('aria-label', `${heading} ${position + 1}`);
+      selected.push({ checkbox, index: track.index, field: nameField, fallback });
+      const row = el('div', undefined, 'track-row'); row.append(checkbox, nameField);
+      const origin = track.label && track.label !== track.language ? track.label : '';
+      if (!track.compatible) row.append(el('small', t('Indisponible', '사용 불가'), 'track-hint'));
+      else if (origin) row.append(el('small', `${t('Nom d’origine', '원본 이름')} : ${origin}`, 'track-hint'));
+      details.append(row);
+    }
+  }
+  details.append(el('h3', t('Sous-titres ajoutés', '추가된 자막')));
+  const added = [
+    ...(movie.externalTracks ?? []).map(track => ({ track, pending: true })),
+    ...(movie.status === 'ready' ? (movie.subtitles ?? []).filter(track => track.external).map(track => ({ track, pending: false })) : []),
+  ];
+  if (!added.length) details.append(el('p', t('Aucun sous-titre ajouté.', '추가된 자막이 없습니다.'), 'hint'));
+  for (const { track, pending } of added) {
+    const row = el('div', undefined, 'track-row');
+    row.append(el('span', `${track.label} · ${track.language}`, 'track-name'));
+    if (pending && movie.status === 'ready') row.append(el('small', t('en attente', '대기 중'), 'track-tag'));
+    row.append(button(t('Retirer', '제거'), async () => {
+      await api(`/api/movies/${movie.id}/${pending ? 'external' : 'subtitles'}/${track.id}`, { method: 'DELETE' });
+      await refresh();
+    }, 'ghost'));
+    details.append(row);
+  }
+  const subFile = el('input'); subFile.type = 'file'; subFile.accept = '.srt,.vtt';
+  const subLang = el('select'); subLang.setAttribute('aria-label', t('Langue', '언어'));
+  selectOptions(subLang, [['fr', 'French'], ['ko', 'Korean'], ['en', 'English'], ['und', 'Other']]);
+  const subName = el('input'); subName.maxLength = 100; subName.placeholder = 'Ex. Korean'; subName.setAttribute('aria-label', t('Nom affiché', '표시 이름'));
+  const addRow = el('div', undefined, 'add-row'); addRow.append(subLang, subName,
+    button(t('Ajouter', '추가'), async () => {
+      const file = subFile.files[0];
+      if (!file || !/\.(srt|vtt)$/i.test(file.name) || file.size > 2 * 1024 ** 2) throw new Error(t('Choisir un fichier SRT ou VTT de moins de 2 Mo.', '2MB 미만의 SRT 또는 VTT 파일을 선택하세요.'));
+      const trackLabel = subName.value.trim() || subLang.selectedOptions[0].textContent;
+      if (movie.status === 'ready') {
+        const response = await fetch(`/api/movies/${movie.id}/subtitles?label=${encodeURIComponent(trackLabel)}&language=${subLang.value}`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: file });
+        const result = await response.json();
+        if (!response.ok) throw new Error(label(result.error || t('Une erreur est survenue.', '오류가 발생했습니다.')));
+        notice(t('Sous-titres ajoutés.', '자막이 추가되었습니다.'));
+      } else await upload(file, { kind: 'subtitle', movieId: movie.id, label: trackLabel, language: subLang.value });
+      await refresh();
+    }));
+  details.append(field(t('Fichier SRT ou VTT (2 Mo maximum)', 'SRT 또는 VTT 파일 (최대 2MB)'), subFile), addRow);
+  details.append(el('p', movie.status === 'ready'
+    ? t('Les changements de pistes intégrées s’appliquent à la prochaine préparation.', '내장 트랙 변경은 다음 준비에 적용됩니다.')
+    : t('La préparation applique la sélection ci-dessus.', '준비하면 위에서 선택한 트랙이 적용됩니다.'), 'hint'));
+  const actions = el('div', undefined, 'panel-actions');
+  if (movie.probe?.compatible) actions.append(button(movie.status === 'ready' ? t('Préparer à nouveau', '다시 준비') : t('Préparer le film', '영화 준비'), prepare));
+  else actions.append(button(t('Vérifier le fichier', '파일 확인'), async () => { await api(`/api/movies/${movie.id}/probe`, { method: 'POST', body: {} }); await refresh(); }));
+  actions.append(button(t('Supprimer le film', '영화 삭제'), async () => {
     if (confirm(t(`Supprimer définitivement « ${movie.title} » ?`, `« ${movie.title} » 영화를 영구 삭제할까요?`))) { await api(`/api/movies/${movie.id}`, { method: 'DELETE' }); await refresh(); }
-  }, 'danger')); card.append(details); return card;
+  }, 'danger'));
+  details.append(actions);
+  card.append(details);
+  return card;
 }
 
 async function enterRoom(id, name, context = {}) {
