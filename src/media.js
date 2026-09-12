@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile, readdir, stat, statfs, rm, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import jschardet from 'jschardet';
 
 export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, includeStderr = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -27,6 +28,47 @@ export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, in
   });
 }
 
+// Text subtitle codecs ffmpeg can decode to WebVTT. Image codecs (dvd_subtitle, hdmv_pgs_subtitle,
+// dvb_subtitle, xsub) and decoder-less formats (aqtitle, mpsub, scc, ttml) stay out.
+const SUBTITLE_CODECS = ['subrip', 'webvtt', 'mov_text', 'ass', 'ssa', 'sami', 'microdvd', 'mpl2',
+  'jacosub', 'pjs', 'realtext', 'stl', 'subviewer', 'subviewer1', 'vplayer', 'eia_608'];
+// Accepted upload extensions, each mapped to the demuxers worth forcing with -f.
+// .sub covers both MicroDVD and SubViewer; the conversion check decides.
+export const SUBTITLE_EXTENSIONS = { srt: ['srt'], vtt: ['webvtt'], smi: ['sami'], sami: ['sami'],
+  ass: ['ass'], ssa: ['ass'], sub: ['microdvd', 'subviewer'], sbv: ['subviewer', 'subviewer1'], lrc: ['lrc'] };
+// For external tracks recorded before they stored their demuxer name.
+const SUBTITLE_DEMUXERS = { subrip: 'srt', webvtt: 'webvtt', ass: 'ass', ssa: 'ass', sami: 'sami',
+  microdvd: 'microdvd', mpl2: 'mpl2', jacosub: 'jacosub', pjs: 'pjs', realtext: 'realtext', stl: 'stl',
+  subviewer: 'subviewer', subviewer1: 'subviewer1', vplayer: 'vplayer' };
+
+// Uploaded subtitle files come in any legacy charset: normalize to UTF-8 once, at ingest.
+export function decodeSubtitleText(buffer) {
+  if (buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) return new TextDecoder('utf-8').decode(buffer.subarray(3));
+  if (buffer[0] === 0xff && buffer[1] === 0xfe) return new TextDecoder('utf-16le').decode(buffer.subarray(2));
+  if (buffer[0] === 0xfe && buffer[1] === 0xff) return new TextDecoder('utf-16be').decode(buffer.subarray(2));
+  const detected = jschardet.detect(buffer)?.encoding?.toLowerCase();
+  const singleByte = !detected || /^(windows-125|iso-8859|ascii|tis-620|koi8|x-mac)/.test(detected);
+  // A single-byte guess can silently mangle real EUC-KR text, while its strict decoder only accepts the genuine thing.
+  const labels = [...new Set(singleByte ? ['utf-8', 'euc-kr', detected, 'windows-1252'] : [detected, 'utf-8', 'euc-kr', 'windows-1252'])];
+  for (const label of labels) {
+    try { return new TextDecoder(label, { fatal: true }).decode(buffer); } catch { }
+  }
+  return new TextDecoder('windows-1252').decode(buffer);
+}
+
+// Probing alone cannot name these formats (microdvd and lrc have no read_probe): validate by
+// converting and checking the output holds at least one cue. `null` format lets ffmpeg detect.
+export async function subtitleFileFormat(input, formats = []) {
+  for (const format of [...formats, null]) {
+    const args = ['-v', 'error', '-protocol_whitelist', 'file,pipe'];
+    if (format) args.push('-f', format);
+    args.push('-i', input, '-map', '0:s:0', '-c:s', 'webvtt', '-f', 'webvtt', '-');
+    try { if (/-->/m.test(await run(process.env.FFMPEG_PATH || 'ffmpeg', args))) return { format }; }
+    catch { }
+  }
+  return null;
+}
+
 export function inspectProbe(probe) {
   const streams = probe.streams ?? [];
   const video = streams.find(stream => stream.codec_type === 'video' && !stream.disposition?.attached_pic);
@@ -50,7 +92,7 @@ export function inspectProbe(probe) {
   const subtitles = streams.filter(stream => stream.codec_type === 'subtitle').map(stream => ({
     index: stream.index, codec: stream.codec_name, language: stream.tags?.language ?? 'und',
     label: stream.tags?.title ?? stream.tags?.language ?? `Subtitles ${stream.index}`,
-    compatible: ['subrip', 'webvtt', 'mov_text', 'ass', 'ssa'].includes(stream.codec_name),
+    compatible: SUBTITLE_CODECS.includes(stream.codec_name),
   }));
   const duration = Number(probe.format?.duration);
   const videoCompatible = ['h264', 'hevc', 'av1', 'vp9'].includes(video?.codec_name) && video.width > 0 && video.height > 0;
@@ -142,13 +184,22 @@ export async function writeMaster(directory, audio, subtitles, renditions) {
   }
 }
 
-export async function addSubtitle(directory, input, { label, language: lang, index, duration }) {
+export async function addSubtitle(directory, input, { label, language: lang, index, duration, format }) {
   const id = randomUUID();
   const filename = `sub_${id}.vtt`;
-  const args = ['-y', '-v', 'error', '-protocol_whitelist', 'file,pipe', '-i', input];
+  const args = ['-y', '-v', 'error', '-protocol_whitelist', 'file,pipe'];
+  if (format) args.push('-f', format);
+  args.push('-i', input);
   if (index !== undefined) args.push('-map', `0:${index}`);
   args.push('-c:s', 'webvtt', path.join(directory, filename));
-  await run(process.env.FFMPEG_PATH || 'ffmpeg', args);
+  try {
+    await run(process.env.FFMPEG_PATH || 'ffmpeg', args);
+    // A forced demuxer accepts anything, so check a cue actually came out.
+    if (format && !/-->/m.test(await readFile(path.join(directory, filename), 'utf8'))) throw new Error('Ce fichier ne contient aucune piste utilisable.');
+  } catch (error) {
+    await unlink(path.join(directory, filename)).catch(() => {});
+    throw error;
+  }
   await writeFile(path.join(directory, `sub_${id}.m3u8`),
     `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:${Math.ceil(duration)}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:${duration},\n${filename}\n#EXT-X-ENDLIST\n`);
   return { id, label: quote(label), language: language(lang), filename };
@@ -226,7 +277,8 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   }
   const consumedExternal = external.filter(track => track.kind === 'subtitle');
   for (const track of consumedExternal) {
-    subtitles.push({ ...await addSubtitle(directory, path.join(store.directory(movie.id), track.filename), { ...track, duration: movie.probe.duration }), external: true });
+    subtitles.push({ ...await addSubtitle(directory, path.join(store.directory(movie.id), track.filename),
+      { ...track, format: track.format ?? SUBTITLE_DEMUXERS[track.codec], duration: movie.probe.duration }), external: true });
   }
   options.onProgress?.({ stage: 'subtitles', percent: 96 });
   // Keep administrator-added subtitle files when rebuilding versions.

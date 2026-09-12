@@ -291,24 +291,24 @@ function movieCard(movie) {
     }, 'ghost'));
     details.append(row);
   }
-  const subFile = el('input'); subFile.type = 'file'; subFile.accept = '.srt,.vtt';
+  const subFile = el('input'); subFile.type = 'file'; subFile.accept = '.srt,.vtt,.smi,.sami,.ass,.ssa,.sub,.sbv,.lrc';
   const subLang = el('select'); subLang.setAttribute('aria-label', t('Langue', '언어'));
   selectOptions(subLang, [['fr', 'French'], ['ko', 'Korean'], ['en', 'English'], ['und', 'Other']]);
   const subName = el('input'); subName.maxLength = 100; subName.placeholder = 'Ex. Korean'; subName.setAttribute('aria-label', t('Nom affiché', '표시 이름'));
   const addRow = el('div', undefined, 'add-row'); addRow.append(subLang, subName,
     button(t('Ajouter', '추가'), async () => {
       const file = subFile.files[0];
-      if (!file || !/\.(srt|vtt)$/i.test(file.name) || file.size > 2 * 1024 ** 2) throw new Error(t('Choisir un fichier SRT ou VTT de moins de 2 Mo.', '2MB 미만의 SRT 또는 VTT 파일을 선택하세요.'));
+      if (!file || !/\.(srt|vtt|smi|sami|ass|ssa|sub|sbv|lrc)$/i.test(file.name) || file.size > 2 * 1024 ** 2) throw new Error(t('Choisir un fichier de sous-titres de moins de 2 Mo (SRT, VTT, SMI, ASS, SUB…).', '자막 파일을 선택하세요 (SRT, VTT, SMI, ASS, SUB 등, 최대 2MB).'));
       const trackLabel = subName.value.trim() || subLang.selectedOptions[0].textContent;
       if (movie.status === 'ready') {
-        const response = await fetch(`/api/movies/${movie.id}/subtitles?label=${encodeURIComponent(trackLabel)}&language=${subLang.value}`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: file });
+        const response = await fetch(`/api/movies/${movie.id}/subtitles?label=${encodeURIComponent(trackLabel)}&language=${subLang.value}&name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: file });
         const result = await response.json();
         if (!response.ok) throw new Error(label(result.error || t('Une erreur est survenue.', '오류가 발생했습니다.')));
         notice(t('Sous-titres ajoutés.', '자막이 추가되었습니다.'));
       } else await upload(file, { kind: 'subtitle', movieId: movie.id, label: trackLabel, language: subLang.value });
       await refresh();
     }));
-  details.append(field(t('Fichier SRT ou VTT (2 Mo maximum)', 'SRT 또는 VTT 파일 (최대 2MB)'), subFile), addRow);
+  details.append(field(t('Fichier de sous-titres (2 Mo maximum)', '자막 파일 (최대 2MB)'), subFile), addRow);
   details.append(el('p', movie.status === 'ready'
     ? t('Les changements de pistes intégrées s’appliquent à la prochaine préparation.', '내장 트랙 변경은 다음 준비에 적용됩니다.')
     : t('La préparation applique la sélection ci-dessus.', '준비하면 위에서 선택한 트랙이 적용됩니다.'), 'hint'));
