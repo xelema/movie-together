@@ -109,6 +109,27 @@ test('authenticated upload, original video and audio, private rooms and access c
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.equal(prepared.status, 'ready', prepared.error);
+  const workingGeneration = prepared.generation;
+  // A failed re-preparation keeps the working generation servable.
+  assert.equal((await request(`/api/movies/${movie.id}/prepare`, { cookie, method: 'POST', body: { audio: [99], subtitles: [] } })).status, 202);
+  for (let count = 0; count < 100; count++) {
+    prepared = (await (await request('/api/movies', { cookie })).json())[0];
+    if (prepared.status !== 'processing') break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(prepared.status, 'ready');
+  assert.match(prepared.error, /incompatible/);
+  assert.equal(prepared.generation, workingGeneration);
+  assert.equal((await request(`/media/${movie.id}/master.m3u8`, { cookie })).status, 200);
+  // A subtitle file queued on a ready movie waits for the next preparation.
+  const lateUpload = await (await request('/api/uploads', { cookie, method: 'POST',
+    body: { name: 'late.srt', size: sub.length, kind: 'subtitle', movieId: movie.id, label: 'Late', language: 'en' } })).json();
+  assert.equal((await request(`/api/uploads/${lateUpload.id}`, { cookie, method: 'PUT',
+    headers: { 'Content-Type': 'application/octet-stream', 'Upload-Offset': '0' }, body: sub })).status, 200);
+  const withLate = await (await request(`/api/uploads/${lateUpload.id}/complete`, { cookie, method: 'POST', body: {} })).json();
+  assert.equal(withLate.status, 'ready');
+  assert.equal(withLate.externalTracks.length, 1);
+  await request(`/api/movies/${movie.id}/external/${withLate.externalTracks[0].id}`, { cookie, method: 'DELETE' });
   const master = await (await request(`/media/${movie.id}/master.m3u8`, { cookie })).text();
   assert.equal((master.match(/TYPE=AUDIO/g) ?? []).length, 2);
   const media = await request(`/media/${movie.id}/init_0.mp4`, { cookie });
