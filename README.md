@@ -22,11 +22,12 @@ FFmpeg et FFmpeg Full installés avec Chocolatey sous Windows.
 
 1. Dans l'administration, envoyer un film (20 Go maximum). Le titre proposé reprend
    le nom du fichier sans les mentions d'encodage, et reste modifiable.
-2. Ouvrir « Modifier le film », choisir les langues et sous-titres intégrés, et
-   écrire le nom que chacun verra. Laissé tel quel, le nom suit la langue de la
-   personne qui regarde. Aucun terme technique n'est affiché aux participants.
-3. Ajouter éventuellement des fichiers audio externes (2 Go maximum) ou des
-   sous-titres SRT/VTT (2 Mo maximum), puis cliquer sur « Préparer le film ».
+2. Ouvrir « Gérer le film », choisir les langues et sous-titres intégrés, et
+   écrire le nom que chacun verra. Laissé tel quel, le nom est en anglais.
+   Aucun terme technique n'est affiché aux participants.
+3. Ajouter éventuellement des sous-titres SRT/VTT (2 Mo maximum) dans
+   « Sous-titres ajoutés », puis cliquer sur « Préparer le film ». Sur un film
+   prêt, l'ajout et le retrait de sous-titres sont immédiats.
 4. Attendre « Prêt à regarder », créer une séance et choisir un code ou utiliser
    « Aléatoire ». Partager le lien ou le code. Les codes expirent après 12 heures.
 5. L'invité saisit le code puis son pseudo. Il ne peut pas choisir un autre film.
@@ -69,10 +70,6 @@ Les pistes intégrées AAC-LC mono/stéréo à 44,1 ou 48 kHz sont copiées à l
 Les autres pistes audio sont converties en une seule passe en AAC-LC stéréo
 48 kHz à 256 kbit/s, avec mixage des voix centrales. Aucune analyse intégrale
 préalable, normalisation en deux passes, égalisation ou spatialisation artificielle.
-Les fichiers audio externes sont convertis et commencent au
-début du film, sont tronqués à sa durée ou complétés par du silence. Il faut
-fournir un fichier correspondant au même montage du film ; aucun alignement
-automatique des dialogues n'est effectué.
 
 Les sous-titres textuels sont convertis en WebVTT. Les sous-titres images ne sont
 pas pris en charge. Les fichiers ajoutés restent disponibles après une nouvelle
