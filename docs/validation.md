@@ -5,8 +5,8 @@ Les projets couvrent Chromium, Firefox et WebKit. Sous Windows, le WebKit fourni
 par Playwright n'expose ici ni HLS natif ni MSE : ce scénario y est explicitement
 ignoré et doit être exécuté sur macOS/Linux. Un succès Chromium ou Firefox ne
 constitue pas une validation Safari/iOS.
-Ils vérifient les invitations, les droits admin/invité, les fichiers audio et
-sous-titres externes, les pseudos, la langue persistante, le départ commun,
+Ils vérifient les invitations, les droits admin/invité, les sous-titres
+externes, les pseudos, la langue persistante, le départ commun,
 la pause, le déplacement, le plein écran, l'autorisation du son dans l'overlay
 et la coupure réseau. Les tests FFmpeg comparent les empreintes des flux vidéo
 et AAC avant/après préparation (hors métadonnées vidéo de transport), les caractéristiques HDR10/HLG, les niveaux SDR
