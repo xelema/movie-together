@@ -41,8 +41,11 @@ Single Node process, no build step, no framework.
 - The video stream is copied byte-exact into HLS/fMP4, never re-encoded. Only the
   container colour box is rewritten for transport and source colour metadata feeds
   the WebGL shader. Audio is copied when AAC-LC <= stereo 44.1/48 kHz, else
-  converted once to AAC-LC stereo 48 kHz. Embedded + uploaded SRT/VTT subtitles
-  become WebVTT. Image subtitles are unsupported.
+  converted once to AAC-LC stereo 48 kHz. Embedded + uploaded text subtitles
+  (SRT, VTT, SMI, ASS/SSA, SUB, SBV, LRC) become WebVTT; uploads are normalized
+  to UTF-8 with jschardet + TextDecoder and validated by a real ffmpeg conversion
+  (`subtitleFileFormat`), since microdvd/lrc have no probe. Image subtitles are
+  unsupported.
 - Movie lifecycle: `uploaded` -> `processing` -> `ready` (plus `probing`,
   `failed`, `incompatible`). Each preparation writes a fresh UUID `generation`
   directory so a failed run never replaces a working one. Administrator-added

@@ -8,7 +8,7 @@ import { mkdir, readFile, writeFile, stat, statfs, rename, unlink, rm, readdir }
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './storage.js';
-import { probeFile, prepareMovie, addSubtitle, writeMaster } from './media.js';
+import { probeFile, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat, SUBTITLE_EXTENSIONS } from './media.js';
 import { Room } from './sync/room.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
@@ -16,6 +16,8 @@ const ID = /^[a-f0-9-]{36}$/;
 const TTL = 12 * 3600_000;
 const CHUNK = 8 * 1024 * 1024;
 const fail = (status, message) => Object.assign(new Error(message), { status });
+const SUBTITLE_EXT = new RegExp(`\\.(${Object.keys(SUBTITLE_EXTENSIONS).join('|')})$`, 'i');
+const SUBTITLE_EXT_MESSAGE = 'Choisir un fichier de sous-titres de moins de 2 Mo (SRT, VTT, SMI, ASS, SUB…).';
 // Release names carry encoding jargon that has no place in the interface.
 const FORMAT_TAG = /^(2160p|1440p|1080[pi]|720p|576p|480p|4k|4klight|uhd|hdr10?(\+|plus)?|hlg|dovi|10bits?|8bits?|bluray|blu|brrip|bdrip|bdremux|remux|webrip|webdl|web|hdtv|dvdrip|dvdscr|x26[45]|h26[45]|hevc|avc|av1|vp9|xvid|divx|aac\d?|ac3|eac3|ddp?\d?|dts|dtshd|truehd|atmos|flac|opus|mp3)$/i;
 const EDITION_TAG = /^(multi\d?|vf[fqi2]?|vo|vost|vostfr|subfrench|french|truefrench|english|repack|proper|extended|unrated|uncut|imax|limited|integrale|amzn|nf|dsnp|hmax|atvp|itunes|dv|sdr)$/i;
@@ -181,7 +183,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       const movie = idleMovie(movieId);
       if ((movie.externalTracks?.length ?? 0) >= 24) throw fail(400, 'Trop de fichiers ajoutés.');
       if (typeof label !== 'string' || !label.trim() || label.length > 100 || !/^[a-z]{2,3}$/.test(language)) throw fail(400, 'Nom ou langue invalide.');
-      if (!/\.(srt|vtt)$/i.test(name) || size > 2 * 1024 ** 2) throw fail(400, 'Choisir un fichier SRT ou VTT de moins de 2 Mo.');
+      if (!SUBTITLE_EXT.test(name) || size > 2 * 1024 ** 2) throw fail(400, SUBTITLE_EXT_MESSAGE);
     }
     if (!Number.isSafeInteger(size) || size <= 0 || size > 20 * 1024 ** 3 || typeof name !== 'string' || name.length > 250) throw fail(400, 'Fichier invalide (maximum 20 Go).');
     if ((await readdir(path.join(store.root, 'uploads'))).length >= 2) throw fail(409, 'Terminer ou supprimer les uploads précédents.');
@@ -232,13 +234,16 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       if ((await stat(source)).size !== info.size) throw fail(409, 'Upload incomplet.');
       if (info.kind && info.kind !== 'movie') {
         const movie = idleMovie(info.movieId);
-        const probe = await probeFile(source);
-        const stream = probe.subtitles.find(track => track.compatible);
-        if (!stream) throw fail(400, 'Ce fichier ne contient aucune piste utilisable.');
+        // Stored files carry no extension and may use a legacy charset: normalize to UTF-8 first.
+        await writeFile(source, decodeSubtitleText(await readFile(source)));
+        const formats = SUBTITLE_EXTENSIONS[path.extname(info.name).slice(1).toLowerCase()] ?? [];
+        const found = await subtitleFileFormat(source, formats);
+        if (!found) throw fail(400, 'Ce fichier ne contient aucune piste utilisable.');
         const filename = `external_${id}`;
         await rename(source, path.join(store.directory(movie.id), filename));
         movie.externalTracks ??= [];
-        movie.externalTracks.push({ ...stream, id, kind: info.kind, filename, label: info.label, language: info.language });
+        movie.externalTracks.push({ id, kind: info.kind, filename, label: info.label, language: info.language,
+          format: found.format ?? undefined, index: found.format ? 0 : 's:0' });
         movie.status = 'uploaded';
         store.save(movie); await rm(uploadPath(id), { recursive: true, force: true });
         res.json(movie); return;
@@ -309,13 +314,22 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     const movie = idleMovie(req.params.id);
     if (processing || movie.status !== 'ready') throw fail(409, 'Film indisponible.');
     if (!Buffer.isBuffer(req.body) || !req.body.length) throw fail(400, 'Sous-titre vide.');
+    if (req.query.name !== undefined && (typeof req.query.name !== 'string' || !SUBTITLE_EXT.test(req.query.name))) throw fail(400, SUBTITLE_EXT_MESSAGE);
     processing = true; mediaLocks.add(movie.id);
     const directory = path.join(store.directory(movie.id), movie.generation);
     const input = path.join(directory, 'subtitle-input');
     try {
-      await writeFile(input, req.body);
-      const track = await addSubtitle(directory, input, { label: req.query.label || 'Subtitles',
-        language: req.query.language || 'und', duration: movie.duration });
+      await writeFile(input, decodeSubtitleText(req.body));
+      const formats = req.query.name ? SUBTITLE_EXTENSIONS[path.extname(req.query.name).slice(1).toLowerCase()] ?? [] : [];
+      let track;
+      for (const format of [...formats, undefined]) {
+        try {
+          track = await addSubtitle(directory, input, { label: req.query.label || 'Subtitles',
+            language: req.query.language || 'und', duration: movie.duration, format });
+          break;
+        } catch { }
+      }
+      if (!track) throw fail(400, 'Ce fichier ne contient aucune piste utilisable.');
       track.external = true;
       movie.subtitles.push(track); await writeMaster(directory, movie.audio, movie.subtitles, movie.renditions); store.save(movie);
       res.json(movie);
