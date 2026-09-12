@@ -5,7 +5,7 @@
 #   bash deploy/deploy.sh
 #
 # Options via variables d'environnement :
-#   SSH_HOST    hote distant          (defaut : ubuntu@192.0.2.10)
+#   SSH_HOST    hote distant          (obligatoire : variable, ou SSH_HOST=... dans .env.production)
 #   SSH_KEY     cle privee            (defaut : ~/.ssh/id_rsa)
 #   REMOTE_DIR  dossier sur la VM     (defaut : movie-together, relatif au home)
 #   PUSH_ENV    fichier local envoye comme .env distant, puis conserve
@@ -17,7 +17,8 @@
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
-SSH_HOST=${SSH_HOST:-ubuntu@192.0.2.10}
+SSH_HOST=${SSH_HOST:-$(sed -n 's/^SSH_HOST=//p' .env.production 2>/dev/null | head -1)}
+[[ -n $SSH_HOST ]] || { echo "SSH_HOST requis : SSH_HOST=ubuntu@192.0.2.10 bash deploy/deploy.sh" >&2; exit 1; }
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/id_rsa}
 REMOTE_DIR=${REMOTE_DIR:-movie-together}
 PUSH_ENV=${PUSH_ENV:-}
