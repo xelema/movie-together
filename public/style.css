@@ -53,8 +53,8 @@ input:hover:not([type=checkbox]),select:hover{border-color:#2e3038}
 input:focus,select:focus{border-color:var(--line-strong);outline:none;background:#12141a}
 input::placeholder{color:#5a5a63}
 input[type=checkbox]{accent-color:var(--white);width:16px;height:16px;vertical-align:middle;margin-right:8px}
-input[type=file]{font-size:13px!important;max-width:100%;padding:8px 12px;min-height:46px;display:flex;align-items:center;gap:12px}
-input::file-selector-button{border:0;border-radius:6px;padding:7px 12px;background:#22242b;color:var(--text);margin:0;font-size:13px;cursor:pointer;flex-shrink:0}
+input[type=file]:not([type=checkbox]):not([type=range]){font-size:13px;max-width:100%;padding:8px 12px;min-height:46px;display:flex;align-items:center}
+input::file-selector-button{border:0;border-radius:6px;padding:7px 12px;background:#22242b;color:var(--text);margin:0 12px 0 0;font-size:13px;cursor:pointer;flex:0 0 auto}
 input::file-selector-button:hover{background:#2b2d35}
 
 #notice:empty{display:none}
