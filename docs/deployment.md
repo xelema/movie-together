@@ -145,8 +145,9 @@ raccourcit pas le trajet international. Aucun CDN ni relais payant n'est créé.
   le code par SSH vers la VM puis reconstruit et redémarre les conteneurs. Le
   `.env` du serveur est conservé. Au premier déploiement, créer le `.env` sur la
   VM ou lancer `PUSH_ENV=fichier bash deploy/deploy.sh` pour l'envoyer. Les
-  variables `SSH_HOST`, `SSH_KEY`, `REMOTE_DIR` et `BBR=1` sont décrites en tête
-  du script.
+  variables `SSH_KEY`, `REMOTE_DIR` et `BBR=1` sont décrites en tête du script.
+  `SSH_HOST` est obligatoire : passer la variable ou la noter dans
+  `.env.production`.
 - Surveiller disque et journaux. Supprimer les uploads abandonnés dans l'admin.
   Une préparation réussie supprime les générations précédentes.
 - Ne pas utiliser `docker compose down -v` pour une mise à jour : cette commande
