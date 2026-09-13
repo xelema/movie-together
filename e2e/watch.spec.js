@@ -133,6 +133,13 @@ test('admin manages a film and two named viewers join in their language with one
         Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.line < 80)))).toBe(true);
       await guest.screenshot({ path: `test-results/watch-${name}.png`, fullPage: true });
     }
+    // A track switch is local to the viewer: it must not pause the room.
+    await controls(guest); await guest.locator('#open-settings').click();
+    await guest.locator('#subtitles').selectOption('-1'); await guest.locator('#close-settings').click();
+    await guest.waitForTimeout(1200);
+    expect(latest.get(host)?.state.phase).toBe('playing');
+    await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(false);
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     // Controls auto-hide while playing; hover until they are shown before clicking fullscreen.
     await expect(async () => {
       if (await host.evaluate(() => document.fullscreenElement?.id) !== 'screen') {
