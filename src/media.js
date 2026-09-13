@@ -31,7 +31,7 @@ export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, in
   });
 }
 
-// Bump whenever inspectProbe's output shape changes; startup re-probes older movies.
+// Bump whenever inspectProbe's output shape changes. Startup re-probes older movies.
 export const PROBE_SCHEMA = 5;
 
 // Format knowledge lives in public/subtitle-formats.js, shared with the client.
@@ -119,14 +119,19 @@ export async function probeFile(file) {
   return inspectProbe(probe);
 }
 
+// A failed probe marks the movie instead of throwing: the caller always saves the result.
+export async function reprobeMovie(store, movie) {
+  try {
+    movie.probe = await probeFile(path.join(store.directory(movie.id), 'source'));
+    movie.status = movie.probe.compatible ? 'uploaded' : 'incompatible'; movie.error = null;
+  } catch (error) { movie.status = 'failed'; movie.error = error.message; }
+}
+
 // Upgrade stored metadata at boot without re-uploading or converting anything.
 export async function refreshStaleProbes(store) {
   for (const movie of store.movies.values()) {
     if (movie.probe?.schema === PROBE_SCHEMA || movie.status === 'ready') continue;
-    try {
-      movie.probe = await probeFile(path.join(store.directory(movie.id), 'source'));
-      movie.status = movie.probe.compatible ? 'uploaded' : 'incompatible'; movie.error = null;
-    } catch (error) { movie.status = 'failed'; movie.error = error.message; }
+    await reprobeMovie(store, movie);
     store.save(movie);
   }
 }
