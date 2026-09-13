@@ -19,6 +19,10 @@ vocabulaire partage.
 - **Rapport** (report) : message periodique d'un participant donnant sa
   position, sa position bufferisee (`bufferedUntil`) et s'il est **pret**
   (ready : lecteur charge, horloge calibree, pas en seek, pas en erreur).
+- **Attente** (waiting) : statut expose par participant. `reason` nomme la
+  premiere condition qui bloque (`no-report`, `stale-report`, `not-ready`,
+  `low-buffer`, `misaligned`) et `blockers` liste les verrous de disponibilite
+  que le participant declare lui-meme (`activation`, `clock`, `data`, `drift`…).
 - **Seuils de buffer** : `minBuffer` exige de chacun pour demarrer ou
   reprendre, `lowBuffer` en dessous duquel un participant fait repasser
   la seance en `buffering`. Valeurs par defaut 8 s / 3 s, configurees a
