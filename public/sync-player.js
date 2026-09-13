@@ -38,6 +38,8 @@ export class SyncPlayer {
       }
     });
     this.listen(video, 'loadedmetadata', () => { this.applyTrackChoices(); this.tracks(); });
+    this.listen(video, 'loadeddata', () => { this.decoded = true; });
+    this.listen(video, 'emptied', () => { this.decoded = false; });
     if (video.audioTracks) this.listen(video.audioTracks, 'addtrack', () => this.tracks());
     this.listen(video.textTracks, 'addtrack', () => this.tracks());
     this.listen(video.textTracks, 'addtrack', event => {
@@ -48,7 +50,9 @@ export class SyncPlayer {
     this.listen(window, 'resize', () => this.positionSubtitles());
     this.listen(video, 'error', () => { if (!this.hls) this.failPlayback('Lecture impossible sur cet appareil.'); });
     this.listen(video, 'play', () => {
-      if (this.activating) return;
+      // Browsers can dispatch a queued play event after activate() already paused: internalUntil
+      // keeps that stale notification from leaking a play command into a paused room.
+      if (this.activating || performance.now() <= this.internalUntil) return;
       if (this.state?.phase !== 'playing') { this.pauseLocal(); this.command('play'); }
       else if (this.serverTime() < this.state.startsAt) this.pauseLocal();
     });
@@ -249,7 +253,9 @@ export class SyncPlayer {
       // B-frame reordering can leave a tiny initial gap after lossless remuxing.
       const start = this.video.buffered.length ? this.video.buffered.start(0) : 0;
       const seekTarget = start > target && start - target <= 0.1 ? start + 0.00001 : target;
-      if (this.video.readyState >= 1 && !this.video.seeking &&
+      // A seek issued before the first decoded frame never completes on WebKit and would wedge
+      // the player in seeking, blocking the whole room.
+      if (this.decoded && !this.video.seeking &&
         (Math.abs(this.video.currentTime - seekTarget) > 0.1 || (Math.abs(start - seekTarget) <= 0.1 && this.video.currentTime < start))) this.seekLocal(seekTarget);
       if (this.state.phase === 'playing' && this.activated && this.scheduled !== this.state.startsAt) {
         clearTimeout(this.startTimer); this.scheduled = this.state.startsAt;
