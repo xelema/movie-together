@@ -13,14 +13,16 @@ test('renderer sizes to display pixels, limits GPU checks and skips idle frames'
   });
   let now = 0, draws = 0, checks = 0;
   const renderer = Object.assign(Object.create(ColorRenderer.prototype), {
-    canvas: { width: 300, height: 150, dataset: {} }, displayWidth: 400, displayHeight: 300,
+    canvas: { width: 300, height: 150, dataset: {}, style: {} }, displayWidth: 400, displayHeight: 300,
     video: { readyState: 4, videoWidth: 3840, videoHeight: 2160, currentTime: 1, paused: true },
     gl: { NO_ERROR: 0, getParameter: () => 8192, viewport() {}, texImage2D() {}, flush() {},
-      drawArrays() { draws++; }, getError() { checks++; return 0; } },
+      drawArrays() { draws++; }, getError() { checks++; return 0; },
+      readPixels(x, y, w, h, f, t, pixel) { pixel[0] = x & 255; } },
   });
   renderer.draw();
   assert.deepEqual([renderer.canvas.width, renderer.canvas.height], [800, 450]);
   assert.equal(renderer.ready, true); assert.equal(checks, 1);
+  assert.equal(renderer.canvas.style.visibility, '');
   renderer.draw(false); assert.equal(draws, 1);
   renderer.video.paused = false;
   for (let i = 0; i < 30; i++) { now += 30; renderer.video.currentTime += 1 / 30; renderer.draw(false); }
@@ -40,4 +42,26 @@ test('renderer sizes to display pixels, limits GPU checks and skips idle frames'
   renderer.draw();
   assert.equal(renderer.failed, true); assert.match(failure, /rendu des couleurs/);
   renderer.draw(); assert.equal(draws, before + 1);
+});
+
+test('renderer falls back to the native video while the texture import is dead', t => {
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = { hidden: false }; globalThis.window = { devicePixelRatio: 1 };
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+    }
+  });
+  const renderer = Object.assign(Object.create(ColorRenderer.prototype), {
+    canvas: { width: 800, height: 400, dataset: {}, style: {} },
+    video: { readyState: 4, videoWidth: 800, videoHeight: 400, currentTime: 1, paused: true },
+    gl: { NO_ERROR: 0, getParameter: () => 8192, viewport() {}, texImage2D() {}, flush() {},
+      drawArrays() {}, getError() { return 0; },
+      readPixels(x, y, w, h, f, t, pixel) { pixel.fill(51); } },
+  });
+  renderer.draw();
+  assert.equal(renderer.canvas.style.visibility, 'hidden');
+  renderer.gl.readPixels = (x, y, w, h, f, t, pixel) => { pixel[0] = x & 255; };
+  renderer.draw();
+  assert.equal(renderer.canvas.style.visibility, '');
 });
