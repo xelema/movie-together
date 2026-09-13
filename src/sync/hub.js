@@ -33,7 +33,7 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
     }
     for (const member of current.members) {
       const signature = member.waiting
-        ? `waiting ${member.reason}${member.blockers?.length ? ` (${member.blockers.join(', ')})` : ''}`
+        ? `waiting ${member.reason}${member.blockers?.length ? ` (${member.blockers.join(', ')})` : ''}${member.failure ? ` [${member.failure}]` : ''}`
         : 'ready';
       if (room.logged.get(member.id) !== signature) {
         room.logged.set(member.id, signature);
