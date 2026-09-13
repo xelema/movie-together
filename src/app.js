@@ -33,6 +33,19 @@ const trackNames = source => Object.fromEntries(Object.entries(source ?? {})
   .filter(([index]) => /^\d{1,3}$/.test(index))
   .map(([index, value]) => [index, String(value ?? '').trim().slice(0, 60)])
   .filter(([, value]) => value).slice(0, 48));
+// Re-preparing a ready movie repeats its current selection. Prepared tracks keep
+// their source index; subtitles prepared before they did are matched back by
+// language, unambiguous only.
+const previousSubtitles = movie => {
+  const pool = (movie.probe?.subtitles ?? []).filter(track => track.compatible);
+  return (movie.subtitles ?? []).filter(track => !track.external).map(track => {
+    if (track.index !== undefined) return track.index;
+    const matches = pool.filter(item => item.language === track.language);
+    if (matches.length !== 1) throw fail(400, 'Sélection invalide.');
+    pool.splice(pool.indexOf(matches[0]), 1);
+    return matches[0].index;
+  });
+};
 const publicMovie = movie => ({ id: movie.id, title: movie.title, status: movie.status,
   duration: movie.duration, audio: movie.audio, subtitles: movie.subtitles,
   maxSegmentSeconds: movie.maxSegmentSeconds, bitrate: movie.probe?.bitrate, renditions: movie.renditions, generation: movie.generation });
@@ -283,7 +296,9 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     try {
       movie.progress = { stage: 'analysis', percent: 0 }; store.save(movie);
       let lastProgress = 0;
-      Object.assign(movie, await prepareMovie(store, movie, req.body.audio, req.body.subtitles, {
+      const audio = req.body.audio ?? (movie.audio ?? []).map(track => track.index);
+      const subtitles = req.body.subtitles ?? previousSubtitles(movie);
+      Object.assign(movie, await prepareMovie(store, movie, audio, subtitles, {
         onProgress(progress) {
           movie.progress = progress;
           if (Date.now() - lastProgress > 1000) { store.save(movie); lastProgress = Date.now(); }

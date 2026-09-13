@@ -165,6 +165,19 @@ test('authenticated upload, original video and audio, private rooms and access c
   assert.equal((await request(`/api/movies/${movie.id}/subtitles?label=x&name=evil.exe`, { cookie, method: 'POST',
     headers: { 'Content-Type': 'text/plain' }, body: smi })).status, 400);
   assert.match(await (await request(`/media/${movie.id}/master.m3u8`, { cookie })).text(), /TYPE=SUBTITLES/);
+  // Re-preparing without a selection repeats the current one and keeps added subtitles.
+  assert.equal((await request(`/api/movies/${movie.id}/prepare`, { cookie, method: 'POST', body: {} })).status, 202);
+  for (let count = 0; count < 100; count++) {
+    prepared = (await (await request('/api/movies', { cookie })).json())[0];
+    if (prepared.status !== 'processing') break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(prepared.status, 'ready', prepared.error);
+  assert.notEqual(prepared.generation, workingGeneration);
+  assert.equal(prepared.audio.length, 2);
+  assert.equal(prepared.subtitles.length, 2);
+  assert.ok(prepared.subtitles.every(track => track.external));
+  assert.match(await (await request(`/media/${movie.id}/master.m3u8`, { cookie })).text(), /NAME="French"/);
   assert.equal((await request(`/media/${movie.id}/master.m3u8`)).status, 401);
   const room = await (await request('/api/rooms', { cookie, method: 'POST', body: { movieId: movie.id, code: 'Cinema-Soir' } })).json();
   assert.equal(room.code, 'cinema-soir');
