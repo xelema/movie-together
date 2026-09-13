@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Clock, bufferEnd, SyncPlayer } from '../public/sync-player.js';
+import { decide, memberReady } from '../public/sync-core.js';
 
 test('clock estimates offset using the shortest round trip and expires old samples', () => {
   const clock = new Clock();
@@ -10,30 +11,54 @@ test('clock estimates offset using the shortest round trip and expires old sampl
   assert.equal(clock.offset, 2000); assert.equal(clock.ready, false);
 });
 
-test('keeps audio at normal speed and pauses the group for excessive drift', t => {
-  const previous = globalThis.document;
-  globalThis.document = { hidden: false };
-  t.after(() => { if (previous === undefined) delete globalThis.document; else globalThis.document = previous; });
-  let stopped = false, reported = false;
-  const player = Object.assign(Object.create(SyncPlayer.prototype), {
-    state: { phase: 'playing', startsAt: 0 }, clock: { ready: true }, lastMessage: performance.now(),
-    serverTime: () => 1000, target: () => 10, offset: 0,
-    video: { paused: false, currentTime: 9.8, playbackRate: 1 },
-    pauseLocal: () => { stopped = true; }, report: force => { reported = force === false; },
-  });
-  player.reconcile();
-  assert.equal(player.video.playbackRate, 1); assert.equal(stopped, false);
-  player.video.currentTime = 9.5; player.reconcile();
-  assert.equal(stopped, true); assert.equal(reported, true);
+test('keeps audio at normal speed and pauses the group for excessive drift', () => {
+  const base = {
+    activating: false, state: { phase: 'playing', startsAt: 0, position: 10, duration: 100 },
+    clockReady: true, hidden: false, online: true, silent: false,
+    decoded: true, seeking: false, paused: false, currentTime: 9.8, bufferedStart: 0,
+    target: 10, serverNow: 1000, activated: true, scheduled: 0,
+  };
+  assert.deepEqual(decide(base), { normalizeRate: true });
+  assert.deepEqual(decide({ ...base, currentTime: 9.5 }), { pause: true, reportUnready: true });
   // A backward seek must reload evicted segments rather than clamp to the buffered range.
-  let seek;
-  player.state.phase = 'paused'; player.video.currentTime = 44; player.video.readyState = 1;
-  player.video.buffered = { length: 1, start: () => 40 };
-  player.decoded = true;
-  player.seekLocal = position => { seek = position; };
-  player.reconcile(); assert.equal(seek, 10);
+  const paused = { ...base, state: { ...base.state, phase: 'paused' }, currentTime: 44, bufferedStart: 40 };
+  assert.equal(decide(paused).seekTo, 10);
   // Before the first decoded frame a seek would wedge the media element on some engines.
-  seek = undefined; player.decoded = false; player.reconcile(); assert.equal(seek, undefined);
+  assert.equal(decide({ ...paused, decoded: false }).seekTo, undefined);
+});
+
+test('a playing phase before startsAt arms the local start timer once', () => {
+  const base = {
+    activating: false, state: { phase: 'playing', startsAt: 5000, position: 0, duration: 100 },
+    clockReady: true, hidden: false, online: true, silent: false,
+    decoded: true, seeking: false, paused: true, currentTime: 0, bufferedStart: 0,
+    target: 0, serverNow: 4000, activated: true, scheduled: null,
+  };
+  const action = decide(base);
+  assert.equal(action.pause, true);
+  assert.equal(action.scheduleStart, true);
+  assert.equal(action.startIn, 1000);
+  assert.equal(decide({ ...base, scheduled: 5000 }).scheduleStart, undefined);
+});
+
+test('readiness folds activation, decode, liveness and alignment into one bit', () => {
+  const base = {
+    state: { phase: 'playing', startsAt: 0 }, failure: null, rendererReady: true,
+    recovering: false, activated: true, clockReady: true, hidden: false, online: true,
+    silent: false, seeking: false, readyState: 4, paused: false,
+    position: 10, target: 10, serverNow: 1000,
+  };
+  assert.ok(memberReady(base));
+  assert.ok(!memberReady({ ...base, activated: false }));
+  assert.ok(!memberReady({ ...base, seeking: true }));
+  assert.ok(!memberReady({ ...base, readyState: 2 }));
+  assert.ok(!memberReady({ ...base, recovering: true }));
+  assert.ok(!memberReady({ ...base, silent: true }));
+  // Once the start has run past its grace window, drift beyond tolerance reports not-ready.
+  assert.ok(!memberReady({ ...base, position: 11 }));
+  assert.ok(memberReady({ ...base, position: 10.2 }));
+  // Before that window, position checks do not apply.
+  assert.ok(memberReady({ ...base, serverNow: 100, position: 11, paused: true }));
 });
 test('buffer measurement never counts ranges beyond a gap', () => {
   const video = { currentTime: 2, buffered: { length: 2, start: i => [0, 20][i], end: i => [4, 60][i] } };

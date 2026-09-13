@@ -1,5 +1,6 @@
 import { ColorRenderer } from './color-renderer.js';
 import { createBackend } from './backends.js';
+import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, memberReady, canBegin } from './sync-core.js';
 
 export class Clock {
   constructor() { this.samples = []; }
@@ -49,17 +50,17 @@ export class SyncPlayer {
     this.listen(window, 'resize', () => this.positionSubtitles());
     this.listen(video, 'error', () => { if (!this.backend?.recoversErrors) this.failPlayback('Lecture impossible sur cet appareil.'); });
     this.listen(video, 'play', () => {
-      // Browsers can dispatch a queued play event after activate() already paused: internalUntil
-      // keeps that stale notification from leaking a play command into a paused room.
-      if (this.activating || performance.now() <= this.internalUntil) return;
+      // Browsers can dispatch a queued play event after activate() already paused: the
+      // self-caused window keeps that stale notification from leaking a play command.
+      if (this.activating || selfCaused(performance.now(), this.internalUntil)) return;
       if (this.state?.phase !== 'playing') { this.pauseLocal(); this.command('play'); }
       else if (this.serverTime() < this.state.startsAt) this.pauseLocal();
     });
     this.listen(video, 'pause', () => {
-      if (performance.now() > this.internalUntil && this.state?.phase === 'playing' && this.serverTime() > this.state.startsAt) this.command('pause');
+      if (!selfCaused(performance.now(), this.internalUntil) && this.state?.phase === 'playing' && this.serverTime() > this.state.startsAt) this.command('pause');
     });
     this.listen(video, 'seeking', () => {
-      if (performance.now() > this.internalUntil && this.state) this.command('seek', this.position());
+      if (!selfCaused(performance.now(), this.internalUntil) && this.state) this.command('seek', this.position());
     });
     this.listen(document, 'visibilitychange', () => {
       if (document.hidden) { this.pauseLocal(); this.report(false); }
@@ -83,11 +84,7 @@ export class SyncPlayer {
   }
   serverTime() { return performance.now() + this.clock.offset; }
   position() { return Math.max(0, this.video.currentTime - this.offset); }
-  target() {
-    if (!this.state) return 0;
-    return Math.min(this.state.duration, this.state.position +
-      (this.state.phase === 'playing' ? Math.max(0, this.serverTime() - this.state.startsAt) / 1000 : 0));
-  }
+  target() { return roomTarget(this.state, this.serverTime()); }
   send(message) { if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(message)); }
   ping() { this.send({ type: 'ping', sentAt: performance.now() }); }
   connect() {
@@ -138,7 +135,7 @@ export class SyncPlayer {
     };
     this.ws.onerror = () => this.onStatus('Connexion à la room impossible. Vérifier l’invitation.');
   }
-  pauseLocal() { this.internalUntil = performance.now() + 500; this.video.pause(); this.video.playbackRate = 1; }
+  pauseLocal() { this.internalUntil = performance.now() + INTERNAL_EVENT_MS; this.video.pause(); this.video.playbackRate = 1; }
   // Keeps a phone awake while the film runs; the OS drops the lock when the tab hides.
   async acquireWakeLock() {
     if (!('wakeLock' in navigator) || document.hidden || (this.wakeLock && !this.wakeLock.released)) return;
@@ -149,7 +146,7 @@ export class SyncPlayer {
     this.failure = message; this.activated = false; this.recovering = false;
     this.pauseLocal(); this.report(false); this.onActivation(false); this.onStatus(message);
   }
-  seekLocal(position) { this.internalUntil = performance.now() + 500; this.video.currentTime = position; }
+  seekLocal(position) { this.internalUntil = performance.now() + INTERNAL_EVENT_MS; this.video.currentTime = position; }
   load(movie) {
     const sameMovie = movie?.id === this.movie?.id;
     const activated = sameMovie && this.activated;
@@ -223,36 +220,32 @@ export class SyncPlayer {
     this.applyTrackChoices();
   }
   applyTrackChoices() { this.backend?.applyChoices(this.audioChoice, this.subtitleChoice); }
+  // The policy lives in sync-core.js; this only gathers observables and applies actions.
   reconcile() {
-    if (this.activating) return;
-    if (!this.state || !this.clock.ready || document.hidden || navigator.onLine === false || performance.now() - this.lastMessage > this.silenceMs) { this.pauseLocal(); return; }
-    const target = this.target() + this.offset;
-    if (this.state.phase !== 'playing' || this.serverTime() < this.state.startsAt) {
-      this.pauseLocal();
-      // B-frame reordering can leave a tiny initial gap after lossless remuxing.
-      const start = this.video.buffered.length ? this.video.buffered.start(0) : 0;
-      const seekTarget = start > target && start - target <= 0.1 ? start + 0.00001 : target;
-      // A seek issued before the first decoded frame never completes on WebKit and would wedge
-      // the player in seeking, blocking the whole room.
-      if (this.decoded && !this.video.seeking &&
-        (Math.abs(this.video.currentTime - seekTarget) > 0.1 || (Math.abs(start - seekTarget) <= 0.1 && this.video.currentTime < start))) this.seekLocal(seekTarget);
-      if (this.state.phase === 'playing' && this.activated && this.scheduled !== this.state.startsAt) {
-        clearTimeout(this.startTimer); this.scheduled = this.state.startsAt;
-        this.startTimer = setTimeout(() => this.begin(), Math.max(0, this.state.startsAt - this.serverTime()));
-      }
-      return;
+    const action = decide({
+      activating: this.activating, state: this.state, clockReady: this.clock.ready,
+      hidden: document.hidden, online: navigator.onLine !== false,
+      silent: performance.now() - this.lastMessage > this.silenceMs,
+      decoded: this.decoded, seeking: this.video.seeking, paused: this.video.paused,
+      currentTime: this.video.currentTime,
+      bufferedStart: this.video.buffered.length ? this.video.buffered.start(0) : 0,
+      target: this.target() + this.offset, serverNow: this.serverTime(),
+      activated: this.activated, scheduled: this.scheduled,
+    });
+    if (action.pause) this.pauseLocal();
+    if (action.seekTo !== undefined) this.seekLocal(action.seekTo);
+    if (action.scheduleStart) {
+      clearTimeout(this.startTimer); this.scheduled = this.state.startsAt;
+      this.startTimer = setTimeout(() => this.begin(), action.startIn);
     }
-    if (this.video.paused) return;
-    const drift = target - this.video.currentTime;
-    // Keep audio at its native speed: repeated time stretching can create audible artifacts.
-    // Larger drift still pauses and realigns the entire room.
-    if (Math.abs(drift) > 0.35) { this.pauseLocal(); this.report(false); }
-    else if (this.video.playbackRate !== 1) this.video.playbackRate = 1;
+    if (action.reportUnready) this.report(false);
+    if (action.normalizeRate && this.video.playbackRate !== 1) this.video.playbackRate = 1;
   }
   async begin() {
     this.startTimer = null;
-    if (!this.state || this.state.phase !== 'playing' || this.state.startsAt !== this.scheduled || !this.activated ||
-      this.failure || document.hidden || performance.now() - this.lastMessage > this.silenceMs) return;
+    if (!canBegin({ state: this.state, scheduled: this.scheduled, activated: this.activated,
+      failure: this.failure, hidden: document.hidden,
+      silent: performance.now() - this.lastMessage > this.silenceMs })) return;
     if (this.serverTime() < this.state.startsAt) {
       this.startTimer = setTimeout(() => this.begin(), Math.ceil(this.state.startsAt - this.serverTime())); return;
     }
@@ -262,10 +255,15 @@ export class SyncPlayer {
   report(force) {
     if (!this.state) return;
     const position = this.position();
-    const running = this.state.phase === 'playing' && this.serverTime() > this.state.startsAt + 200;
-    const ready = force !== false && !this.failure && (!this.colorRenderer || (this.colorRenderer.ready && !this.colorRenderer.failed)) && !this.recovering && this.activated && this.clock.ready && !document.hidden && navigator.onLine !== false &&
-      performance.now() - this.lastMessage < this.silenceMs && !this.video.seeking && this.video.readyState >= 3 &&
-      (!running || (!this.video.paused && Math.abs(position - this.target()) <= 0.35));
+    const ready = force !== false && memberReady({
+      state: this.state, failure: this.failure,
+      rendererReady: !this.colorRenderer || (this.colorRenderer.ready && !this.colorRenderer.failed),
+      recovering: this.recovering, activated: this.activated, clockReady: this.clock.ready,
+      hidden: document.hidden, online: navigator.onLine !== false,
+      silent: performance.now() - this.lastMessage >= this.silenceMs,
+      seeking: this.video.seeking, readyState: this.video.readyState, paused: this.video.paused,
+      position, target: this.target(), serverNow: this.serverTime(),
+    });
     this.send({ type: 'report', epoch: this.state.epoch, sequence: this.sequence++, position,
       bufferedUntil: Math.max(position, bufferEnd(this.video) - this.offset), ready,
       ackStartsAt: ready && this.scheduled === this.state.startsAt ? this.scheduled : null });
