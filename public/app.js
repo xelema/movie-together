@@ -1,6 +1,7 @@
 import { SyncPlayer } from './sync-player.js';
 import { label } from './labels.js';
 import { trackName, defaultTrackNames, sourceTitle, trackLayout } from './track-names.js';
+import { SUBTITLE_EXT, SUBTITLE_ACCEPT, IMAGE_SUBTITLE_CODECS } from './subtitle-formats.js';
 
 const $ = id => document.getElementById(id);
 const t = (fr, ko) => sessionStorage.getItem('language') === 'ko' ? ko : fr;
@@ -138,7 +139,7 @@ function selectOptions(select, choices) {
   select.replaceChildren(...choices.map(([value, text]) => { const node = el('option', text); node.value = value; return node; }));
   if (choices.some(([value]) => String(value) === previous)) select.value = previous;
 }
-const IMAGE_SUBTITLES = new Set(['dvd_subtitle', 'hdmv_pgs_subtitle', 'dvb_subtitle', 'xsub']);
+const IMAGE_SUBTITLES = new Set(IMAGE_SUBTITLE_CODECS);
 const unavailableReason = (track, kind) =>
   kind === 'subtitles' && IMAGE_SUBTITLES.has(track.codec)
     ? t('sous-titres image, pas de conversion en texte possible', '이미지 자막은 텍스트로 변환할 수 없습니다')
@@ -338,14 +339,14 @@ function manageDetails(movie, selection) {
     }, 'ghost'));
     details.append(row);
   }
-  const subFile = el('input'); subFile.type = 'file'; subFile.accept = '.srt,.vtt,.smi,.sami,.ass,.ssa,.sub,.sbv,.lrc';
+  const subFile = el('input'); subFile.type = 'file'; subFile.accept = SUBTITLE_ACCEPT;
   const subLang = el('select'); subLang.setAttribute('aria-label', t('Langue', '언어'));
   selectOptions(subLang, [['fr', 'French'], ['ko', 'Korean'], ['en', 'English'], ['und', 'Other']]);
   const subName = el('input'); subName.maxLength = 100; subName.placeholder = 'Ex. Korean'; subName.setAttribute('aria-label', t('Nom affiché', '표시 이름'));
   const addRow = el('div', undefined, 'add-row'); addRow.append(subLang, subName,
     button(t('Ajouter', '추가'), async () => {
       const file = subFile.files[0];
-      if (!file || !/\.(srt|vtt|smi|sami|ass|ssa|sub|sbv|lrc)$/i.test(file.name) || file.size > 2 * 1024 ** 2) throw new Error(t('Choisir un fichier de sous-titres de moins de 2 Mo (SRT, VTT, SMI, ASS, SUB…).', '자막 파일을 선택하세요 (SRT, VTT, SMI, ASS, SUB 등, 최대 2MB).'));
+      if (!file || !SUBTITLE_EXT.test(file.name) || file.size > 2 * 1024 ** 2) throw new Error(t('Choisir un fichier de sous-titres de moins de 2 Mo (SRT, VTT, SMI, ASS, SUB…).', '자막 파일을 선택하세요 (SRT, VTT, SMI, ASS, SUB 등, 최대 2MB).'));
       const trackLabel = subName.value.trim() || subLang.selectedOptions[0].textContent;
       if (movie.status === 'ready') {
         const response = await fetch(`/api/movies/${movie.id}/subtitles?label=${encodeURIComponent(trackLabel)}&language=${subLang.value}&name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: file });
