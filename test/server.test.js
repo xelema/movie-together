@@ -215,6 +215,24 @@ test('authenticated upload, original video and audio, private rooms and access c
   }));
   await ping(2); a.socket.off('message', count);
   assert.ok(broadcasts <= 2, `Unchanged reports caused ${broadcasts} broadcasts`);
+  // Waiting diagnostics ride only on the admin channel, over ws and REST alike.
+  const nextState = socket => new Promise(resolve => {
+    const listener = data => {
+      const message = JSON.parse(data);
+      if (message.type === 'state') { socket.off('message', listener); resolve(message); }
+    };
+    socket.on('message', listener);
+  });
+  const aNext = nextState(a.socket), bNext = nextState(b.socket);
+  a.socket.send(JSON.stringify({ type: 'report', epoch: b.message.state.epoch, sequence: 10,
+    position: 0, bufferedUntil: 0, ready: false, blockers: ['activation'] }));
+  const [aState, bState] = await Promise.all([aNext, bNext]);
+  assert.ok(aState.members.some(member => member.reason === 'not-ready' && member.blockers?.includes('activation')));
+  assert.ok(bState.members.every(member => member.waiting !== undefined && member.reason === undefined && member.blockers === undefined));
+  const guestRoom = await (await request(`/api/rooms/${room.id}`, { cookie: guest })).json();
+  assert.ok(guestRoom.members.every(member => member.reason === undefined));
+  const adminRoom = await (await request(`/api/rooms/${room.id}`, { cookie })).json();
+  assert.ok(adminRoom.members.some(member => member.reason));
   assert.equal((await request(`/api/movies/${movie.id}`, { cookie, method: 'DELETE' })).status, 409);
   await request(`/api/rooms/${room.id}`, { cookie, method: 'DELETE' });
   assert.equal((await request(`/media/${movie.id}/master.m3u8`, { cookie: guest })).status, 403);

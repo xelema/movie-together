@@ -13,11 +13,15 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8192 });
   const rooms = new Map();
 
-  const state = room => ({ type: 'state', roomId: room.id, code: room.code,
+  // Waiting diagnostics are for the host: guests only need the shared bit.
+  const state = (room, { details = true } = {}) => ({ type: 'state', roomId: room.id, code: room.code,
     state: room.engine.snapshot(), movie: room.movieId ? movieFor(room.movieId) : null,
-    members: [...room.engine.members.keys()].map(id => ({ id,
-      name: [...room.clients].find(client => client.memberId === id)?.displayName ?? 'Invité / 게스트',
-      ...room.engine.memberStatus(id) })),
+    members: [...room.engine.members.keys()].map(id => {
+      const status = room.engine.memberStatus(id);
+      return { id,
+        name: [...room.clients].find(client => client.memberId === id)?.displayName ?? 'Invité / 게스트',
+        ...(details ? status : { waiting: status.waiting }) };
+    }),
   });
 
   // Phase moves and per-member waiting signatures are logged on change only:
@@ -41,12 +45,12 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
   const broadcast = room => {
     const current = state(room);
     logChanges(room, current);
-    const payload = JSON.stringify(current);
+    const full = JSON.stringify(current);
+    let guest;
     for (const client of room.clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        if (client.bufferedAmount > 65536) client.terminate();
-        else client.send(payload);
-      }
+      if (client.readyState !== WebSocket.OPEN) continue;
+      if (client.bufferedAmount > 65536) { client.terminate(); continue; }
+      client.send(client.session?.admin ? full : (guest ??= JSON.stringify(state(room, { details: false }))));
     }
   };
 
