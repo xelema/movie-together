@@ -29,8 +29,11 @@ test('keeps audio at normal speed and pauses the group for excessive drift', t =
   let seek;
   player.state.phase = 'paused'; player.video.currentTime = 44; player.video.readyState = 1;
   player.video.buffered = { length: 1, start: () => 40 };
+  player.decoded = true;
   player.seekLocal = position => { seek = position; };
   player.reconcile(); assert.equal(seek, 10);
+  // Before the first decoded frame a seek would wedge the media element on some engines.
+  seek = undefined; player.decoded = false; player.reconcile(); assert.equal(seek, undefined);
 });
 test('buffer measurement never counts ranges beyond a gap', () => {
   const video = { currentTime: 2, buffered: { length: 2, start: i => [0, 20][i], end: i => [4, 60][i] } };
