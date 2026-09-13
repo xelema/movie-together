@@ -7,7 +7,8 @@ import { mkdir, readFile, writeFile, stat, statfs, rename, unlink, rm, readdir }
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './storage.js';
-import { probeFile, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat, SUBTITLE_EXTENSIONS } from './media.js';
+import { probeFile, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat } from './media.js';
+import { SUBTITLE_FORMATS, SUBTITLE_EXT } from '../public/subtitle-formats.js';
 import { createRoomHub } from './sync/hub.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
@@ -15,7 +16,6 @@ const ID = /^[a-f0-9-]{36}$/;
 const TTL = 12 * 3600_000;
 const CHUNK = 8 * 1024 * 1024;
 const fail = (status, message) => Object.assign(new Error(message), { status });
-const SUBTITLE_EXT = new RegExp(`\\.(${Object.keys(SUBTITLE_EXTENSIONS).join('|')})$`, 'i');
 const SUBTITLE_EXT_MESSAGE = 'Choisir un fichier de sous-titres de moins de 2 Mo (SRT, VTT, SMI, ASS, SUB…).';
 // Release names carry encoding jargon that has no place in the interface.
 const FORMAT_TAG = /^(2160p|1440p|1080[pi]|720p|576p|480p|4k|4klight|uhd|hdr10?(\+|plus)?|hlg|dovi|10bits?|8bits?|bluray|blu|brrip|bdrip|bdremux|remux|webrip|webdl|web|hdtv|dvdrip|dvdscr|x26[45]|h26[45]|hevc|avc|av1|vp9|xvid|divx|aac\d?|ac3|eac3|ddp?\d?|dts|dtshd|truehd|atmos|flac|opus|mp3)$/i;
@@ -225,7 +225,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         const movie = idleMovie(info.movieId);
         // Stored files carry no extension and may use a legacy charset: normalize to UTF-8 first.
         await writeFile(source, decodeSubtitleText(await readFile(source)));
-        const formats = SUBTITLE_EXTENSIONS[path.extname(info.name).slice(1).toLowerCase()] ?? [];
+        const formats = SUBTITLE_FORMATS[path.extname(info.name).slice(1).toLowerCase()] ?? [];
         const found = await subtitleFileFormat(source, formats);
         if (!found) throw fail(400, 'Ce fichier ne contient aucune piste utilisable.');
         const filename = `external_${id}`;
@@ -316,7 +316,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     const input = path.join(directory, 'subtitle-input');
     try {
       await writeFile(input, decodeSubtitleText(req.body));
-      const formats = req.query.name ? SUBTITLE_EXTENSIONS[path.extname(req.query.name).slice(1).toLowerCase()] ?? [] : [];
+      const formats = req.query.name ? SUBTITLE_FORMATS[path.extname(req.query.name).slice(1).toLowerCase()] ?? [] : [];
       let track;
       for (const format of [...formats, undefined]) {
         try {
