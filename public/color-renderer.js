@@ -183,9 +183,13 @@ export class ColorRenderer {
       gl.flush();
       // Keep error detection without a synchronous GPU round trip on every frame.
       const now = performance.now();
-      if (!this.ready || resized || this.drawErrors || now - this.lastErrorCheck >= 2000) {
+      if (!this.ready || resized || this.drawErrors || video.paused || now - this.lastErrorCheck >= 2000) {
         this.lastErrorCheck = now;
         if (gl.getError() !== gl.NO_ERROR) throw new Error('Le rendu des couleurs a été interrompu. Rechargez la page.');
+        // Sur certains appareils texImage2D ne reçoit jamais les pixels de la vidéo et la
+        // texture garde une couleur sentinelle uniforme (violet sous Firefox Android,
+        // bugzilla 1884282). On détecte la frame uniforme et la vidéo native reprend le relais.
+        this.canvas.style.visibility = this.deadImport() ? 'hidden' : '';
       }
       this.lastTime = video.currentTime; this.drawErrors = 0;
       if (!this.ready) { this.ready = true; canvas.dataset.ready = 'true'; }
@@ -194,6 +198,16 @@ export class ColorRenderer {
       if ((this.drawErrors = (this.drawErrors || 0) + 1) < 8) { clearTimeout(this.retryTimer); this.retryTimer = setTimeout(() => this.draw(), 400); }
       else { this.failed = true; this.onFailure(error.message); }
     }
+  }
+  deadImport() {
+    const { gl, canvas } = this, pixel = new Uint8Array(4);
+    let reference;
+    for (const [x, y] of [[.1, .1], [.3, .7], [.5, .5], [.7, .2], [.9, .8]]) {
+      gl.readPixels(canvas.width * x | 0, canvas.height * y | 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+      if (!reference) reference = [...pixel];
+      else if (pixel[0] !== reference[0] || pixel[1] !== reference[1] || pixel[2] !== reference[2]) return false;
+    }
+    return true;
   }
   dispose() {
     this.disposed = true; clearTimeout(this.retryTimer); this.listeners.forEach(remove => remove());

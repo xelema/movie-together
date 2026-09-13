@@ -93,6 +93,14 @@ HDR physiques doivent encore être vérifiés ; les dimensions mobiles émulées
 Playwright WebKit sous Windows ne constituent pas ces essais. Dolby Vision sans
 base HDR10/HLG/SDR compatible n'est pas interprété comme du HDR10.
 
+Sur certains appareils Android, `texImage2D` ne reçoit jamais les pixels de la
+vidéo et la texture garde une couleur sentinelle uniforme (violet sous Firefox,
+bug Mozilla 1884282) alors que l'élément vidéo affiche l'image correctement.
+Le rendu sonde quelques pixels de la frame dessinée : si elle est parfaitement
+uniforme, le canvas est masqué et l'élément vidéo natif reprend le relais jusqu'à
+ce que l'import redevienne valide. Pour un film HDR ce repli affiche la vidéo en
+SDR tel quel plutôt qu'en violet.
+
 Une ancienne préparation doit être actualisée pour utiliser ce rendu.
 `HDR_PEAK_NITS` n'est plus utilisé. Les versions sans `rendition.color` conservent
 leur ancien chemin de lecture pendant la migration.
