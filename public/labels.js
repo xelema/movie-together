@@ -11,7 +11,6 @@ const korean = {
   'Connexion à la room impossible. Vérifier l’invitation.': '입장할 수 없습니다. 초대를 확인하세요.',
   'Chargement interrompu. Rechargez la page pour réessayer.': '로딩이 중단되었습니다. 페이지를 새로고침하세요.',
   'Ce navigateur ne permet pas la lecture HLS.': '이 브라우저는 HLS 재생을 지원하지 않습니다.',
-  'Piste changée pour vous. Relancez la séance quand vous êtes prêt.': '트랙이 변경되었습니다. 준비되면 다시 재생하세요.',
   'Commande invalide.': '올바르지 않은 명령입니다.',
   'Analyse du fichier…': '파일 분석 중…',
   'Ce code est déjà utilisé.': '이미 사용 중인 코드입니다.',

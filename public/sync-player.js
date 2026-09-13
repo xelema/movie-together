@@ -222,15 +222,15 @@ export class SyncPlayer {
     this.name = name.trim().slice(0, 40);
     if (this.name) this.send({ type: 'identify', name: this.name });
   }
+  // A switch is local to this viewer; if the new audio track stalls, the room
+  // drops to buffering and resumes on its own once we are ready again.
   changeTrack(type, index) {
-    this.command('pause');
     if (type === 'audio') this.audioChoice = index; else this.subtitleChoice = index;
     if (this.hls) {
       if (type === 'audio') this.hls.audioTrack = index;
       else { this.hls.subtitleTrack = index; this.hls.subtitleDisplay = index >= 0; }
     } else if (type === 'audio') Array.from(this.video.audioTracks ?? []).forEach((track, i) => { track.enabled = i === index; });
     else subtitleTracks(this.video).forEach((track, i) => { track.mode = i === index ? 'showing' : 'disabled'; });
-    this.onStatus('Piste changée pour vous. Relancez la séance quand vous êtes prêt.');
   }
   applyTrackChoices() {
     if (this.hls) {
