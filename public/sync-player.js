@@ -30,6 +30,9 @@ export class SyncPlayer {
     this.name = name;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
     this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.listeners = [];
+    // Defaults until the room publishes its sync policy in welcome.
+    this.sync = { minBuffer: 8, tickMs: 200, startDelay: 1000 };
+    this.silenceMs = 1500; this.bufferSeconds = 30; this.reportEveryMs = 200;
     this.listen(video, 'waiting', () => { if (this.state?.phase === 'playing' && this.serverTime() >= this.state.startsAt) this.report(false); });
     this.listen(video, 'canplay', () => {
       this.recovering = false;
@@ -105,7 +108,21 @@ export class SyncPlayer {
       const message = JSON.parse(event.data);
       this.lastMessage = performance.now();
       if (message.type === 'pong') this.clock.sample(message.sentAt, performance.now(), message.serverNow);
-      if (message.type === 'welcome') this.memberId = message.id;
+      if (message.type === 'welcome') {
+        this.memberId = message.id;
+        this.sync = { ...this.sync, ...message.sync };
+        // Buffer targets must exceed what the room requires to start; silence is
+        // declared after several missed ticks; reports must land inside startDelay
+        // for the ack-of-start handshake.
+        this.bufferSeconds = Math.max(30, Math.ceil(this.sync.minBuffer * 1.5));
+        this.silenceMs = Math.max(1500, this.sync.tickMs * 7.5);
+        const cadence = Math.min(200, this.sync.startDelay / 5);
+        if (cadence !== this.reportEveryMs) {
+          this.reportEveryMs = cadence;
+          clearInterval(this.interval);
+          this.interval = setInterval(() => { this.reconcile(); this.report(); }, cadence);
+        }
+      }
       if (message.type === 'error') this.onStatus(message.error);
       if (message.type === 'state') {
         this.state = message.state;
@@ -163,8 +180,12 @@ export class SyncPlayer {
       this.offset = 0;
       this.video.src = url;
     } else if (window.Hls?.isSupported()) {
-      this.hls = new window.Hls({ maxBufferLength: 30, maxMaxBufferLength: 60,
-        maxBufferSize: 60 * 1024 * 1024, backBufferLength: 10, enableWorker: true });
+      const target = this.bufferSeconds;
+      // The byte cap must hold minBuffer seconds of this stream: on a high-bitrate
+      // film a fixed cap would stall the room before playback could ever start.
+      const bytes = Math.max(60 * 1024 ** 2, Math.ceil(this.sync.minBuffer * (movie.bitrate ?? 20_000_000) / 8));
+      this.hls = new window.Hls({ maxBufferLength: target, maxMaxBufferLength: target * 2,
+        maxBufferSize: bytes, backBufferLength: 10, enableWorker: true });
       this.hls.loadSource(url); this.hls.attachMedia(this.video);
       this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => { if (this.video.readyState >= 3) this.recovering = false; });
       for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) this.hls.on(window.Hls.Events[name], () => { this.applyTrackChoices(); this.tracks(); });
@@ -246,7 +267,7 @@ export class SyncPlayer {
   }
   reconcile() {
     if (this.activating) return;
-    if (!this.state || !this.clock.ready || document.hidden || navigator.onLine === false || performance.now() - this.lastMessage > 1500) { this.pauseLocal(); return; }
+    if (!this.state || !this.clock.ready || document.hidden || navigator.onLine === false || performance.now() - this.lastMessage > this.silenceMs) { this.pauseLocal(); return; }
     const target = this.target() + this.offset;
     if (this.state.phase !== 'playing' || this.serverTime() < this.state.startsAt) {
       this.pauseLocal();
@@ -273,7 +294,7 @@ export class SyncPlayer {
   async begin() {
     this.startTimer = null;
     if (!this.state || this.state.phase !== 'playing' || this.state.startsAt !== this.scheduled || !this.activated ||
-      this.failure || document.hidden || performance.now() - this.lastMessage > 1500) return;
+      this.failure || document.hidden || performance.now() - this.lastMessage > this.silenceMs) return;
     if (this.serverTime() < this.state.startsAt) {
       this.startTimer = setTimeout(() => this.begin(), Math.ceil(this.state.startsAt - this.serverTime())); return;
     }
@@ -285,7 +306,7 @@ export class SyncPlayer {
     const position = this.position();
     const running = this.state.phase === 'playing' && this.serverTime() > this.state.startsAt + 200;
     const ready = force !== false && !this.failure && (!this.colorRenderer || (this.colorRenderer.ready && !this.colorRenderer.failed)) && !this.recovering && this.activated && this.clock.ready && !document.hidden && navigator.onLine !== false &&
-      performance.now() - this.lastMessage < 1500 && !this.video.seeking && this.video.readyState >= 3 &&
+      performance.now() - this.lastMessage < this.silenceMs && !this.video.seeking && this.video.readyState >= 3 &&
       (!running || (!this.video.paused && Math.abs(position - this.target()) <= 0.35));
     this.send({ type: 'report', epoch: this.state.epoch, sequence: this.sequence++, position,
       bufferedUntil: Math.max(position, bufferEnd(this.video) - this.offset), ready,
