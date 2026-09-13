@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './storage.js';
 import { validThresholds } from './sync/room.js';
-import { probeFile, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat } from './media.js';
+import { reprobeMovie, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat } from './media.js';
 import { SUBTITLE_FORMATS, SUBTITLE_EXT } from '../public/subtitle-formats.js';
 import { createRoomHub } from './sync/hub.js';
 import { createJobs } from './jobs.js';
@@ -181,7 +181,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       if (!SUBTITLE_EXT.test(name) || size > 2 * 1024 ** 2) throw fail(400, SUBTITLE_EXT_MESSAGE);
     }
     if (!Number.isSafeInteger(size) || size <= 0 || size > 20 * 1024 ** 3 || typeof name !== 'string' || name.length > 250) throw fail(400, 'Fichier invalide (maximum 20 Go).');
-    if (fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(fingerprint)) throw fail(400, 'Empreinte invalide.');
+    if (fingerprint !== undefined && (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint))) throw fail(400, 'Empreinte invalide.');
     if ((await readdir(path.join(store.root, 'uploads'))).length >= 2) throw fail(409, 'Terminer ou supprimer les uploads précédents.');
     const disk = await statfs(store.root);
     if (disk.bavail * disk.bsize < size * 2.2) throw fail(409, 'Espace disque insuffisant pour l’original et sa préparation.');
@@ -248,10 +248,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       store.save(movie);
       await rename(source, path.join(store.directory(id), 'source'));
       await rm(uploadPath(id), { recursive: true, force: true });
-      try {
-        movie.probe = await probeFile(path.join(store.directory(id), 'source'));
-        movie.status = movie.probe.compatible ? 'uploaded' : 'incompatible';
-      } catch (error) { movie.status = 'failed'; movie.error = error.message; }
+      await reprobeMovie(store, movie);
       store.save(movie); res.json(movie);
     } finally { release(); }
   });
@@ -261,10 +258,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     const done = jobs.claimHeavy('Analyse indisponible.');
     movie.status = 'probing'; movie.error = null; store.save(movie);
     res.status(202).json({ ok: true });
-    try {
-      movie.probe = await probeFile(path.join(store.directory(movie.id), 'source'));
-      movie.status = movie.probe.compatible ? 'uploaded' : 'incompatible';
-    } catch (error) { movie.status = 'failed'; movie.error = error.message; }
+    try { await reprobeMovie(store, movie); }
     finally { store.save(movie); done(); }
   });
   app.post('/api/movies/:id/prepare', admin, async (req, res) => {
