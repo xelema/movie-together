@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { Room } from './room.js';
+import { Room, validThresholds } from './room.js';
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 
@@ -16,6 +16,7 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
   // Waiting diagnostics are for the host: guests only need the shared bit.
   const state = (room, { details = true } = {}) => ({ type: 'state', roomId: room.id, code: room.code,
     state: room.engine.snapshot(), movie: room.movieId ? movieFor(room.movieId) : null,
+    sync: { minBuffer: room.engine.minBuffer, lowBuffer: room.engine.lowBuffer },
     members: [...room.engine.members.keys()].map(id => {
       const status = room.engine.memberStatus(id);
       return { id,
@@ -63,6 +64,21 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
       logged: new Map(), loggedPhase: null };
     room.engine.load(duration); rooms.set(room.id, room);
     return room;
+  };
+
+  // Buffer thresholds are runtime-tunable: live rooms and future ones follow,
+  // and the next state broadcast carries them to connected clients.
+  const tune = ({ minBuffer, lowBuffer } = {}) => {
+    if (!Number.isFinite(minBuffer) || !Number.isFinite(lowBuffer) ||
+      lowBuffer < 1 || minBuffer > 300 || !validThresholds({ minBuffer, lowBuffer })) {
+      throw fail(400, 'Seuils invalides : 1 ≤ réserve < démarrage ≤ 300 s.');
+    }
+    Object.assign(syncOptions, { minBuffer, lowBuffer });
+    for (const room of rooms.values()) {
+      room.engine.minBuffer = minBuffer; room.engine.lowBuffer = lowBuffer;
+      broadcast(room);
+    }
+    return { minBuffer, lowBuffer };
   };
 
   const attach = server => server.on('upgrade', (request, socket, head) => {
@@ -130,6 +146,7 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
   return {
     create,
     attach,
+    tune,
     get: id => rooms.get(id),
     state,
     findByCode: code => [...rooms.values()].find(room => room.code === code && room.expires > Date.now()),
