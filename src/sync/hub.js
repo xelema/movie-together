@@ -1,0 +1,124 @@
+import { WebSocketServer, WebSocket } from 'ws';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { Room } from './room.js';
+
+const fail = (status, message) => Object.assign(new Error(message), { status });
+
+// The séance protocol: room registry, websocket dispatch, broadcast, ticker and
+// liveness sweep. app.js keeps HTTP and auth; it reaches séances only through
+// this interface. Sessions and media stay outside: sessionFor/sessionActive,
+// canAccess, movieFor and moviePlayable are injected at the seam.
+export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, sweepMs = 10_000,
+  maxRooms = 20, maxClients = 8, sessionFor, sessionActive, canAccess, movieFor, moviePlayable } = {}) {
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 8192 });
+  const rooms = new Map();
+
+  const state = room => ({ type: 'state', roomId: room.id, code: room.code,
+    state: room.engine.snapshot(), movie: room.movieId ? movieFor(room.movieId) : null,
+    members: [...room.engine.members.keys()].map(id => ({ id,
+      name: [...room.clients].find(client => client.memberId === id)?.displayName ?? 'Invité / 게스트',
+      ...room.engine.memberStatus(id) })),
+  });
+
+  const broadcast = room => {
+    const payload = JSON.stringify(state(room));
+    for (const client of room.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        if (client.bufferedAmount > 65536) client.terminate();
+        else client.send(payload);
+      }
+    }
+  };
+
+  const create = ({ movieId, duration, code }) => {
+    if (rooms.size >= maxRooms) throw fail(409, 'Fermer une room avant d’en créer une autre.');
+    if (code !== undefined && (typeof code !== 'string' || !/^[a-z0-9-]{4,32}$/i.test(code.trim()))) throw fail(400, 'Code : 4 à 32 lettres, chiffres ou tirets.');
+    code = code?.trim().toLowerCase() || randomBytes(8).toString('hex');
+    if ([...rooms.values()].some(room => room.code === code && room.expires > Date.now())) throw fail(409, 'Ce code est déjà utilisé.');
+    const room = { id: randomUUID(), code, expires: Date.now() + ttl, movieId, engine: new Room(syncOptions), clients: new Set() };
+    room.engine.load(duration); rooms.set(room.id, room);
+    return room;
+  };
+
+  const attach = server => server.on('upgrade', (request, socket, head) => {
+    const session = sessionFor(request);
+    const url = new URL(request.url, origin), room = rooms.get(url.searchParams.get('room'));
+    if (url.pathname !== '/ws' || request.headers.origin !== origin || !session ||
+      !canAccess(session, room) || room.expires <= Date.now() || room.clients.size >= maxClients ||
+      !moviePlayable(room.movieId)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
+    }
+    wss.handleUpgrade(request, socket, head, ws => {
+      const id = randomUUID(); let messages = 0, windowAt = Date.now();
+      ws.session = session; ws.alive = true; ws.memberId = id;
+      ws.displayName = session.admin ? 'Hôte / 호스트' : 'Invité / 게스트';
+      room.clients.add(ws); room.engine.join(id);
+      // The client derives its cadence and buffer targets from these thresholds:
+      // shipping them keeps the timing contract explicit instead of hardcoded twice.
+      const { minBuffer, lowBuffer, reportTimeout, startDelay } = room.engine;
+      ws.send(JSON.stringify({ type: 'welcome', id,
+        sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs } })); broadcast(room);
+      ws.on('pong', () => { ws.alive = true; });
+      ws.on('error', () => {});
+      ws.on('message', data => {
+        if (Date.now() - windowAt >= 1000) { windowAt = Date.now(); messages = 0; }
+        if (++messages > 40 || session.expires <= Date.now()) return ws.close(1008, 'Session invalide');
+        try {
+          const message = JSON.parse(data);
+          if (message.type === 'identify') {
+            if (typeof message.name !== 'string' || message.name.length > 40) throw new Error('Pseudo invalide.');
+            const name = message.name.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '').trim();
+            if (!name) throw new Error('Pseudo requis.');
+            ws.displayName = name; broadcast(room); return;
+          }
+          if (message.type === 'ping' && Number.isFinite(message.sentAt)) {
+            return ws.send(JSON.stringify({ type: 'pong', sentAt: message.sentAt, serverNow: performance.now() }));
+          }
+          if (message.type === 'report') {
+            // Ordinary buffer reports share the ticker, transitions are sent immediately.
+            if (!room.engine.report(id, message).changed) return;
+          } else if (message.type === 'command') room.engine.command(id, { ...message, type: message.command });
+          else throw new Error('Message inconnu.');
+          broadcast(room);
+        } catch { ws.send(JSON.stringify({ type: 'error', error: 'Commande invalide.' })); }
+      });
+      ws.on('close', () => { room.clients.delete(ws); room.engine.leave(id); if (rooms.has(room.id)) broadcast(room); });
+    });
+  });
+
+  const ticker = setInterval(() => {
+    for (const room of rooms.values()) { room.engine.tick(); broadcast(room); }
+  }, tickMs);
+  const sweeper = setInterval(() => {
+    for (const room of rooms.values()) {
+      if (room.expires <= Date.now()) { for (const ws of room.clients) ws.close(1000, 'Room expirée'); rooms.delete(room.id); continue; }
+      for (const ws of room.clients) {
+        if (!ws.alive || !sessionActive(ws.session)) ws.terminate();
+        else { ws.alive = false; ws.ping(); }
+      }
+    }
+  }, sweepMs);
+
+  return {
+    create,
+    attach,
+    get: id => rooms.get(id),
+    state,
+    findByCode: code => [...rooms.values()].find(room => room.code === code && room.expires > Date.now()),
+    list: () => [...rooms.values()].map(room => ({ id: room.id, code: room.code, movieId: room.movieId,
+      expires: room.expires, participants: room.clients.size, link: `${origin}/#invite=${room.code}` })),
+    setMovie(room, movie) { room.movieId = movie.id; room.engine.load(movie.duration); broadcast(room); },
+    remove(id) {
+      const room = rooms.get(id);
+      if (room) { for (const client of room.clients) client.close(1000, 'Room fermée'); rooms.delete(id); }
+    },
+    // idleMovie guards edits; movie deletion guards any reference.
+    movieInUse: movieId => [...rooms.values()].some(room => room.movieId === movieId && room.engine.members.size),
+    movieAssigned: movieId => [...rooms.values()].some(room => room.movieId === movieId),
+    async close() {
+      clearInterval(ticker); clearInterval(sweeper);
+      for (const ws of wss.clients) ws.terminate();
+      await new Promise(resolve => wss.close(resolve));
+    },
+  };
+}
