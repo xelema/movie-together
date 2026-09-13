@@ -204,7 +204,11 @@ async function refresh() {
   $('rooms').replaceChildren(...rooms.map(room => {
     const card = el('div', undefined, 'card');
     card.append(el('p', `${movies.find(movie => movie.id === room.movieId)?.title ?? ''} · ${room.participants} ${t('personne(s)', '명')} · ${t('jusqu’à', '까지')} ${new Date(room.expires).toTimeString().slice(0, 5)}`), el('code', room.code),
-      button(t('Ouvrir', '열기'), () => enterRoom(room.id, undefined, { code: room.code, title: movies.find(movie => movie.id === room.movieId)?.title })), button(t('Copier le lien', '링크 복사'), async () => { await navigator.clipboard.writeText(room.link); notice(t('Lien copié.', '링크를 복사했습니다.')); }),
+      button(t('Ouvrir', '열기'), () => enterRoom(room.id, undefined, { code: room.code, title: movies.find(movie => movie.id === room.movieId)?.title })), button(t('Copier le lien', '링크 복사'), async () => {
+        // Clipboard needs a secure context; on plain HTTP show the link instead.
+        if (!navigator.clipboard) { notice(`${t('Lien', '링크')} : ${room.link}`); return; }
+        await navigator.clipboard.writeText(room.link); notice(t('Lien copié.', '링크를 복사했습니다.'));
+      }),
       button(t('Fermer la séance', '시청방 닫기'), async () => { await api(`/api/rooms/${room.id}`, { method: 'DELETE' }); await refresh(); }, 'danger'));
     return card;
   }));
@@ -409,6 +413,8 @@ $('random-code').addEventListener('click', randomCode);
 async function upload(file, extra = {}) {
   if (uploadBusy) return;
   if (!file) throw new Error(t('Choisir un fichier.', '파일을 선택하세요.'));
+  // crypto.subtle exists only in a secure context (HTTPS or localhost).
+  if (!crypto.subtle) throw new Error(t('L’envoi exige une page servie en HTTPS ou en localhost.', '업로드하려면 HTTPS 또는 localhost 페이지가 필요합니다.'));
   uploadBusy = true; $('upload-button').disabled = true;
   try {
     const pending = await api('/api/uploads');
