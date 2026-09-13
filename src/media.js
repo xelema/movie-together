@@ -31,6 +31,9 @@ export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, in
   });
 }
 
+// Bump whenever inspectProbe's output shape changes; startup re-probes older movies.
+export const PROBE_SCHEMA = 5;
+
 // Format knowledge lives in public/subtitle-formats.js, shared with the client.
 
 // Uploaded subtitle files come in any legacy charset: normalize to UTF-8 once, at ingest.
@@ -92,7 +95,7 @@ export function inspectProbe(probe) {
   const duration = Number(probe.format?.duration);
   const videoCompatible = ['h264', 'hevc', 'av1', 'vp9'].includes(video?.codec_name) && video.width > 0 && video.height > 0;
   const [num, den = 1] = (video?.avg_frame_rate || video?.r_frame_rate || '24/1').split('/').map(Number);
-  return { schema: 5, video: video ? { codec: video.codec_name, pixelFormat: video.pix_fmt,
+  return { schema: PROBE_SCHEMA, video: video ? { codec: video.codec_name, pixelFormat: video.pix_fmt,
     index: video.index, width: video.width, height: video.height, profile: video.profile, level: video.level,
     frameRate: Number.isFinite(num / den) && num / den > 0 ? num / den : 24,
     sampleAspectRatio: video.sample_aspect_ratio,
@@ -114,6 +117,18 @@ export async function probeFile(file) {
     '-show_frames', '-read_intervals', '%+#1', '-of', 'json', file,
   ], { timeout: 120_000 }));
   return inspectProbe(probe);
+}
+
+// Upgrade stored metadata at boot without re-uploading or converting anything.
+export async function refreshStaleProbes(store) {
+  for (const movie of store.movies.values()) {
+    if (movie.probe?.schema === PROBE_SCHEMA || movie.status === 'ready') continue;
+    try {
+      movie.probe = await probeFile(path.join(store.directory(movie.id), 'source'));
+      movie.status = movie.probe.compatible ? 'uploaded' : 'incompatible'; movie.error = null;
+    } catch (error) { movie.status = 'failed'; movie.error = error.message; }
+    store.save(movie);
+  }
 }
 
 function quote(value) { return String(value).replace(/["\r\n\\]/g, '').slice(0, 100); }
