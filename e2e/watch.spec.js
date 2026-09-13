@@ -13,6 +13,18 @@ test('admin manages a film and two named viewers join in their language with one
   }
   const openDetails = async () => { if (!await host.locator('#movies details').evaluate(node => node.open)) await host.locator('#movies summary').click(); };
   const controls = page => page.locator('.plyr').hover();
+  // Point the mouse where the control lands once shown: the move wakes Plyr's controls
+  // and the wiggle enters the bar, so its hover flag keeps them open while playing.
+  const clickControl = (page, selector) => expect(async () => {
+    const point = await page.locator(selector).evaluate(el => {
+      const hidden = el.closest('.plyr').classList.contains('plyr--hide-controls');
+      const r = el.getBoundingClientRect(), bar = el.closest('.plyr__controls').getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y - (hidden ? bar.height : 0) + r.height / 2 };
+    });
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.move(point.x + 1, point.y);
+    await page.locator(`.plyr:not(.plyr--hide-controls) ${selector}`).click({ timeout: 3000 });
+  }).toPass({ timeout: 15_000 });
   try {
     await guest.addInitScript(() => {
       const play = HTMLMediaElement.prototype.play;
@@ -102,7 +114,7 @@ test('admin manages a film and two named viewers join in their language with one
     await guest.evaluate(() => { window.testParticipant = document.querySelector('#participants li'); });
     await guest.waitForTimeout(1000);
     expect(await guest.evaluate(() => window.testParticipant === document.querySelector('#participants li'))).toBe(true);
-    await controls(guest); await guest.locator('.plyr__controls [data-plyr=play]').click();
+    await clickControl(guest, '.plyr__controls [data-plyr=play]');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
     await guest.locator('#open-settings').click(); await guest.locator('#audio').selectOption('1'); await guest.locator('#subtitles').selectOption('0');
     await expect(guest.locator('#audio')).toBeInViewport(); await expect(guest.locator('#subtitles')).toBeInViewport();
@@ -134,7 +146,7 @@ test('admin manages a film and two named viewers join in their language with one
       await guest.screenshot({ path: `test-results/watch-${name}.png`, fullPage: true });
     }
     // A track switch is local to the viewer: it must not pause the room.
-    await controls(guest); await guest.locator('#open-settings').click();
+    await clickControl(guest, '#open-settings');
     await guest.locator('#subtitles').selectOption('-1'); await guest.locator('#close-settings').click();
     await guest.waitForTimeout(1200);
     expect(latest.get(host)?.state.phase).toBe('playing');
@@ -142,10 +154,7 @@ test('admin manages a film and two named viewers join in their language with one
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     // Controls auto-hide while playing; hover until they are shown before clicking fullscreen.
     await expect(async () => {
-      if (await host.evaluate(() => document.fullscreenElement?.id) !== 'screen') {
-        await controls(host);
-        await host.locator('.plyr:not(.plyr--hide-controls) [data-plyr=fullscreen]').click({ timeout: 3000 });
-      }
+      if (await host.evaluate(() => document.fullscreenElement?.id) !== 'screen') await clickControl(host, '[data-plyr=fullscreen]');
       await expect.poll(() => host.evaluate(() => document.fullscreenElement?.id), { timeout: 3000 }).toBe('screen');
     }).toPass({ timeout: 20_000 });
     await expect(host.locator('#player-settings')).toBeHidden();
