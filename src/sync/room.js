@@ -50,7 +50,10 @@ export class Room {
     const buffered = report && report.bufferedUntil >= Math.min(this.duration, position + reserve);
     const reason = !waiting ? null : !report ? 'no-report' : !fresh ? 'stale-report'
       : !report.ready ? 'not-ready' : !buffered ? 'low-buffer' : 'misaligned';
-    return { waiting, reason, blockers: report?.blockers ?? [], failure: report?.failure ?? null };
+    // Seconds of buffer ahead of the shared position vs what the room requires.
+    return { waiting, reason, blockers: report?.blockers ?? [], failure: report?.failure ?? null,
+      buffered: report ? report.bufferedUntil - position : 0,
+      needed: Math.min(this.duration ?? Infinity, position + reserve) - position };
   }
 
   freeze() {

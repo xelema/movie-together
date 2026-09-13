@@ -135,7 +135,8 @@ function handle(action) { return async event => { event?.preventDefault(); try {
 function el(tag, text, className) { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; }
 // Diagnostic codes, kept untranslated so they match the server logs verbatim.
 const why = member => !member.reason ? '' : member.reason + (member.blockers?.length ? `: ${member.blockers.join(', ')}` : '') +
-  (member.failure ? ` [${member.failure}]` : '');
+  (member.failure ? ` [${member.failure}]` : '') +
+  (member.reason === 'low-buffer' && member.needed ? ` ${Math.max(0, Math.round(member.buffered))}s/${Math.round(member.needed)}s` : '');
 function button(text, action, className) { const node = el('button', text, className); node.type = 'button'; node.addEventListener('click', handle(action)); return node; }
 function field(text, input) { const node = el('label', text); input.setAttribute('aria-label', text); node.append(input); return node; }
 function selectOptions(select, choices) {
@@ -404,7 +405,7 @@ async function enterRoom(id, name, context = {}) {
     onState: (message, controller) => {
       roomMessage = message; updatePlayback(controller);
       const key = JSON.stringify([message.movie?.id, message.movie?.title, message.code, controller.memberId,
-        t('fr', 'ko'), message.members.map(({ id, name, waiting, reason, blockers, failure }) => [id, name, waiting, reason, blockers, failure])]);
+        t('fr', 'ko'), message.members.map(({ id, name, waiting, reason, blockers, failure, buffered }) => [id, name, waiting, reason, blockers, failure, Math.round(buffered ?? 0)])]);
       if (controller.roomUIKey === key) return;
       controller.roomUIKey = key;
       $('movie-title').textContent = message.movie?.title ?? ''; $('room-movie').value = message.movie?.id ?? '';
