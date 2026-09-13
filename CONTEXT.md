@@ -27,9 +27,11 @@ vocabulaire partage.
   ne recoivent que le booleen `waiting`.
 - **Seuils de buffer** : `minBuffer` exige de chacun pour demarrer ou
   reprendre, `lowBuffer` en dessous duquel un participant fait repasser
-  la seance en `buffering`. Valeurs par defaut 8 s / 3 s, configurees a
-  20 s / 5 s en production ; le serveur les publie aux participants dans
-  le message `welcome` et le client en derive ses cibles de buffer.
+  la seance en `buffering`. Defauts 8 s / 3 s, surenchirissables par
+  `MIN_BUFFER_SECONDS` / `LOW_BUFFER_SECONDS` puis par la page admin
+  (`PATCH /api/settings`, persiste dans `data/settings.json`). Le serveur
+  les publie dans `welcome` et dans chaque `state`, donc un changement a
+  chaud s'applique aux seances ouvertes et aux clients connectes.
 - **Freeze** : la seance fige sa position et repasse en `paused` ou `buffering`.
   Tout rapport anterieur est invalide : la preparation recommence a zero.
 

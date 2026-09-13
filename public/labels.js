@@ -11,6 +11,7 @@ const korean = {
   'Connexion à la room impossible. Vérifier l’invitation.': '입장할 수 없습니다. 초대를 확인하세요.',
   'Chargement interrompu. Rechargez la page pour réessayer.': '로딩이 중단되었습니다. 페이지를 새로고침하세요.',
   'Ce film utilise un codec vidéo que cet appareil ne peut pas lire.': '이 기기에서는 이 영화의 영상 코덱을 재생할 수 없습니다.',
+  'Seuils invalides : 1 ≤ réserve < démarrage ≤ 300 s.': '버퍼 값이 올바르지 않습니다: 1 ≤ 예비 < 시작 ≤ 300초.',
   'Ce navigateur ne permet pas la lecture HLS.': '이 브라우저는 HLS 재생을 지원하지 않습니다.',
   'Commande invalide.': '올바르지 않은 명령입니다.',
   'Analyse du fichier…': '파일 분석 중…',

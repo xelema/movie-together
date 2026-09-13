@@ -25,6 +25,11 @@ export function createBackend(video, url, options, handlers) {
   return null;
 }
 
+// The byte cap must hold minBuffer seconds of this stream: on a high-bitrate
+// film a fixed cap would stall the room before playback could ever start.
+const bufferBytes = (minBuffer, bitrate) =>
+  Math.max(60 * 1024 ** 2, Math.ceil(minBuffer * (bitrate ?? 20_000_000) / 8));
+
 export class HlsJsBackend {
   // Bounded recovery happens inside the adapter; the media element's own error
   // event must not short-circuit it.
@@ -32,13 +37,10 @@ export class HlsJsBackend {
 
   constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 8, bitrate } = {},
     { onTracksChanged, onBuffered, onStalled, onFatal } = {}) {
-    this.video = video; this.timelineOffset = timelineOffset;
+    this.video = video; this.timelineOffset = timelineOffset; this.bitrate = bitrate;
     this.mediaRecoveries = 0; this.networkRecoveries = 0;
-    // The byte cap must hold minBuffer seconds of this stream: on a high-bitrate
-    // film a fixed cap would stall the room before playback could ever start.
-    const bytes = Math.max(60 * 1024 ** 2, Math.ceil(minBuffer * (bitrate ?? 20_000_000) / 8));
     this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
-      maxBufferSize: bytes, backBufferLength: 10, enableWorker: true });
+      maxBufferSize: bufferBytes(minBuffer, bitrate), backBufferLength: 10, enableWorker: true });
     this.hls.loadSource(url); this.hls.attachMedia(video);
     this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => onBuffered?.());
     for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) {
@@ -52,6 +54,12 @@ export class HlsJsBackend {
       else if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && this.networkRecoveries++ < 1) this.hls.startLoad(video.currentTime);
       else onFatal?.('Chargement interrompu. Rechargez la page pour réessayer.');
     });
+  }
+
+  // The room's thresholds can change at runtime; hls.js reads its config live.
+  setBufferGoal(minBuffer, bufferSeconds) {
+    Object.assign(this.hls.config, { maxBufferLength: bufferSeconds,
+      maxMaxBufferLength: bufferSeconds * 2, maxBufferSize: bufferBytes(minBuffer, this.bitrate) });
   }
 
   audioTracks() {

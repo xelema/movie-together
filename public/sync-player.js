@@ -103,22 +103,12 @@ export class SyncPlayer {
       if (message.type === 'pong') this.clock.sample(message.sentAt, performance.now(), message.serverNow);
       if (message.type === 'welcome') {
         this.memberId = message.id;
-        this.sync = { ...this.sync, ...message.sync };
-        // Buffer targets must exceed what the room requires to start; silence is
-        // declared after several missed ticks; reports must land inside startDelay
-        // for the ack-of-start handshake.
-        this.bufferSeconds = Math.max(30, Math.ceil(this.sync.minBuffer * 1.5));
-        this.silenceMs = Math.max(1500, this.sync.tickMs * 7.5);
-        const cadence = Math.min(200, this.sync.startDelay / 5);
-        if (cadence !== this.reportEveryMs) {
-          this.reportEveryMs = cadence;
-          clearInterval(this.interval);
-          this.interval = setInterval(() => { this.reconcile(); this.report(); }, cadence);
-        }
+        this.applySync(message.sync);
       }
       if (message.type === 'error') this.onStatus(message.error);
       if (message.type === 'state') {
         this.state = message.state;
+        if (message.sync) this.applySync(message.sync);
         // A paused room does not need to hold the screen awake.
         if (this.activated && message.state.phase !== 'paused') this.acquireWakeLock(); else this.releaseWakeLock();
         if (message.movie?.id !== this.movie?.id || message.movie?.generation !== this.movie?.generation) this.load(message.movie);
@@ -136,6 +126,23 @@ export class SyncPlayer {
     this.ws.onerror = () => this.onStatus('Connexion à la room impossible. Vérifier l’invitation.');
   }
   pauseLocal() { this.internalUntil = performance.now() + INTERNAL_EVENT_MS; this.video.pause(); this.video.playbackRate = 1; }
+  // The room's thresholds arrive with welcome and can change mid-session via state.
+  applySync(sync) {
+    const retune = sync.minBuffer !== undefined && sync.minBuffer !== this.sync.minBuffer;
+    this.sync = { ...this.sync, ...sync };
+    // Buffer targets must exceed what the room requires to start; silence is
+    // declared after several missed ticks; reports must land inside startDelay
+    // for the ack-of-start handshake.
+    this.bufferSeconds = Math.max(30, Math.ceil(this.sync.minBuffer * 1.5));
+    this.silenceMs = Math.max(1500, this.sync.tickMs * 7.5);
+    const cadence = Math.min(200, this.sync.startDelay / 5);
+    if (cadence !== this.reportEveryMs) {
+      this.reportEveryMs = cadence;
+      clearInterval(this.interval);
+      this.interval = setInterval(() => { this.reconcile(); this.report(); }, cadence);
+    }
+    if (retune) this.backend?.setBufferGoal?.(this.sync.minBuffer, this.bufferSeconds);
+  }
   // Keeps a phone awake while the film runs; the OS drops the lock when the tab hides.
   async acquireWakeLock() {
     if (!('wakeLock' in navigator) || document.hidden || (this.wakeLock && !this.wakeLock.released)) return;
