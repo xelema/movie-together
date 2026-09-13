@@ -74,6 +74,18 @@ test('rejects duplicate reports and invalid input', () => {
   assert.throws(() => room.command('unknown', { epoch: room.epoch, type: 'pause' }));
 });
 
+test('rejects acknowledgements and positions the room cannot satisfy', () => {
+  const { room, command, report } = setup(); command('play'); report('a');
+  // A stored acknowledgement that never equals startsAt would freeze every start.
+  assert.throws(() => report('a', { ackStartsAt: 'soon' }), /Invalid playback report/);
+  assert.throws(() => report('a', { ackStartsAt: 12345 }), /Invalid playback report/);
+  // Out-of-range positions keep a member misaligned forever; the report is invalid input.
+  assert.throws(() => report('a', { position: 999 }), /Invalid playback report/);
+  assert.throws(() => report('a', { position: 0, bufferedUntil: 9999 }), /Invalid playback report/);
+  // Rejected reports must not consume the sequence slot.
+  report('a'); assert.equal(room.members.get('a').report.position, 0);
+});
+
 test('near the end, readiness only requires the remaining movie', () => {
   const { room, command, report, advance } = setup();
   command('seek', 118); command('play');
