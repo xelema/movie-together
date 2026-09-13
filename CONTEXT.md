@@ -19,9 +19,11 @@ vocabulaire partage.
 - **Rapport** (report) : message periodique d'un participant donnant sa
   position, sa position bufferisee (`bufferedUntil`) et s'il est **pret**
   (ready : lecteur charge, horloge calibree, pas en seek, pas en erreur).
-- **Seuils de buffer** : `minBuffer` (8 s) exige de chacun pour demarrer ou
-  reprendre, `lowBuffer` (3 s) en dessous duquel un participant fait repasser
-  la seance en `buffering`.
+- **Seuils de buffer** : `minBuffer` exige de chacun pour demarrer ou
+  reprendre, `lowBuffer` en dessous duquel un participant fait repasser
+  la seance en `buffering`. Valeurs par defaut 8 s / 3 s, configurees a
+  20 s / 5 s en production ; le serveur les publie aux participants dans
+  le message `welcome` et le client en derive ses cibles de buffer.
 - **Freeze** : la seance fige sa position et repasse en `paused` ou `buffering`.
   Tout rapport anterieur est invalide : la preparation recommence a zero.
 

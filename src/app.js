@@ -15,6 +15,7 @@ const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const ID = /^[a-f0-9-]{36}$/;
 const TTL = 12 * 3600_000;
 const CHUNK = 8 * 1024 * 1024;
+const TICK_MS = 200;
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const SUBTITLE_EXT = new RegExp(`\\.(${Object.keys(SUBTITLE_EXTENSIONS).join('|')})$`, 'i');
 const SUBTITLE_EXT_MESSAGE = 'Choisir un fichier de sous-titres de moins de 2 Mo (SRT, VTT, SMI, ASS, SUB…).';
@@ -209,7 +210,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.get('/api/uploads', admin, async (req, res) => {
     const result = [];
     for (const id of await readdir(path.join(store.root, 'uploads'))) {
-      try { result.push({ ...await uploadInfo(id), offset: (await stat(path.join(uploadPath(id), 'source'))).size }); }
+      try { result.push({ ...await uploadInfo(id), offset: (await stat(path.join(uploadPath(id), 'source'))).size, chunkSize: CHUNK }); }
       catch { /* An upload may have just been finalized. */ }
     }
     res.json(result);
@@ -421,7 +422,11 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       ws.session = session; ws.alive = true; ws.memberId = id;
       ws.displayName = session.admin ? 'Hôte / 호스트' : 'Invité / 게스트';
       room.clients.add(ws); room.engine.join(id);
-      ws.send(JSON.stringify({ type: 'welcome', id })); broadcast(room);
+      // The client derives its cadence and buffer targets from these thresholds:
+      // shipping them keeps the timing contract explicit instead of hardcoded twice.
+      const { minBuffer, lowBuffer, reportTimeout, startDelay } = room.engine;
+      ws.send(JSON.stringify({ type: 'welcome', id,
+        sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs: TICK_MS } })); broadcast(room);
       ws.on('pong', () => { ws.alive = true; });
       ws.on('error', () => {});
       ws.on('message', data => {
@@ -451,7 +456,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   });
   const ticker = setInterval(() => {
     for (const room of rooms.values()) { room.engine.tick(); broadcast(room); }
-  }, 200);
+  }, TICK_MS);
   const cleaner = setInterval(() => {
     for (const [token, session] of sessions) if (session.expires <= Date.now()) sessions.delete(token);
     for (const room of rooms.values()) {
