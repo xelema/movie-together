@@ -38,9 +38,9 @@ Single Node process, no build step, no framework.
   are served from `public/` and `node_modules`.
 - Compact code, small helpers (`el`, `button`, `field` in `app.js`), error
   handling at boundaries only (`handle()` wraps UI actions into `#notice`).
-- The video stream is copied byte-exact into HLS/fMP4, never re-encoded. Only the
-  container colour box is rewritten for transport and source colour metadata feeds
-  the WebGL shader. Audio is copied when AAC-LC <= stereo 44.1/48 kHz, else
+- The video stream is copied byte-exact into HLS/fMP4, never re-encoded. The
+  container colour box repeats the source colour (a tagged stream VUI still wins)
+  and source colour metadata feeds the WebGL shader. Audio is copied when AAC-LC <= stereo 44.1/48 kHz, else
   converted once to AAC-LC stereo 48 kHz. Embedded + uploaded text subtitles
   (SRT, VTT, SMI, ASS/SSA, SUB, SBV, LRC) become WebVTT; uploads are normalized
   to UTF-8 with jschardet + TextDecoder and validated by a real ffmpeg conversion
