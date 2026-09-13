@@ -88,7 +88,8 @@ function translate() {
 function updatePlayback(controller) {
   if (!controller) return;
   const phase = controller.state?.phase;
-  const waiting = roomMessage?.members.filter(member => member.waiting).map(member => member.name) ?? [];
+  const waiting = roomMessage?.members.filter(member => member.waiting)
+    .map(member => member.reason ? `${member.name} (${why(member)})` : member.name) ?? [];
   const needsSound = controller.activationBlocked;
   const loading = !controller.activated || controller.recovering;
   const message = controller.failure ? label(controller.failure) : navigator.onLine === false ? t('Connexion perdue. Séance en pause.', '연결이 끊겨 일시정지되었습니다.') : !phase ? t('Reconnexion…', '다시 연결 중…') :
@@ -132,6 +133,8 @@ async function api(url, { body, method = 'GET', ...options } = {}) {
 }
 function handle(action) { return async event => { event?.preventDefault(); try { await action(event); } catch (error) { notice(error.message); } }; }
 function el(tag, text, className) { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; }
+// Diagnostic codes, kept untranslated so they match the server logs verbatim.
+const why = member => !member.reason ? '' : member.reason + (member.blockers?.length ? `: ${member.blockers.join(', ')}` : '');
 function button(text, action, className) { const node = el('button', text, className); node.type = 'button'; node.addEventListener('click', handle(action)); return node; }
 function field(text, input) { const node = el('label', text); input.setAttribute('aria-label', text); node.append(input); return node; }
 function selectOptions(select, choices) {
@@ -400,7 +403,7 @@ async function enterRoom(id, name, context = {}) {
     onState: (message, controller) => {
       roomMessage = message; updatePlayback(controller);
       const key = JSON.stringify([message.movie?.id, message.movie?.title, message.code, controller.memberId,
-        t('fr', 'ko'), message.members.map(({ id, name, waiting }) => [id, name, waiting])]);
+        t('fr', 'ko'), message.members.map(({ id, name, waiting, reason, blockers }) => [id, name, waiting, reason, blockers])]);
       if (controller.roomUIKey === key) return;
       controller.roomUIKey = key;
       $('movie-title').textContent = message.movie?.title ?? ''; $('room-movie').value = message.movie?.id ?? '';
@@ -413,6 +416,7 @@ async function enterRoom(id, name, context = {}) {
         item.append(el('span', ([...member.name.trim()][0] ?? '?').toUpperCase(), 'avatar'),
           el('strong', `${member.name}${member.id === controller.memberId ? t(' · vous', ' · 나') : ''}`),
           el('span', member.waiting ? t('Chargement…', '준비 중…') : t('Prêt', '준비 완료'), member.waiting ? undefined : 'visually-hidden'));
+        if (member.waiting && member.reason) item.append(el('small', why(member), 'track-tag'));
         return item;
       }));
     },

@@ -45,14 +45,26 @@ export function decide({ activating, state, clockReady, hidden, online, silent,
 }
 
 // The single readiness bit a member reports: activation, clock, liveness,
-// decode progress and alignment all folded in.
-export function memberReady({ state, failure, rendererReady, recovering, activated,
+// decode progress and alignment all folded in. `readyBlockers` names each
+// failing gate; the names ride the report so a stuck séance can say why.
+export function readyBlockers({ state, failure, rendererReady, recovering, activated,
   clockReady, hidden, online, silent, seeking, readyState, paused, position, target, serverNow }) {
   const running = state.phase === 'playing' && serverNow > state.startsAt + 200;
-  return !failure && rendererReady && !recovering && activated && clockReady && !hidden && online &&
-    !silent && !seeking && readyState >= 3 &&
-    (!running || (!paused && Math.abs(position - target) <= 0.35));
+  const blockers = [];
+  if (failure) blockers.push('failure');
+  if (!rendererReady) blockers.push('renderer');
+  if (recovering) blockers.push('recovering');
+  if (!activated) blockers.push('activation');
+  if (!clockReady) blockers.push('clock');
+  if (hidden) blockers.push('hidden');
+  if (!online) blockers.push('offline');
+  if (silent) blockers.push('silent');
+  if (seeking) blockers.push('seeking');
+  if (readyState < 3) blockers.push('data');
+  if (running && (paused || Math.abs(position - target) > 0.35)) blockers.push('drift');
+  return blockers;
 }
+export const memberReady = observables => readyBlockers(observables).length === 0;
 
 // Whether an armed scheduled start may fire now.
 export function canBegin({ state, scheduled, activated, failure, hidden, silent }) {
