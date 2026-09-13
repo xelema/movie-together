@@ -111,6 +111,24 @@ test('member status mirrors the phase gates: ready, fresh, aligned', () => {
   assert.equal(room.memberStatus('a').waiting, true);
 });
 
+test('waiting status names the gate that blocks the member', () => {
+  const { room, command, report, advance } = setup();
+  command('play');
+  assert.equal(room.memberStatus('a').reason, 'no-report');
+  report('a', { ready: false, blockers: ['activation', 'clock'] });
+  assert.equal(room.memberStatus('a').reason, 'not-ready');
+  assert.deepEqual(room.memberStatus('a').blockers, ['activation', 'clock']);
+  report('a', { bufferedUntil: 5 });
+  assert.equal(room.memberStatus('a').reason, 'low-buffer');
+  report('a', { position: 30, bufferedUntil: 60 });
+  assert.equal(room.memberStatus('a').reason, 'misaligned');
+  report('a');
+  assert.equal(room.memberStatus('a').waiting, false);
+  assert.equal(room.memberStatus('a').reason, null);
+  advance(4000);
+  assert.equal(room.memberStatus('a').reason, 'stale-report');
+});
+
 test('changed marks epoch or phase moves only', () => {
   const { room, command, report } = setup();
   assert.equal(command('play').changed, true);
