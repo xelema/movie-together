@@ -6,6 +6,15 @@
 // Native HLS lists chapters and metadata alongside subtitles in textTracks.
 const subtitleTracks = video => Array.from(video.textTracks ?? []).filter(track => ['subtitles', 'captions'].includes(track.kind));
 
+// Preflight so an undecodable codec fails with a clear message instead of
+// hls.js burning its recovery attempts on a stream MSE could never accept.
+// The probe strings use the most permissive profile each codec offers.
+const CODEC_PROBES = { h264: 'avc1.42E01E', hevc: 'hvc1.1.6.L93.B0', av1: 'av01.0.08M.08', vp9: 'vp09.00.10.08' };
+export function codecPlayable(rendition, supports) {
+  const codecs = rendition.codecs || CODEC_PROBES[rendition.codec];
+  return !codecs || supports(`video/mp4; codecs="${codecs}"`);
+}
+
 export function createBackend(video, url, options, handlers) {
   // Prefer native HLS on Safari; its media policies and audio track API differ from MSE.
   if (video.canPlayType('application/vnd.apple.mpegurl') &&
