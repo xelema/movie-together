@@ -102,14 +102,11 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     sessions.set(token, session);
     res.cookie('sid', token, { httpOnly: true, sameSite: 'strict', secure, maxAge: TTL, path: '/' });
   };
-  const roomState = room => ({ type: 'state', roomId: room.id, code: room.code, serverNow: performance.now(),
+  const roomState = room => ({ type: 'state', roomId: room.id, code: room.code,
     state: room.engine.snapshot(), movie: room.movieId ? publicMovie(getMovie(room.movieId)) : null,
-    members: [...room.engine.members.entries()].map(([id, member]) => ({ id,
+    members: [...room.engine.members.keys()].map(id => ({ id,
       name: [...room.clients].find(client => client.memberId === id)?.displayName ?? 'Invité / 게스트',
-      waiting: !member.report?.ready || performance.now() - member.report.receivedAt >= room.engine.reportTimeout ||
-        member.report.bufferedUntil < Math.min(room.engine.duration, room.engine.positionAt() +
-          (room.engine.phase === 'playing' ? room.engine.lowBuffer : room.engine.minBuffer)),
-      ready: !!member.report?.ready, buffer: member.report ? Math.max(0, member.report.bufferedUntil - room.engine.positionAt()) : 0 })),
+      ...room.engine.memberStatus(id) })),
   });
   const broadcast = room => {
     const payload = JSON.stringify(roomState(room));
@@ -442,10 +439,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
             return ws.send(JSON.stringify({ type: 'pong', sentAt: message.sentAt, serverNow: performance.now() }));
           }
           if (message.type === 'report') {
-            const { epoch, phase } = room.engine;
-            room.engine.report(id, message);
             // Ordinary buffer reports share the ticker, transitions are sent immediately.
-            if (room.engine.epoch === epoch && room.engine.phase === phase) return;
+            if (!room.engine.report(id, message).changed) return;
           } else if (message.type === 'command') room.engine.command(id, { ...message, type: message.command });
           else throw new Error('Message inconnu.');
           broadcast(room);
