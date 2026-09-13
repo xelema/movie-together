@@ -181,14 +181,17 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       if (!SUBTITLE_EXT.test(name) || size > 2 * 1024 ** 2) throw fail(400, SUBTITLE_EXT_MESSAGE);
     }
     if (!Number.isSafeInteger(size) || size <= 0 || size > 20 * 1024 ** 3 || typeof name !== 'string' || name.length > 250) throw fail(400, 'Fichier invalide (maximum 20 Go).');
+    if (fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(fingerprint)) throw fail(400, 'Empreinte invalide.');
     if ((await readdir(path.join(store.root, 'uploads'))).length >= 2) throw fail(409, 'Terminer ou supprimer les uploads précédents.');
     const disk = await statfs(store.root);
     if (disk.bavail * disk.bsize < size * 2.2) throw fail(409, 'Espace disque insuffisant pour l’original et sa préparation.');
     const id = randomUUID(); await mkdir(uploadPath(id));
-    if (fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(fingerprint)) throw fail(400, 'Empreinte invalide.');
     const info = { id, name, size, fingerprint, kind, movieId, label, language, createdAt: Date.now() };
-    await writeFile(path.join(uploadPath(id), 'upload.json'), JSON.stringify(info));
-    await writeFile(path.join(uploadPath(id), 'source'), '');
+    // An interrupted creation must not leave a directory the cap would count forever.
+    try {
+      await writeFile(path.join(uploadPath(id), 'upload.json'), JSON.stringify(info));
+      await writeFile(path.join(uploadPath(id), 'source'), '');
+    } catch (error) { await rm(uploadPath(id), { recursive: true, force: true }); throw error; }
     res.status(201).json({ ...info, offset: 0, chunkSize: CHUNK });
   });
   app.get('/api/uploads', admin, async (req, res) => {

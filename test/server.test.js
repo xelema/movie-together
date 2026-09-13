@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
@@ -267,4 +267,26 @@ test('admin tunes buffer thresholds at runtime and they persist', async t => {
   const second = await boot();
   t.after(() => second.instance.close());
   assert.deepEqual(await (await second.request('/api/settings', { cookie: second.cookie })).json(), { minBuffer: 12, lowBuffer: 4 });
+});
+
+test('a rejected upload creation does not count against the pending upload cap', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
+  const origin = 'http://localhost:3000';
+  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin });
+  await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${instance.server.address().port}`;
+  t.after(async () => { await instance.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const request = (url, { cookie, method = 'GET', body } = {}) => fetch(base + url, {
+    method, headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body) });
+  const login = await request('/api/login', { method: 'POST', body: { password: 'test-password-long-enough' } });
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const create = body => request('/api/uploads', { cookie, method: 'POST', body });
+  for (let count = 0; count < 3; count++)
+    assert.equal((await create({ name: 'film.mkv', size: 1024, fingerprint: 'not-hex' })).status, 400);
+  // Without cleanup at creation, each rejection above would have left a directory
+  // counted by the cap and this valid upload would now be refused.
+  assert.equal((await create({ name: 'film.mkv', size: 1024 })).status, 201);
+  const pending = await (await request('/api/uploads', { cookie })).json();
+  assert.deepEqual(await readdir(path.join(dataDir, 'uploads')), [pending[0].id]);
 });
