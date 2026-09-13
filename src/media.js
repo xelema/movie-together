@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import jschardet from 'jschardet';
 import { colorParameters } from '../public/color-renderer.js';
+import { defaultTrackNames } from '../public/track-names.js';
 
 export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, includeStderr = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -82,23 +83,26 @@ export function inspectProbe(probe) {
   const color = key => !['unknown', 'unspecified', 'reserved'].includes(video?.[key]) ? video?.[key] : undefined;
   const transfer = color('color_transfer');
   const hdr = ['smpte2084', 'arib-std-b67'].includes(transfer) || !!dovi;
+  const flags = stream => { const d = stream.disposition ?? {}; return { forced: !!d.forced,
+    commentary: !!d.comment, hearingImpaired: !!d.hearing_impaired, visualImpaired: !!d.visual_impaired,
+    defaultTrack: !!d.default }; };
   const audio = streams.filter(stream => stream.codec_type === 'audio').map(stream => ({
     index: stream.index, codec: stream.codec_name, channels: stream.channels,
     language: stream.tags?.language ?? 'und', label: stream.tags?.title ?? stream.tags?.language ?? `Audio ${stream.index}`,
     compatible: !!stream.codec_name && stream.codec_name !== 'unknown',
     channelLayout: stream.channel_layout, sampleRate: Number(stream.sample_rate),
     copy: stream.codec_name === 'aac' && stream.profile === 'LC' && stream.channels > 0 && stream.channels <= 2 &&
-      [44100, 48000].includes(Number(stream.sample_rate)),
+      [44100, 48000].includes(Number(stream.sample_rate)), ...flags(stream),
   }));
   const subtitles = streams.filter(stream => stream.codec_type === 'subtitle').map(stream => ({
     index: stream.index, codec: stream.codec_name, language: stream.tags?.language ?? 'und',
     label: stream.tags?.title ?? stream.tags?.language ?? `Subtitles ${stream.index}`,
-    compatible: SUBTITLE_CODECS.includes(stream.codec_name),
+    compatible: SUBTITLE_CODECS.includes(stream.codec_name), ...flags(stream),
   }));
   const duration = Number(probe.format?.duration);
   const videoCompatible = ['h264', 'hevc', 'av1', 'vp9'].includes(video?.codec_name) && video.width > 0 && video.height > 0;
   const [num, den = 1] = (video?.avg_frame_rate || video?.r_frame_rate || '24/1').split('/').map(Number);
-  return { schema: 4, video: video ? { codec: video.codec_name, pixelFormat: video.pix_fmt,
+  return { schema: 5, video: video ? { codec: video.codec_name, pixelFormat: video.pix_fmt,
     index: video.index, width: video.width, height: video.height, profile: video.profile, level: video.level,
     frameRate: Number.isFinite(num / den) && num / den > 0 ? num / den : 24,
     sampleAspectRatio: video.sample_aspect_ratio,
@@ -214,13 +218,12 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   // Names shown to viewers come from the administrator; a bare language code lets the page translate it.
   const select = (tracks, indices, kind) => {
     if (!Array.isArray(indices) || indices.length > 24 || new Set(indices).size !== indices.length) throw new Error('Sélection invalide.');
-    return indices.map((index, position) => {
+    const fallbacks = defaultTrackNames(tracks, kind);
+    return indices.map(index => {
       const track = tracks.find(item => item.index === index && item.compatible);
       if (!track) throw new Error('Piste incompatible.');
       const chosen = movie.trackNames?.[kind]?.[index];
-      const fallback = track.language && track.language !== 'und' ? track.language
-        : kind === 'audio' ? `Track ${position + 1}` : `Subtitles ${position + 1}`;
-      return { ...track, label: quote(chosen || fallback) };
+      return { ...track, label: quote(chosen || fallbacks.get(index)) };
     });
   };
   const external = movie.externalTracks ?? [];
@@ -276,7 +279,8 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   }
   const subtitles = [];
   for (const track of embeddedSubs) {
-    subtitles.push(await addSubtitle(directory, source, { ...track, duration: movie.probe.duration }));
+    // The source index is kept so a later preparation can repeat this selection.
+    subtitles.push({ ...await addSubtitle(directory, source, { ...track, duration: movie.probe.duration }), index: track.index });
   }
   const consumedExternal = external.filter(track => track.kind === 'subtitle');
   for (const track of consumedExternal) {

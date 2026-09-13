@@ -6,6 +6,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createStore } from '../src/storage.js';
 import { run, probeFile, prepareMovie, inspectProbe, decodeSubtitleText, subtitleFileFormat, addSubtitle } from '../src/media.js';
+import { defaultTrackNames } from '../public/track-names.js';
 
 // Retagging rewrites the sequence header, so compare decoded samples: no picture may change.
 const decodedVideo = input => run(process.env.FFMPEG_PATH || 'ffmpeg', ['-v', 'error', '-i', input, '-map', '0:v:0', '-f', 'framemd5', '-']);
@@ -185,6 +186,33 @@ test('downmixes center-channel dialogue to both speakers in one pass and preserv
   assert.ok(channels[0] > -50 && channels[0] < -30, String(channels));
   assert.equal(result.audio[0].channels, 2); assert.equal(result.audio[0].converted, true);
   assert.match(await measure(2, 'volumedetect'), /max_volume: -91/);
+});
+
+test('names duplicate tracks by flag, original title or layout, numbering last', () => {
+  const names = (tracks, kind) => [...defaultTrackNames(tracks, kind).values()];
+  const sub = extra => ({ index: 0, language: 'fr', label: 'fr', compatible: true, codec: 'subrip', ...extra });
+  assert.deepEqual(names([sub({ index: 2 }), sub({ index: 3, language: 'en', label: 'en' })], 'subtitles'), ['French', 'English']);
+  assert.deepEqual(names([sub({ index: 2 }), sub({ index: 3, forced: true })], 'subtitles'), ['French', 'French (forced)']);
+  assert.deepEqual(names([sub({ index: 2 }), sub({ index: 3, label: 'FR FORCED' })], 'subtitles'), ['French', 'French (forced)']);
+  assert.deepEqual(names([sub({ index: 2, label: 'SDH' }), sub({ index: 3, label: 'Signs' })], 'subtitles'), ['French (SDH)', 'French (Signs)']);
+  const audio = extra => ({ index: 0, language: 'en', label: 'en', compatible: true, codec: 'aac', ...extra });
+  assert.deepEqual(names([audio({ index: 1, channels: 2, channelLayout: 'stereo' }),
+    audio({ index: 2, channels: 6, channelLayout: '5.1(side)' })], 'audio'), ['English (stereo)', 'English (5.1)']);
+  assert.deepEqual(names([audio({ index: 1 }), audio({ index: 2 })], 'audio'), ['English', 'English 2']);
+  // Incompatible tracks never collide: they cannot be selected.
+  assert.deepEqual(names([sub({ index: 2 }), sub({ index: 3, compatible: false, codec: 'hdmv_pgs_subtitle' })], 'subtitles'), ['French', 'French']);
+});
+
+test('keeps stream dispositions so forced and commentary tracks can be named', () => {
+  const probe = inspectProbe({ format: { duration: '10' }, streams: [
+    { codec_type: 'audio', codec_name: 'aac', index: 1, channels: 2, sample_rate: '48000', profile: 'LC',
+      disposition: { default: 1, comment: 1 }, tags: { language: 'eng' } },
+    { codec_type: 'subtitle', codec_name: 'subrip', index: 3, disposition: { forced: 1 }, tags: { language: 'fra', title: 'FR FORCED' } },
+    { codec_type: 'subtitle', codec_name: 'hdmv_pgs_subtitle', index: 4, tags: { language: 'fra' } }] });
+  assert.equal(probe.audio[0].commentary, true);
+  assert.equal(probe.audio[0].defaultTrack, true);
+  assert.equal(probe.subtitles[0].forced, true);
+  assert.equal(probe.subtitles[1].compatible, false);
 });
 
 test('preserves full-range SDR black and white and the original color metadata', async t => {
