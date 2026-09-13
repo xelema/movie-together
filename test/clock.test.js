@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Clock, bufferEnd, SyncPlayer } from '../public/sync-player.js';
-import { decide, memberReady } from '../public/sync-core.js';
+import { decide, memberReady, readyBlockers } from '../public/sync-core.js';
 
 test('clock estimates offset using the shortest round trip and expires old samples', () => {
   const clock = new Clock();
@@ -60,6 +60,22 @@ test('readiness folds activation, decode, liveness and alignment into one bit', 
   // Before that window, position checks do not apply.
   assert.ok(memberReady({ ...base, serverNow: 100, position: 11, paused: true }));
 });
+test('readiness blockers name each failing gate', () => {
+  const base = {
+    state: { phase: 'playing', startsAt: 0 }, failure: null, rendererReady: true,
+    recovering: false, activated: true, clockReady: true, hidden: false, online: true,
+    silent: false, seeking: false, readyState: 4, paused: false,
+    position: 10, target: 10, serverNow: 1000,
+  };
+  assert.deepEqual(readyBlockers(base), []);
+  assert.deepEqual(readyBlockers({ ...base, activated: false }), ['activation']);
+  assert.deepEqual(readyBlockers({ ...base, clockReady: false, hidden: true }), ['clock', 'hidden']);
+  assert.deepEqual(readyBlockers({ ...base, seeking: true, readyState: 2 }), ['seeking', 'data']);
+  assert.deepEqual(readyBlockers({ ...base, position: 11 }), ['drift']);
+  assert.deepEqual(readyBlockers({ ...base, failure: 'x', rendererReady: false, recovering: true }),
+    ['failure', 'renderer', 'recovering']);
+});
+
 test('buffer measurement never counts ranges beyond a gap', () => {
   const video = { currentTime: 2, buffered: { length: 2, start: i => [0, 20][i], end: i => [4, 60][i] } };
   assert.equal(bufferEnd(video), 4);

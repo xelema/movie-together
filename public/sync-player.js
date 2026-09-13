@@ -1,6 +1,6 @@
 import { ColorRenderer } from './color-renderer.js';
 import { createBackend } from './backends.js';
-import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, memberReady, canBegin } from './sync-core.js';
+import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, readyBlockers, canBegin } from './sync-core.js';
 
 export class Clock {
   constructor() { this.samples = []; }
@@ -255,7 +255,7 @@ export class SyncPlayer {
   report(force) {
     if (!this.state) return;
     const position = this.position();
-    const ready = force !== false && memberReady({
+    let blockers = readyBlockers({
       state: this.state, failure: this.failure,
       rendererReady: !this.colorRenderer || (this.colorRenderer.ready && !this.colorRenderer.failed),
       recovering: this.recovering, activated: this.activated, clockReady: this.clock.ready,
@@ -264,8 +264,12 @@ export class SyncPlayer {
       seeking: this.video.seeking, readyState: this.video.readyState, paused: this.video.paused,
       position, target: this.target(), serverNow: this.serverTime(),
     });
+    const ready = force !== false && !blockers.length;
+    // An event-forced report with every gate green means the element itself stalled.
+    if (force === false && !blockers.length) blockers = ['stalled'];
     this.send({ type: 'report', epoch: this.state.epoch, sequence: this.sequence++, position,
       bufferedUntil: Math.max(position, bufferEnd(this.video) - this.offset), ready,
+      blockers: ready ? undefined : blockers,
       ackStartsAt: ready && this.scheduled === this.state.startsAt ? this.scheduled : null });
   }
   dispose() {

@@ -35,6 +35,8 @@ export class Room {
 
   // What the séance knows of a participant, for display. `waiting` mirrors the
   // phase gates: a member out of alignment blocks a start while wantsPlay is set.
+  // `reason` names the first failing gate so a stuck séance explains itself, and
+  // `blockers` carries the member's own readiness detail when it is not ready.
   memberStatus(id) {
     const member = this.requireMember(id);
     const time = this.now();
@@ -42,8 +44,13 @@ export class Room {
     const report = member.report;
     const reserve = this.phase === 'playing' ? this.lowBuffer : this.minBuffer;
     const aligned = report && Math.abs(report.position - position) <= 0.1;
-    return { waiting: !this.healthy(report, reserve, position, time) ||
-      (this.wantsPlay && this.phase !== 'playing' && !aligned) };
+    const waiting = !this.healthy(report, reserve, position, time) ||
+      (this.wantsPlay && this.phase !== 'playing' && !aligned);
+    const fresh = report && time - report.receivedAt < this.reportTimeout;
+    const buffered = report && report.bufferedUntil >= Math.min(this.duration, position + reserve);
+    const reason = !waiting ? null : !report ? 'no-report' : !fresh ? 'stale-report'
+      : !report.ready ? 'not-ready' : !buffered ? 'low-buffer' : 'misaligned';
+    return { waiting, reason, blockers: report?.blockers ?? [] };
   }
 
   freeze() {
@@ -108,16 +115,17 @@ export class Room {
     return { snapshot: this.snapshot(), changed: true };
   }
 
-  report(id, { epoch, sequence, position, bufferedUntil, ready, ackStartsAt = null }) {
+  report(id, { epoch, sequence, position, bufferedUntil, ready, ackStartsAt = null, blockers = null }) {
     const member = this.requireMember(id);
     if (epoch !== this.epoch || !Number.isSafeInteger(sequence) || sequence <= member.sequence) {
       return { snapshot: this.snapshot(), changed: false };
     }
-    if (!Number.isFinite(position) || position < 0 || !Number.isFinite(bufferedUntil) || bufferedUntil < position || typeof ready !== 'boolean') {
+    if (!Number.isFinite(position) || position < 0 || !Number.isFinite(bufferedUntil) || bufferedUntil < position || typeof ready !== 'boolean' ||
+      (blockers !== null && (!Array.isArray(blockers) || blockers.length > 12 || blockers.some(name => typeof name !== 'string' || name.length > 40)))) {
       throw new RangeError('Invalid playback report');
     }
     member.sequence = sequence;
-    member.report = { position, bufferedUntil, ready, ackStartsAt, receivedAt: this.now() };
+    member.report = { position, bufferedUntil, ready, ackStartsAt, receivedAt: this.now(), blockers };
     return this.tick();
   }
 

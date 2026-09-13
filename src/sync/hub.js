@@ -20,8 +20,28 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
       ...room.engine.memberStatus(id) })),
   });
 
+  // Phase moves and per-member waiting signatures are logged on change only:
+  // a stuck séance leaves one line naming the gate that blocks it.
+  const logChanges = (room, current) => {
+    if (current.state.phase !== room.loggedPhase) {
+      console.log(`[room ${room.code}] phase ${room.loggedPhase ?? 'new'} -> ${current.state.phase}`);
+      room.loggedPhase = current.state.phase;
+    }
+    for (const member of current.members) {
+      const signature = member.waiting
+        ? `waiting ${member.reason}${member.blockers?.length ? ` (${member.blockers.join(', ')})` : ''}`
+        : 'ready';
+      if (room.logged.get(member.id) !== signature) {
+        room.logged.set(member.id, signature);
+        console.log(`[room ${room.code}] ${member.name}: ${signature}`);
+      }
+    }
+  };
+
   const broadcast = room => {
-    const payload = JSON.stringify(state(room));
+    const current = state(room);
+    logChanges(room, current);
+    const payload = JSON.stringify(current);
     for (const client of room.clients) {
       if (client.readyState === WebSocket.OPEN) {
         if (client.bufferedAmount > 65536) client.terminate();
@@ -35,7 +55,8 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
     if (code !== undefined && (typeof code !== 'string' || !/^[a-z0-9-]{4,32}$/i.test(code.trim()))) throw fail(400, 'Code : 4 à 32 lettres, chiffres ou tirets.');
     code = code?.trim().toLowerCase() || randomBytes(8).toString('hex');
     if ([...rooms.values()].some(room => room.code === code && room.expires > Date.now())) throw fail(409, 'Ce code est déjà utilisé.');
-    const room = { id: randomUUID(), code, expires: Date.now() + ttl, movieId, engine: new Room(syncOptions), clients: new Set() };
+    const room = { id: randomUUID(), code, expires: Date.now() + ttl, movieId, engine: new Room(syncOptions), clients: new Set(),
+      logged: new Map(), loggedPhase: null };
     room.engine.load(duration); rooms.set(room.id, room);
     return room;
   };
@@ -80,7 +101,10 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
           } else if (message.type === 'command') room.engine.command(id, { ...message, type: message.command });
           else throw new Error('Message inconnu.');
           broadcast(room);
-        } catch { ws.send(JSON.stringify({ type: 'error', error: 'Commande invalide.' })); }
+        } catch (error) {
+          console.warn(`[room ${room.code}] ${ws.displayName}: ${error.message}`);
+          ws.send(JSON.stringify({ type: 'error', error: 'Commande invalide.' }));
+        }
       });
       ws.on('close', () => { room.clients.delete(ws); room.engine.leave(id); if (rooms.has(room.id)) broadcast(room); });
     });
