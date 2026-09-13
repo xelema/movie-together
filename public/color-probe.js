@@ -53,7 +53,7 @@ function sample(gl, clip) {
   const pixels = new Uint8Array(clip.width * clip.height * 4);
   gl.readPixels(0, 0, clip.width, clip.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
   return clip.patches.map(patch => {
-    const i = ((clip.height - 1 - (patch.y + 32)) * clip.width + patch.x + 64) * 4;
+    const i = ((clip.height - 1 - (patch.y + clip.ph / 2)) * clip.width + patch.x + clip.pw / 2) * 4;
     return [pixels[i], pixels[i + 1], pixels[i + 2]];
   });
 }
@@ -142,7 +142,7 @@ async function phase2(state) {
     try {
       ctx.drawImage(video, 0, 0);
       const data = ctx.getImageData(0, 0, clip.width, clip.height).data;
-      const m2d = clip.patches.map(p => { const i = ((p.y + 32) * clip.width + p.x + 64) * 4; return [data[i], data[i + 1], data[i + 2]]; });
+      const m2d = clip.patches.map(p => { const i = ((p.y + clip.ph / 2) * clip.width + p.x + clip.pw / 2) * 4; return [data[i], data[i + 1], data[i + 2]]; });
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       const mgl = sample(gl, clip);
@@ -161,6 +161,10 @@ async function phase2(state) {
   video.pause();
   measure('pause+0s'); await new Promise(r => setTimeout(r, 1000)); measure('pause+1s');
   await new Promise(r => setTimeout(r, 2000)); measure('pause+3s');
+  // Un seek en pause force une nouvelle frame décodée : teste si l'import récupère.
+  video.currentTime += 1 / 24;
+  await new Promise(r => { video.onseeked = r; });
+  measure('seek-en-pause');
   document.addEventListener('visibilitychange', () => measure(document.hidden ? 'caché' : 'visible'));
   window.addEventListener('focus', () => measure('focus'));
   window.addEventListener('pageshow', () => measure('pageshow'));

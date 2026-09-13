@@ -8,14 +8,15 @@ import { run } from '../src/media.js';
 
 const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
 
-// Eight 128x64 patches: four neutral greys, four saturated colours.
+// Eight patches: four neutral greys, four saturated colours.
 // Values are 8-bit limited-range YCbCr; the 10-bit clip scales them by 4.
-const WIDTH = 512, HEIGHT = 128;
+// Sizes match a real film stream so the device picks the same decoder path.
+const WIDTH = 1920, HEIGHT = 752, PW = 480, PH = 94;
 const patches = [
-  { x: 0, y: 0, yuv: [64, 128, 128] }, { x: 128, y: 0, yuv: [128, 128, 128] },
-  { x: 256, y: 0, yuv: [192, 128, 128] }, { x: 384, y: 0, yuv: [235, 128, 128] },
-  { x: 0, y: 64, yuv: [96, 96, 210] }, { x: 128, y: 64, yuv: [150, 54, 54] },
-  { x: 256, y: 64, yuv: [70, 210, 110] }, { x: 384, y: 64, yuv: [105, 200, 200] },
+  { x: 0, y: 0, yuv: [64, 128, 128] }, { x: 480, y: 0, yuv: [128, 128, 128] },
+  { x: 960, y: 0, yuv: [192, 128, 128] }, { x: 1440, y: 0, yuv: [235, 128, 128] },
+  { x: 0, y: 94, yuv: [96, 96, 210] }, { x: 480, y: 94, yuv: [150, 54, 54] },
+  { x: 960, y: 94, yuv: [70, 210, 110] }, { x: 1440, y: 94, yuv: [105, 200, 200] },
 ];
 
 function pattern(depth) {
@@ -24,9 +25,9 @@ function pattern(depth) {
   const put = (index, value) => depth === 10 ? raw.writeUInt16LE(value, index * 2) : raw.writeUInt8(value, index);
   for (const patch of patches) {
     const [y, cb, cr] = patch.yuv.map(v => v * scale);
-    for (let row = patch.y; row < patch.y + 64; row++) for (let col = patch.x; col < patch.x + 128; col++)
+    for (let row = patch.y; row < patch.y + PH; row++) for (let col = patch.x; col < patch.x + PW; col++)
       put(row * WIDTH + col, y);
-    for (let row = patch.y / 2; row < (patch.y + 64) / 2; row++) for (let col = patch.x / 2; col < (patch.x + 128) / 2; col++) {
+    for (let row = patch.y / 2; row < (patch.y + PH) / 2; row++) for (let col = patch.x / 2; col < (patch.x + PW) / 2; col++) {
       put(WIDTH * HEIGHT + row * WIDTH / 2 + col, cb);
       put(WIDTH * HEIGHT * 5 / 4 + row * WIDTH / 2 + col, cr);
     }
@@ -60,8 +61,9 @@ try {
     const mkv = path.join(root, `${def.name}.mkv`);
     const paramArgs = def.params.length ? [`-x${def.codec === 'libx265' ? '265' : '264'}-params`, def.params.join(':')] : [];
     await run(ffmpeg, ['-y', '-v', 'error', '-f', 'rawvideo', '-pixel_format', def.depth === 10 ? 'yuv420p10le' : 'yuv420p',
-      '-video_size', `${WIDTH}x${HEIGHT}`, '-framerate', '1', '-i', input, '-frames:v', '2',
-      '-c:v', def.codec, '-preset', 'ultrafast', '-threads', '2', ...paramArgs, '-f', 'matroska', mkv]);
+      '-video_size', `${WIDTH}x${HEIGHT}`, '-framerate', '24', '-i', input, '-frames:v', '48',
+      '-c:v', def.codec, '-profile:v', def.codec === 'libx265' ? 'main10' : 'high', '-preset', 'medium',
+      '-threads', '2', ...paramArgs, '-f', 'matroska', mkv]);
     const fmp4 = path.join(root, `${def.name}.mp4`);
     // Same flags as transportMetadata: copy packets, only the container declares BT.709/sRGB.
     await run(ffmpeg, ['-y', '-v', 'error', '-i', mkv, '-c', 'copy',
@@ -72,7 +74,7 @@ try {
     const at = bytes.indexOf('nclx');
     if (at < 0 || bytes.readUInt16BE(at + 4) !== 1 || bytes.readUInt16BE(at + 6) !== 13 || bytes.readUInt16BE(at + 8) !== 1)
       throw new Error(`${def.name}: boîte colr absente ou incorrecte`);
-    clips.push({ name: def.name, width: WIDTH, height: HEIGHT, bitDepth: def.depth,
+    clips.push({ name: def.name, width: WIDTH, height: HEIGHT, pw: PW, ph: PH, bitDepth: def.depth,
       mime: `video/mp4; codecs="${codecString(bytes, def.codec === 'libx265' ? 'hevc' : 'h264')}"`,
       // Fallbacks in case the parsed string does not match isTypeSupported exactly.
       fallbacks: def.codec === 'libx265' ? ['video/mp4; codecs="hvc1"', 'video/mp4; codecs="hev1"'] : [`video/mp4; codecs="avc1.42E028"`],
