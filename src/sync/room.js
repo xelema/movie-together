@@ -25,6 +25,27 @@ export class Room {
     return Math.min(this.duration ?? Infinity, this.position + elapsed);
   }
 
+  // A report is healthy when it is fresh, self-declared ready, and buffered past
+  // the reserve the current phase requires. One definition, shared by tick() and memberStatus().
+  healthy(report, reserve, position, time) {
+    return report && report.ready &&
+      time - report.receivedAt < this.reportTimeout &&
+      report.bufferedUntil >= Math.min(this.duration, position + reserve);
+  }
+
+  // What the séance knows of a participant, for display. `waiting` mirrors the
+  // phase gates: a member out of alignment blocks a start while wantsPlay is set.
+  memberStatus(id) {
+    const member = this.requireMember(id);
+    const time = this.now();
+    const position = this.positionAt(time);
+    const report = member.report;
+    const reserve = this.phase === 'playing' ? this.lowBuffer : this.minBuffer;
+    const aligned = report && Math.abs(report.position - position) <= 0.1;
+    return { waiting: !this.healthy(report, reserve, position, time) ||
+      (this.wantsPlay && this.phase !== 'playing' && !aligned) };
+  }
+
   freeze() {
     this.position = this.positionAt();
     this.startsAt = null;
@@ -34,11 +55,17 @@ export class Room {
     for (const member of this.members.values()) member.report = null;
   }
 
+  // `changed` marks an epoch or phase move: worth broadcasting right away
+  // rather than waiting for the next tick.
+  outcome(mark) {
+    return { snapshot: this.snapshot(), changed: this.epoch !== mark.epoch || this.phase !== mark.phase };
+  }
+
   join(id) {
     if (this.members.has(id)) throw new Error('Participant already joined');
     this.members.set(id, { sequence: -1, report: null });
     this.freeze();
-    return this.snapshot();
+    return { snapshot: this.snapshot(), changed: true };
   }
 
   leave(id) {
@@ -47,7 +74,7 @@ export class Room {
     // A disconnect always stops playback; resuming is an explicit group action.
     this.wantsPlay = false;
     this.freeze();
-    return this.snapshot();
+    return { snapshot: this.snapshot(), changed: true };
   }
 
   requireMember(id) {
@@ -62,13 +89,13 @@ export class Room {
     this.freeze();
     this.duration = duration;
     this.position = 0;
-    return this.snapshot();
+    return { snapshot: this.snapshot(), changed: true };
   }
 
   command(id, { epoch, type, position }) {
     this.requireMember(id);
     // Pause remains effective even if the sender has not received the latest epoch.
-    if (epoch !== this.epoch && type !== 'pause') return this.snapshot();
+    if (epoch !== this.epoch && type !== 'pause') return { snapshot: this.snapshot(), changed: false };
     if (this.duration === null) throw new Error('No movie selected');
     if (!['play', 'pause', 'seek'].includes(type)) throw new Error('Unknown command');
     if (type === 'seek' && (!Number.isFinite(position) || position < 0 || position > this.duration)) {
@@ -78,12 +105,14 @@ export class Room {
     if (type === 'pause') this.wantsPlay = false;
     this.freeze();
     if (type === 'seek') this.position = position;
-    return this.snapshot();
+    return { snapshot: this.snapshot(), changed: true };
   }
 
   report(id, { epoch, sequence, position, bufferedUntil, ready, ackStartsAt = null }) {
     const member = this.requireMember(id);
-    if (epoch !== this.epoch || !Number.isSafeInteger(sequence) || sequence <= member.sequence) return this.snapshot();
+    if (epoch !== this.epoch || !Number.isSafeInteger(sequence) || sequence <= member.sequence) {
+      return { snapshot: this.snapshot(), changed: false };
+    }
     if (!Number.isFinite(position) || position < 0 || !Number.isFinite(bufferedUntil) || bufferedUntil < position || typeof ready !== 'boolean') {
       throw new RangeError('Invalid playback report');
     }
@@ -93,17 +122,16 @@ export class Room {
   }
 
   tick() {
+    const mark = { epoch: this.epoch, phase: this.phase };
     const time = this.now();
     const position = this.positionAt(time);
     if (this.phase === 'playing' && this.duration !== null && position >= this.duration) {
       this.wantsPlay = false;
       this.freeze();
-      return this.snapshot();
+      return this.outcome(mark);
     }
     const reports = [...this.members.values()].map(member => member.report);
-    const healthy = (report, reserve) => report && report.ready &&
-      time - report.receivedAt < this.reportTimeout &&
-      report.bufferedUntil >= Math.min(this.duration, position + reserve);
+    const healthy = (report, reserve) => this.healthy(report, reserve, position, time);
     if (this.phase === 'playing') {
       if (!reports.every(report => healthy(report, this.lowBuffer)) ||
         (time >= this.startsAt - 300 && !reports.every(report => report.ackStartsAt === this.startsAt))) this.freeze();
@@ -112,6 +140,6 @@ export class Room {
       this.phase = 'playing';
       this.startsAt = time + this.startDelay;
     }
-    return this.snapshot();
+    return this.outcome(mark);
   }
 }
