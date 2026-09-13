@@ -7,6 +7,7 @@ import { mkdir, readFile, writeFile, stat, statfs, rename, unlink, rm, readdir }
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './storage.js';
+import { validThresholds } from './sync/room.js';
 import { probeFile, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat } from './media.js';
 import { SUBTITLE_FORMATS, SUBTITLE_EXT } from '../public/subtitle-formats.js';
 import { createRoomHub } from './sync/hub.js';
@@ -89,7 +90,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     return movie;
   };
   const jobs = createJobs({ getMovie, movieInUse: id => hub.movieInUse(id) });
-  const hub = createRoomHub({ origin, ttl: TTL, syncOptions, sessionFor,
+  // Buffer thresholds: env defaults, overridden by an admin-saved settings file.
+  const saved = store.settings() ?? {};
+  const sync = { minBuffer: 8, lowBuffer: 3, ...syncOptions };
+  if (Number.isFinite(saved.minBuffer) && Number.isFinite(saved.lowBuffer) &&
+    validThresholds(saved)) Object.assign(sync, { minBuffer: saved.minBuffer, lowBuffer: saved.lowBuffer });
+  const hub = createRoomHub({ origin, ttl: TTL, syncOptions: sync, sessionFor,
     sessionActive: session => session.expires > Date.now() && [...sessions.values()].includes(session),
     canAccess: (session, room) => access({ session }, room),
     movieFor: id => publicMovie(getMovie(id)),
@@ -126,6 +132,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     res.status(201).json({ id: room.id, code: room.code, link: `${origin}/#invite=${room.code}` });
   });
   app.get('/api/rooms', admin, (req, res) => res.json(hub.list()));
+  app.get('/api/settings', admin, (req, res) => res.json({ minBuffer: sync.minBuffer, lowBuffer: sync.lowBuffer }));
+  app.patch('/api/settings', admin, (req, res) => {
+    const tuned = hub.tune(req.body ?? {});
+    store.saveSettings(tuned);
+    res.json(tuned);
+  });
   app.post('/api/join', inviteLimiter, (req, res) => {
     const room = hub.findByCode(req.body.code?.trim().toLowerCase());
     if (!room) throw fail(404, 'Code invalide ou expiré.');

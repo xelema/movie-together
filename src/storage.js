@@ -20,6 +20,14 @@ export function createStore(root) {
   return {
     root, movies,
     directory: id => path.join(root, 'movies', id),
+    settings() {
+      try { return JSON.parse(readFileSync(path.join(root, 'settings.json'), 'utf8')); }
+      catch { return null; }
+    },
+    saveSettings(settings) {
+      writeFileSync(path.join(root, 'settings.json.tmp'), JSON.stringify(settings, null, 2));
+      renameSync(path.join(root, 'settings.json.tmp'), path.join(root, 'settings.json'));
+    },
     save(movie) {
       const dir = path.join(root, 'movies', movie.id);
       mkdirSync(dir, { recursive: true });
