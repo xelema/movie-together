@@ -100,7 +100,8 @@ tous les participants. Les rapports des lecteurs arrivent toutes les 200 ms.
 - Hls.js garde 30 à 60 secondes d'avance dans un budget de 60 Mio ; le lecteur natif Apple contrôle sa réserve.
 
 La latence réseau et les horloges des appareils empêchent de garantir un écart
-nul. Le débit doit dépasser celui du film à long terme. Garder la page visible ;
+nul. Le débit doit dépasser celui du film à long terme. Garder la page visible :
+sur mobile, l'écran est maintenu éveillé pendant la lecture et libéré en pause.
 AirPlay et Picture-in-Picture ne font pas partie de la lecture synchronisée.
 
 ## Vérifications et hébergement

@@ -57,6 +57,7 @@ export class SyncPlayer {
     });
     this.listen(document, 'visibilitychange', () => {
       if (document.hidden) { this.pauseLocal(); this.report(false); }
+      else if (this.activated) this.acquireWakeLock();
     });
     this.listen(window, 'offline', () => { this.command('pause'); this.report(false); });
     this.interval = setInterval(() => { this.reconcile(); this.report(); }, 200);
@@ -101,6 +102,8 @@ export class SyncPlayer {
       if (message.type === 'error') this.onStatus(message.error);
       if (message.type === 'state') {
         this.state = message.state;
+        // A paused room does not need to hold the screen awake.
+        if (this.activated && message.state.phase !== 'paused') this.acquireWakeLock(); else this.releaseWakeLock();
         if (message.movie?.id !== this.movie?.id || message.movie?.generation !== this.movie?.generation) this.load(message.movie);
         if (this.lastEpoch !== this.state.epoch) { clearTimeout(this.startTimer); this.startTimer = null; this.scheduled = null; this.lastEpoch = this.state.epoch; }
         this.reconcile(); this.onState(message, this);
@@ -116,6 +119,12 @@ export class SyncPlayer {
     this.ws.onerror = () => this.onStatus('Connexion à la room impossible. Vérifier l’invitation.');
   }
   pauseLocal() { this.internalUntil = performance.now() + 500; this.video.pause(); this.video.playbackRate = 1; }
+  // Keeps a phone awake while the film runs; the OS drops the lock when the tab hides.
+  async acquireWakeLock() {
+    if (!('wakeLock' in navigator) || document.hidden || (this.wakeLock && !this.wakeLock.released)) return;
+    try { this.wakeLock = await navigator.wakeLock.request('screen'); } catch { }
+  }
+  releaseWakeLock() { this.wakeLock?.release().catch(() => {}); this.wakeLock = null; }
   failPlayback(message) {
     this.failure = message; this.activated = false; this.recovering = false;
     this.pauseLocal(); this.report(false); this.onActivation(false); this.onStatus(message);
@@ -181,6 +190,7 @@ export class SyncPlayer {
       await this.video.play();
       if (this.disposed || token !== this.loadToken) return;
       this.pauseLocal(); this.activated = true; this.activationBlocked = false; this.onActivation(true);
+      this.acquireWakeLock();
     } catch (error) {
       if (this.disposed || token !== this.loadToken) return;
       this.activated = false; this.activationBlocked = error.name === 'NotAllowedError';
@@ -276,5 +286,6 @@ export class SyncPlayer {
     this.disposed = true; clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings);
     clearTimeout(this.startTimer); clearTimeout(this.retry); this.listeners.forEach(remove => remove());
     this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.hls?.destroy(); this.video.removeAttribute('src'); this.video.load();
+    this.releaseWakeLock();
   }
 }
