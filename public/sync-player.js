@@ -20,6 +20,9 @@ export function bufferEnd(video) {
   return video.currentTime;
 }
 
+// Native HLS lists chapters and metadata alongside subtitles in textTracks.
+const subtitleTracks = video => Array.from(video.textTracks ?? []).filter(track => ['subtitles', 'captions'].includes(track.kind));
+
 export class SyncPlayer {
   constructor({ video, roomId, name = '', onStatus, onState, onTracks, onActivation }) {
     Object.assign(this, { video, roomId, onStatus, onState, onTracks, onActivation });
@@ -176,7 +179,7 @@ export class SyncPlayer {
     const audio = this.hls ? this.hls.audioTracks.map((track, index) => ({ index, label: track.name || track.lang })) :
       Array.from(this.video.audioTracks ?? []).map((track, index) => ({ index, label: track.label || track.language || `Audio ${index + 1}` }));
     const subtitles = this.hls ? this.hls.subtitleTracks.map((track, index) => ({ index, label: track.name || track.lang })) :
-      Array.from(this.video.textTracks ?? []).map((track, index) => ({ index, label: track.label || track.language || `Subtitles ${index + 1}` }));
+      subtitleTracks(this.video).map((track, index) => ({ index, label: track.label || track.language || `Subtitles ${index + 1}` }));
     this.onTracks(audio, subtitles);
   }
   async activate() {
@@ -222,7 +225,7 @@ export class SyncPlayer {
       if (type === 'audio') this.hls.audioTrack = index;
       else { this.hls.subtitleTrack = index; this.hls.subtitleDisplay = index >= 0; }
     } else if (type === 'audio') Array.from(this.video.audioTracks ?? []).forEach((track, i) => { track.enabled = i === index; });
-    else Array.from(this.video.textTracks ?? []).forEach((track, i) => { track.mode = i === index ? 'showing' : 'disabled'; });
+    else subtitleTracks(this.video).forEach((track, i) => { track.mode = i === index ? 'showing' : 'disabled'; });
     this.onStatus('Piste changée pour vous. Relancez la séance quand vous êtes prêt.');
   }
   applyTrackChoices() {
@@ -234,7 +237,7 @@ export class SyncPlayer {
       }
     } else {
       Array.from(this.video.audioTracks ?? []).forEach((track, i) => { track.enabled = i === this.audioChoice; });
-      Array.from(this.video.textTracks ?? []).forEach((track, i) => { track.mode = i === this.subtitleChoice ? 'showing' : 'disabled'; });
+      subtitleTracks(this.video).forEach((track, i) => { track.mode = i === this.subtitleChoice ? 'showing' : 'disabled'; });
     }
   }
   reconcile() {
