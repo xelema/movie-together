@@ -121,17 +121,21 @@ function language(value) { return /^[a-z]{2,3}(-[A-Za-z0-9]+)?$/.test(value) ? v
 
 // Only the container colour box changes. Rewriting the bitstream is not an option: any FFmpeg
 // bitstream filter that touches the packets corrupts some real HEVC files. See docs/playback.md.
+// The container repeats the source colour because a tagged stream VUI wins anyway: the decode
+// matrix then always equals color.matrix, whether the decoder read it from the VUI or the box.
 export function transportMetadata(video) {
   const doviBase = { 1: 'smpte2084', 2: 'bt709', 4: 'arib-std-b67' }[video.dolbyVision?.compatibilityId];
   const args = video.codec === 'hevc' ? ['-tag:v:0', 'hvc1'] : [];
   // Dolby Vision without a standard base layer is not decodable as HDR10, HLG or SDR: leave it native.
   if (video.dolbyVision && !doviBase) return { args, color: undefined,
     videoRange: video.colorTransfer === 'smpte2084' ? 'PQ' : video.colorTransfer === 'arib-std-b67' ? 'HLG' : undefined };
-  args.push('-color_primaries', 'bt709', '-color_trc', 'iec61966-2-1', '-colorspace', 'bt709');
-  return { args, videoRange: 'SDR', color: { version: 1, transfer: video.colorTransfer || doviBase || 'bt709',
+  const color = { version: 1, transfer: video.colorTransfer || doviBase || 'bt709',
     primaries: video.colorPrimaries || 'bt709', matrix: video.colorSpace || (video.height < 720 ? 'smpte170m' : 'bt709'),
     fullRange: video.colorRange === 'pc', bitDepth: Number(video.pixelFormat?.match(/(10|12)(?:le|be)?$/)?.[1]) || 8,
-    peakNits: video.peakNits || 1000 } };
+    peakNits: video.peakNits || 1000 };
+  args.push('-color_primaries', color.primaries, '-color_trc', color.transfer, '-colorspace', color.matrix,
+    '-color_range', color.fullRange ? 'pc' : 'tv');
+  return { args, videoRange: { smpte2084: 'PQ', 'arib-std-b67': 'HLG' }[color.transfer] ?? 'SDR', color };
 }
 
 export async function writeMaster(directory, audio, subtitles, renditions) {

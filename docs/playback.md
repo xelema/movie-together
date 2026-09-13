@@ -11,22 +11,24 @@ HDR vers l'écran. Leurs courbes diffèrent. Modifier MaxCLL ou la luminance de
 mastering à 203 cd/m² rapproche certaines images, mais ne définit pas une
 conversion commune et fausse les caractéristiques de la source.
 
-L'import vidéo WebGL présente aussi des différences. Sur la machine Windows
-testée, Firefox applique BT.709 à une texture HEVC déclarée BT.2020 ; Chrome
-respecte BT.2020. Le seul drapeau `UNPACK_COLORSPACE_CONVERSION_WEBGL=NONE`
-ne corrige donc pas toute la chaîne.
+L'import vidéo WebGL présente aussi des différences. La matrice utilisée par le
+décodeur vient de la VUI du flux quand elle est renseignée, la boîte `colr` du
+conteneur ne servant que de repli. Le drapeau
+`UNPACK_COLORSPACE_CONVERSION_WEBGL=NONE` garde les valeurs décodées sans
+conversion supplémentaire vers l'espace de travail.
 
 ## Rendu commun
 
-1. FFmpeg copie les paquets sans les modifier et écrit BT.709/sRGB dans la boîte
-   `colr` de la piste. Le flux codé n'est pas touché : sa VUI décrit toujours la
-   source. Les navigateurs testés lisent la boîte du conteneur, qui prime sur la
-   VUI d'après ISO/IEC 14496-12. La plage complète ou limitée reste celle de la source.
-2. `rendition.color` conserve les caractéristiques couleur originales. Ce
-   transport doit être lu avec le lecteur de l'application : ce n'est pas une
-   conversion SDR exportable.
-3. L'élément vidéo décode et synchronise normalement. WebGL importe ses images
-   avec la conversion automatique désactivée, reconstitue la matrice originale,
+1. FFmpeg copie les paquets sans les modifier et écrit la couleur de la source
+   dans la boîte `colr` de la piste. Le flux codé n'est pas touché : sa VUI
+   décrit déjà la même chose. Les mesures de la sonde couleur montrent que la
+   VUI prime sur le conteneur quand elle est renseignée ; recopier la même
+   matrice dans la boîte garantit que le décodeur l'utilise dans les deux cas.
+2. `rendition.color` conserve les caractéristiques couleur originales. Le fichier
+   reste lisible nativement, mais le rendu de référence reste celui du lecteur
+   de l'application.
+3. L'élément vidéo décode et synchronise normalement, avec la matrice de la
+   source. WebGL importe les images avec la conversion automatique désactivée,
    applique PQ ou HLG et transforme les primaires en Rec.709.
 4. Une courbe BT.2390 commune ramène le HDR à un blanc SDR de référence de 203 nits.
    HLG utilise le moniteur de référence de 1 000 nits et le gamma système 1,2. Les
@@ -61,22 +63,24 @@ de `VideoDecoder` pour HEVC.
 ## Vérification et portée
 
 `npm run test:colors` fabrique uniquement des mires de test courtes, les prépare
-en HLS, puis mesure les pixels dans Chrome et Firefox. Les captures et mesures
+en HLS, puis mesure les pixels dans Chrome et Firefox. Chaque mire est aussi
+comparée au rendu attendu, calculé depuis ses codes connus par un modèle
+indépendant, pas seulement d'un navigateur à l'autre. Les captures et mesures
 sont écrites dans `test-results/colors`. Sous Windows, les navigateurs sont ouverts
 avec fenêtre : le Firefox sans fenêtre ne décode pas le HEVC testé.
 
-Mesures obtenues sur la machine Windows de développement, Chrome 141 et le
-Firefox fourni par Playwright (Chrome 152, Firefox 155) :
+Mesures obtenues sur la machine Windows de développement (Chrome 152, Firefox 155) :
 
 | Mire | Écart moyen | p99 | Maximum |
 | --- | --- | --- | --- |
-| HDR10 (PQ, BT.2020) | 0,190 | 1 | 1 |
-| HLG (BT.2020) | 0,190 | 1 | 1 |
-| SDR BT.709 | 0,104 | 1 | 5 |
-| SDR BT.601 | 0,225 | 2 | 5 |
+| HDR10 (PQ, BT.2020) | 0,683 | 2 | 3 |
+| HLG (BT.2020) | 0,683 | 2 | 3 |
+| SDR BT.709 | 0,461 | 6 | 50 |
+| SDR BT.601 | 0,180 | 3 | 53 |
 
 Les valeurs sont en niveaux sur 255 par canal. L'écart résiduel vient de l'arrondi
-YUV vers RGB des décodeurs, avant le shader. Sur un extrait réel du film en HEVC
+YUV vers RGB des décodeurs, avant le shader. Le maximum se concentre sur les
+patchs saturés à la limite de saturation de la texture 8 bits. Sur un extrait réel du film en HEVC
 4K HDR10 Dolby Vision profil 8, l'écart moyen mesuré au même horodatage est de
 0,428 sur 255 pour un maximum de 3. Ces mesures concernent cette machine et ce
 chemin de décodage.
@@ -158,7 +162,7 @@ Cette API fonctionne sur le thread principal et ne garantit pas une livraison
 | Worker Hls.js | Déjà activé, avec les permissions CSP nécessaires et la bibliothèque servie localement |
 | Adaptation automatique du débit ou de la résolution | Hls.js la propose déjà, mais il faut plusieurs versions vidéo. Le flux unique actuel ne peut pas devenir un 1080p moins lourd avec un réglage du lecteur |
 | Versions mobiles 1080p ou 720p | Réduiraient aussi le décodage, l'import GPU et le débit. Demandent une source alternative ou un réencodage, exclu par la règle actuelle de copie vidéo exacte |
-| Lecture native sans canvas | Évite l'import GPU et le shader, mais le transport actuel porte des métadonnées couleur réécrites. Retirer le canvas seul afficherait des couleurs incorrectes. Un chemin natif distinct demanderait un autre transport et une validation couleur |
+| Lecture native sans canvas | Évite l'import GPU et le shader. Le fichier porte les vraies métadonnées couleur, donc la lecture native affiche des couleurs correctes, mais sans le tone mapping de référence ni le rendu commun entre navigateurs |
 | Shaka Player | Prend en charge HLS et DASH, mais utilise aussi le lecteur du navigateur. Son remplacement ne supprime pas notre shader ni le coût du décodage du même fichier |
 | Media Capabilities | Peut indiquer `supported`, `smooth` et `powerEfficient` pour une configuration. Utile pour choisir entre plusieurs sources, sans garantir la fluidité du canvas ajouté après décodage |
 | OffscreenCanvas, WebCodecs, WebGPU | Déplacement ou remplacement du rendu à envisager si les optimisations simples ne suffisent pas. La gestion des images, leur transfert et la disponibilité du décodeur HEVC demanderaient un autre pipeline |

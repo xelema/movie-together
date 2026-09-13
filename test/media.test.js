@@ -46,7 +46,7 @@ test('copies 4K video exactly and prepares embedded audio and external subtitles
   assert.equal(audio.streams[0].channels, 2); assert.equal(audio.streams[0].sample_rate, '48000');
   assert.match(await readFile(path.join(prepared, result.subtitles[0].filename), 'utf8'), /Bonjour/);
   assert.match(await readFile(path.join(prepared, 'master.m3u8'), 'utf8'), /VIDEO-RANGE=SDR/);
-  assert.deepEqual(await colourBox(prepared), { primaries: 1, transfer: 13, matrix: 1, fullRange: false });
+  assert.deepEqual(await colourBox(prepared), { primaries: 1, transfer: 1, matrix: 1, fullRange: false });
   assert.match(await readFile(path.join(prepared, 'master.m3u8'), 'utf8'), /CHANNELS="2"/);
   assert.ok(result.maxSegmentSeconds <= 4.05);
 });
@@ -108,7 +108,7 @@ test('reads color metadata without guessing or treating Dolby Vision as SDR', ()
   }
 });
 
-test('serves PQ and HLG as sRGB transport while keeping the source colour metadata', async t => {
+test('serves PQ and HLG with the source colour in the container tags', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-hdr-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -127,17 +127,17 @@ test('serves PQ and HLG as sRGB transport while keeping the source colour metada
     const frame = JSON.parse(await run(process.env.FFPROBE_PATH || 'ffprobe', ['-v', 'error', '-i', prepared,
       '-select_streams', 'v:0', '-show_frames', '-read_intervals', '%+#1', '-of', 'json'])).frames[0];
     assert.equal(frame.color_transfer, transfer); assert.equal(frame.pix_fmt, 'yuv420p10le');
-    // The transport is what every browser decodes the same way; the shader restores the source.
+    // The container repeats the stream colour: the decoder matrix always matches the shader.
     assert.deepEqual(await colourBox(path.dirname(prepared)),
-      { primaries: 1, transfer: 13, matrix: 1, fullRange: false });
+      { primaries: 9, transfer: transfer === 'smpte2084' ? 16 : 18, matrix: 9, fullRange: false });
     assert.deepEqual(result.renditions[0].color, { version: 1, transfer, primaries: 'bt2020',
       matrix: 'bt2020nc', fullRange: false, bitDepth: 10, peakNits: 1000 });
     const master = await readFile(path.join(store.directory(movie.id), result.generation, 'master.m3u8'), 'utf8');
-    assert.match(master, /VIDEO-RANGE=SDR/);
+    assert.match(master, new RegExp(`VIDEO-RANGE=${transfer === 'smpte2084' ? 'PQ' : 'HLG'}`));
   }
 });
 
-test('tags the transport in the container only and reports the source peak', async t => {
+test('tags the container with the source colour and reports the source peak', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-tonemap-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -155,7 +155,7 @@ test('tags the transport in the container only and reports the source peak', asy
   assert.equal(result.renditions[0].color.peakNits, 1033);
   assert.equal(result.renditions[0].color.transfer, 'smpte2084');
   assert.deepEqual(await colourBox(path.dirname(prepared)),
-    { primaries: 1, transfer: 13, matrix: 1, fullRange: false });
+    { primaries: 9, transfer: 16, matrix: 9, fullRange: false });
   // The coded stream is byte-identical: no bitstream filter runs, so no source can be corrupted.
   const compressed = input => run(process.env.FFMPEG_PATH || 'ffmpeg',
     ['-v', 'error', '-i', input, '-map', '0:v:0', '-c', 'copy', '-f', 'hash', '-hash', 'sha256', '-']);
@@ -232,5 +232,6 @@ test('preserves full-range SDR black and white and the original color metadata',
   const video = (await probeFile(output)).video;
   assert.equal(video.colorRange, 'pc'); assert.equal(video.colorPrimaries, 'bt709');
   assert.equal(result.renditions[0].color.fullRange, true);
+  assert.deepEqual(await colourBox(path.dirname(output)), { primaries: 1, transfer: 1, matrix: 1, fullRange: true });
   assert.equal(await decodedVideo(path.join(directory, 'source')), await decodedVideo(output));
 });
