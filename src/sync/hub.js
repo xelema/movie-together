@@ -149,7 +149,8 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
     tune,
     get: id => rooms.get(id),
     state,
-    findByCode: code => [...rooms.values()].find(room => room.code === code && room.expires > Date.now()),
+    findByCode: code => typeof code === 'string' &&
+      [...rooms.values()].find(room => room.code === code.trim().toLowerCase() && room.expires > Date.now()),
     list: () => [...rooms.values()].map(room => ({ id: room.id, code: room.code, movieId: room.movieId,
       expires: room.expires, participants: room.clients.size, link: `${origin}/#invite=${room.code}` })),
     setMovie(room, movie) { room.movieId = movie.id; room.engine.load(movie.duration); broadcast(room); },

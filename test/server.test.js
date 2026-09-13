@@ -290,3 +290,16 @@ test('a rejected upload creation does not count against the pending upload cap',
   const pending = await (await request('/api/uploads', { cookie })).json();
   assert.deepEqual(await readdir(path.join(dataDir, 'uploads')), [pending[0].id]);
 });
+
+test('joining a room with a malformed code is a client error, not a crash', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
+  const origin = 'http://localhost:3000';
+  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin });
+  await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${instance.server.address().port}`;
+  t.after(async () => { await instance.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const join = body => fetch(base + '/api/join', { method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  for (const code of [123, { code: 'abc' }, ['abc'], true, null])
+    assert.equal((await join({ code })).status, 404, String(code));
+});
