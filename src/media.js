@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import jschardet from 'jschardet';
 import { colorParameters } from '../public/color-renderer.js';
 import { defaultTrackNames } from '../public/track-names.js';
+import { TEXT_SUBTITLE_CODECS, SUBTITLE_DEMUXERS } from '../public/subtitle-formats.js';
 
 export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, includeStderr = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -30,18 +31,7 @@ export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, in
   });
 }
 
-// Text subtitle codecs ffmpeg can decode to WebVTT. Image codecs (dvd_subtitle, hdmv_pgs_subtitle,
-// dvb_subtitle, xsub) and decoder-less formats (aqtitle, mpsub, scc, ttml) stay out.
-const SUBTITLE_CODECS = ['subrip', 'webvtt', 'mov_text', 'ass', 'ssa', 'sami', 'microdvd', 'mpl2',
-  'jacosub', 'pjs', 'realtext', 'stl', 'subviewer', 'subviewer1', 'vplayer', 'eia_608'];
-// Accepted upload extensions, each mapped to the demuxers worth forcing with -f.
-// .sub covers both MicroDVD and SubViewer; the conversion check decides.
-export const SUBTITLE_EXTENSIONS = { srt: ['srt'], vtt: ['webvtt'], smi: ['sami'], sami: ['sami'],
-  ass: ['ass'], ssa: ['ass'], sub: ['microdvd', 'subviewer'], sbv: ['subviewer', 'subviewer1'], lrc: ['lrc'] };
-// For external tracks recorded before they stored their demuxer name.
-const SUBTITLE_DEMUXERS = { subrip: 'srt', webvtt: 'webvtt', ass: 'ass', ssa: 'ass', sami: 'sami',
-  microdvd: 'microdvd', mpl2: 'mpl2', jacosub: 'jacosub', pjs: 'pjs', realtext: 'realtext', stl: 'stl',
-  subviewer: 'subviewer', subviewer1: 'subviewer1', vplayer: 'vplayer' };
+// Format knowledge lives in public/subtitle-formats.js, shared with the client.
 
 // Uploaded subtitle files come in any legacy charset: normalize to UTF-8 once, at ingest.
 export function decodeSubtitleText(buffer) {
@@ -97,7 +87,7 @@ export function inspectProbe(probe) {
   const subtitles = streams.filter(stream => stream.codec_type === 'subtitle').map(stream => ({
     index: stream.index, codec: stream.codec_name, language: stream.tags?.language ?? 'und',
     label: stream.tags?.title ?? stream.tags?.language ?? `Subtitles ${stream.index}`,
-    compatible: SUBTITLE_CODECS.includes(stream.codec_name), ...flags(stream),
+    compatible: TEXT_SUBTITLE_CODECS.includes(stream.codec_name), ...flags(stream),
   }));
   const duration = Number(probe.format?.duration);
   const videoCompatible = ['h264', 'hevc', 'av1', 'vp9'].includes(video?.codec_name) && video.width > 0 && video.height > 0;
