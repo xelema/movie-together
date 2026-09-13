@@ -122,6 +122,8 @@ test('waiting status names the gate that blocks the member', () => {
   assert.equal(room.memberStatus('a').failure, 'Lecture impossible sur cet appareil.');
   report('a', { bufferedUntil: 5 });
   assert.equal(room.memberStatus('a').reason, 'low-buffer');
+  assert.equal(room.memberStatus('a').buffered, 5);
+  assert.equal(room.memberStatus('a').needed, 8);
   report('a', { position: 30, bufferedUntil: 60 });
   assert.equal(room.memberStatus('a').reason, 'misaligned');
   report('a');
