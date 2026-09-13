@@ -9,8 +9,60 @@ import { randomUUID } from 'node:crypto';
 import { createStore } from '../src/storage.js';
 import { prepareMovie, run } from '../src/media.js';
 
+// Independent model of the intended render for the known patches: limited-range decode
+// with the source matrix, transfer to linear, gamut to Rec.709, HDR shoulder, sRGB out.
+// Comparing the render to this model catches a decoder path that no browser flags.
+const srgbOut = v => v <= .0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - .055;
+const pqToNits = v => { const p = Math.max(v, 0) ** (1 / 78.84375);
+  return 10000 * (Math.max(p - .8359375, 0) / Math.max(18.8515625 - 18.6875 * p, .000001)) ** (1 / .1593017578125); };
+const nitsToPq = n => { const p = (Math.max(n, 0) / 10000) ** .1593017578125;
+  return ((.8359375 + 18.8515625 * p) / (1 + 18.6875 * p)) ** 78.84375; };
+const hlgToLinear = v => v <= .5 ? v * v / 3 : (Math.exp((v - .55991073) / .17883277) + .28466892) / 12;
+const KRKB = { bt709: [.2126, .0722], bt2020nc: [.2627, .0593], smpte170m: [.299, .114], bt470bg: [.299, .114] };
+const GAMUT = { bt709: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+  bt2020: [1.660491, -.124550, -.018151, -.587641, 1.132900, -.100579, -.072850, -.008349, 1.118730],
+  smpte170m: [.939542, .017772, -.001622, .050181, .965793, -.004371, .010277, .016435, 1.005993],
+  bt470bg: [1.044044, 0, 0, -.044044, 1, .011793, 0, 0, .988207],
+  smpte432: [1.224940, -.042057, -.019638, -.224940, 1.042057, -.078636, 0, 0, 1.098274] };
+
+function expectedPatch(color, { code, chroma }) {
+  const s = color.bitDepth === 10 ? 4 : 1;
+  const y = (code - 16 * s) / (219 * s), cb = chroma / (224 * s), cr = -chroma / (224 * s);
+  const [kr, kb] = KRKB[color.matrix];
+  const r = y + 2 * (1 - kr) * cr, b = y + 2 * (1 - kb) * cb;
+  // The RGBA8 texture clamps what the decoder produces before the shader sees it.
+  let rgb = [r, (y - kr * r - kb * b) / (1 - kr - kb), b].map(v => Math.min(1, Math.max(v, 0)));
+  const hdr = color.transfer === 'smpte2084' || color.transfer === 'arib-std-b67';
+  if (color.transfer === 'smpte2084') rgb = rgb.map(pqToNits);
+  else if (color.transfer === 'arib-std-b67') {
+    rgb = rgb.map(hlgToLinear);
+    rgb = rgb.map(v => v * 1000 * Math.max(rgb[0] * .2627 + rgb[1] * .678 + rgb[2] * .0593, 0) ** .2);
+  } else rgb = rgb.map(v => v ** 2.4);
+  const g = GAMUT[color.primaries];
+  rgb = [0, 1, 2].map(i => g[i] * rgb[0] + g[i + 3] * rgb[1] + g[i + 6] * rgb[2]);
+  let luminance = Math.max(rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722, 0);
+  if (hdr) {
+    const source = nitsToPq(Math.max(203, Math.min(10000, Number(color.peakNits) || 1000)));
+    const target = nitsToPq(203) / source, knee = 1.5 * target - .5;
+    const map = n => {
+      let x = Math.min(nitsToPq(n) / source, 1);
+      if (x > knee) { const t = (x - knee) / (1 - knee), t2 = t * t, t3 = t2 * t;
+        x = (2 * t3 - 3 * t2 + 1) * knee + (t3 - 2 * t2 + t) * (1 - knee) + (-2 * t3 + 3 * t2) * target; }
+      return pqToNits(x * source) / 203;
+    };
+    rgb = rgb.map(v => v * (luminance > .000001 ? map(luminance) / luminance : 0));
+    luminance = Math.max(rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722, 0);
+  }
+  const low = Math.min(...rgb), high = Math.max(...rgb);
+  let saturation = 1;
+  if (low < 0) saturation = Math.min(saturation, luminance / (luminance - low));
+  if (high > 1) saturation = Math.min(saturation, Math.max(1 - luminance, 0) / Math.max(high - luminance, .000001));
+  rgb = rgb.map(v => Math.min(1, Math.max(0, luminance + (v - luminance) * saturation)));
+  return rgb.map(v => Math.round(srgbOut(v) * 255));
+}
+
 const root = await mkdtemp(path.join(os.tmpdir(), 'movie-colors-'));
-const store = createStore(root), fixtures = [], report = { browsers: {}, comparisons: {} };
+const store = createStore(root), fixtures = [], report = { browsers: {}, comparisons: {}, truth: {} };
 const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
 const output = path.resolve('test-results/colors'); await mkdir(output, { recursive: true });
 let server;
@@ -22,14 +74,22 @@ try {
     ['SDR601', 'libx264', 8, 'smpte170m', 'smpte170m', 'smpte170m'],
   ]) {
     const width = 512, height = 128;
-    // Twenty-four flat patches: grey levels and moderate chroma, without edge interpolation.
+    // Twenty-four flat patches: grey levels plus moderate and saturated chroma, without edge interpolation.
+    // Saturated chroma is what a wrong matrix decode visibly destroys.
     const codes = depth === 10 ? [64, 128, 256, 384, 448, 512, 576, 720] : [16, 32, 64, 96, 128, 160, 192, 235];
+    const mild = depth === 10 ? 24 : 6, strong = depth === 10 ? 256 : 64;
+    const patchChroma = column => column >= 2 && column < 4 ? mild : column >= 4 && column < 6 ? strong : 0;
+    const patches = [];
+    for (let column = 0; column < 8; column++) {
+      patches.push({ x: column * 64 + 32, y: 32, code: codes[column], chroma: 0 });
+      patches.push({ x: column * 64 + 32, y: 96, code: codes[column], chroma: patchChroma(column) });
+    }
     // 10-bit planar samples occupy 16 bits in rawvideo.
     const raw = Buffer.alloc(width * height * 3 / 2 * (depth === 10 ? 2 : 1));
     const put = (index, value) => depth === 10 ? raw.writeUInt16LE(value, index * 2) : raw.writeUInt8(value, index);
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) put(y * width + x, codes[Math.floor(x / 64)]);
     for (let y = 0; y < height / 2; y++) for (let x = 0; x < width / 2; x++) {
-      const center = depth === 10 ? 512 : 128, chroma = y >= 32 && x >= 64 && x < 192 ? (depth === 10 ? 24 : 6) : 0;
+      const center = depth === 10 ? 512 : 128, chroma = y >= 32 ? patchChroma(Math.floor(x / 32)) : 0;
       put(width * height + y * width / 2 + x, center + chroma);
       put(width * height * 5 / 4 + y * width / 2 + x, center - chroma);
     }
@@ -42,7 +102,9 @@ try {
     args.push('-color_primaries', primaries, '-color_trc', transfer, '-colorspace', matrix, '-color_range', 'tv', '-f', 'matroska', path.join(store.directory(movie.id), 'source'));
     await run(ffmpeg, args);
     const prepared = await prepareMovie(store, movie, [], []);
-    fixtures.push({ name, root: path.join(store.directory(movie.id), prepared.generation), rendition: prepared.renditions[0] });
+    fixtures.push({ name, root: path.join(store.directory(movie.id), prepared.generation),
+      rendition: prepared.renditions[0], patches,
+      expected: patches.map(patch => expectedPatch(prepared.renditions[0].color, patch)) });
   }
   const app = express();
   app.get('/', (_, res) => res.send('<!doctype html><style>body{margin:0;background:black}main{position:relative;width:512px}video{width:100%}canvas{position:absolute;inset:0;width:100%;height:100%}</style><main><video muted playsinline></video></main><script src="/hls.js"></script>'));
@@ -80,6 +142,24 @@ try {
         assert.ok(result.ready, `${name}/${fixture.name}: no rendered frame`);
         assert.ok(result.pixels.some((value, i) => i % 4 !== 3 && value > 100), `${name}/${fixture.name}: black output`);
         images[`${name}/${fixture.name}`] = result.pixels;
+        // Ground truth: the patch codes are known, so the render must match an independent
+        // model of the intended conversion, not only the other browser.
+        const measured = fixture.patches.map(patch => {
+          const at = ((result.height - 1 - patch.y) * result.width + patch.x) * 4;
+          return [result.pixels[at], result.pixels[at + 1], result.pixels[at + 2]];
+        });
+        const errors = measured.map((m, i) => Math.max(...m.map((v, c) => Math.abs(v - fixture.expected[i][c]))));
+        const mean = errors.reduce((sum, value) => sum + value, 0) / errors.length, max = Math.max(...errors);
+        report.truth[`${name}/${fixture.name}`] = { mean, max };
+        console.log(`${name} ${fixture.name}: truth mean ${mean.toFixed(2)}/255, max ${max}`);
+        // The margin covers decoder YUV->RGB rounding, amplified by the transfer curves on
+        // saturated patches at the texture clamp boundary. A wrong matrix or transfer shows
+        // up an order of magnitude above it.
+        if (!(mean <= 5 && max <= 14)) {
+          fixture.patches.forEach((patch, i) => console.log(
+            `  patch ${i} (code ${patch.code}, chroma ${patch.chroma}): expected ${fixture.expected[i]} measured ${measured[i]}`));
+        }
+        assert.ok(mean <= 5 && max <= 14, `${name}/${fixture.name}: render deviates from the expected colours`);
         await writeFile(path.join(output, `${name}-${fixture.name}.png`), Buffer.from(result.png.split(',')[1], 'base64'));
         console.log(`${name} ${fixture.name}: rendered`);
       }
