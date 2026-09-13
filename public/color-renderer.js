@@ -11,7 +11,6 @@ const fragment = `
 precision highp float;
 varying vec2 uv;
 uniform sampler2D picture;
-uniform vec2 coefficients;
 uniform mat3 gamut;
 uniform int transfer;
 uniform vec3 shoulder;
@@ -46,13 +45,9 @@ float mapLuminance(float n) {
   return pqToNits(x * source) / 203.;
 }
 void main() {
-  vec3 encoded = texture2D(picture, uv).rgb;
-  // Invert the declared BT.709 transport matrix, then restore the source matrix.
-  float y = dot(encoded, vec3(.2126, .7152, .0722));
-  float cb = (encoded.b - y) / 1.8556, cr = (encoded.r - y) / 1.5748;
-  float r = y + 2. * (1. - coefficients.x) * cr;
-  float b = y + 2. * (1. - coefficients.y) * cb;
-  vec3 rgb = max(vec3(r, (y - coefficients.x * r - coefficients.y * b) / (1. - coefficients.x - coefficients.y), b), 0.);
+  // The texture is already decoded with the source matrix: the VUI wins when the stream
+  // is tagged, and the container repeats the same matrix for untagged streams.
+  vec3 rgb = max(texture2D(picture, uv).rgb, 0.);
   if (transfer == 1) rgb = vec3(pqToNits(rgb.r), pqToNits(rgb.g), pqToNits(rgb.b));
   else if (transfer == 2) {
     rgb = vec3(hlgToLinear(rgb.r), hlgToLinear(rgb.g), hlgToLinear(rgb.b));
@@ -77,7 +72,7 @@ void main() {
 `;
 
 export function colorParameters(color) {
-  const coefficients = { bt709: [.2126, .0722], bt2020nc: [.2627, .0593], smpte170m: [.299, .114], bt470bg: [.299, .114] }[color.matrix];
+  const matrix = { bt709: [.2126, .0722], bt2020nc: [.2627, .0593], smpte170m: [.299, .114], bt470bg: [.299, .114] }[color.matrix];
   // Column-major matrices, D65 white; source linear RGB -> linear Rec.709.
   const gamut = {
     bt709: [1, 0, 0, 0, 1, 0, 0, 0, 1],
@@ -87,14 +82,14 @@ export function colorParameters(color) {
     smpte432: [1.224940, -.042057, -.019638, -.224940, 1.042057, -.078636, 0, 0, 1.098274],
   }[color.primaries];
   const transfer = { bt709: 0, smpte170m: 0, bt2020_10: 0, bt2020_12: 0, smpte2084: 1, 'arib-std-b67': 2, 'iec61966-2-1': 3 }[color.transfer];
-  if (color.version !== 1 || !coefficients || !gamut || transfer === undefined) throw new Error('Format couleur non pris en charge.');
+  if (color.version !== 1 || !matrix || !gamut || transfer === undefined) throw new Error('Format couleur non pris en charge.');
   const peak = Math.max(203, Math.min(10000, Number(color.peakNits) || 1000));
   const pq = nits => {
     const p = (nits / 10000) ** .1593017578125;
     return ((.8359375 + 18.8515625 * p) / (1 + 18.6875 * p)) ** 78.84375;
   };
   const source = pq(peak), target = pq(203) / source;
-  return { coefficients, gamut, transfer, shoulder: [source, target, 1.5 * target - .5] };
+  return { gamut, transfer, shoulder: [source, target, 1.5 * target - .5] };
 }
 
 export class ColorRenderer {
@@ -121,7 +116,6 @@ export class ColorRenderer {
       this.buffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
       const attribute = gl.getAttribLocation(program, 'position'); gl.enableVertexAttribArray(attribute); gl.vertexAttribPointer(attribute, 2, gl.FLOAT, false, 0, 0);
-      gl.uniform2fv(gl.getUniformLocation(program, 'coefficients'), parameters.coefficients);
       gl.uniformMatrix3fv(gl.getUniformLocation(program, 'gamut'), false, parameters.gamut);
       gl.uniform1i(gl.getUniformLocation(program, 'transfer'), parameters.transfer);
       gl.uniform3fv(gl.getUniformLocation(program, 'shoulder'), parameters.shoulder);
