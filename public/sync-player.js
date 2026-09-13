@@ -1,5 +1,5 @@
 import { ColorRenderer } from './color-renderer.js';
-import { createBackend } from './backends.js';
+import { codecPlayable, createBackend } from './backends.js';
 import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, readyBlockers, canBegin } from './sync-core.js';
 
 export class Clock {
@@ -159,6 +159,11 @@ export class SyncPlayer {
     if (!movie) return;
     const versions = movie.renditions?.length ? movie.renditions : [{ id: 'original', manifest: 'master.m3u8', timelineOffset: 0 }];
     this.rendition = versions[0];
+    const playable = mime => Boolean(window.MediaSource?.isTypeSupported(mime)) || this.video.canPlayType(mime) !== '';
+    if (!codecPlayable(this.rendition, playable)) {
+      this.failPlayback('Ce film utilise un codec vidéo que cet appareil ne peut pas lire.');
+      return;
+    }
     if (this.rendition.color) {
       try { this.colorRenderer = new ColorRenderer(this.video, this.rendition.color, message => this.failPlayback(message)); }
       catch (error) { this.failPlayback(error.message); return; }
