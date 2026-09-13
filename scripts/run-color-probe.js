@@ -16,7 +16,8 @@ try {
       const page = await browser.newPage();
       page.on('console', message => { if (message.type() === 'error') console.log(`[${name} console]`, message.text()); });
       await page.goto(`${base}/color-probe.html`);
-      await page.waitForFunction(() => document.getElementById('report').textContent.includes('Terminé'), { timeout: 60000 });
+      await page.waitForFunction(() => document.getElementById('report').textContent.includes('Phase 1 terminée'), { timeout: 60000 });
+      await page.waitForTimeout(7000);
       console.log(`\n########## ${name} ${browser.version()} ##########\n${await page.locator('#report').textContent()}`);
       await page.screenshot({ path: `test-results/colors/probe-${name}.png`, fullPage: true });
     } finally { await browser.close(); }

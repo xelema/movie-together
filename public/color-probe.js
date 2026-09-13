@@ -110,15 +110,62 @@ async function runClip(clip) {
   }
   clip.patches.forEach((p, i) => line(`  patch ${i} yuv(${p.yuv}) attendu709=${decode(p.yuv, { matrix: 'bt709', range: 'limited', swap: false }, clip.bitDepth)} mesuré=${measured[i]}`));
   line(`verdict import: ${best.model.name} (écart moyen ${best.error.toFixed(1)}/255)${best.error > 15 ? ' — AUCUN MODÈLE NE COLLE' : ''}`);
-  let failure;
+  let failure, renderer;
   try {
-    const renderer = new ColorRenderer(video, RENDITION[clip.name], message => { failure = message; });
+    renderer = new ColorRenderer(video, RENDITION[clip.name], message => { failure = message; });
     renderer.draw();
     const rendered = renderer.failed ? null : sample(renderer.gl, clip);
     line(`ColorRenderer: ready=${!!renderer.ready}${failure ? ` échec=${failure}` : ''}`);
     if (rendered) line(`  shader mesuré=${JSON.stringify(rendered)}`);
-    renderer.dispose();
+    if (clip.name !== 'A-h264-vui-absente') renderer.dispose();
   } catch (error) { line(`ColorRenderer: exception ${error.message}`); }
+  return { video, gl, renderer };
+}
+
+// Phase 2 : le clip A reste affiché comme en lecture réelle. Le bug violet survient
+// après une pause ou un retour d'arrière-plan : on remesure à chaque retour visible
+// et toutes les 3 s, et on compare vidéo native, canvas 2D, texture WebGL et shader.
+async function phase2(state) {
+  if (!state) { line('\nclip A indisponible, phase 2 impossible'); return; }
+  const { video, gl, renderer } = state;
+  const clip = clips[0];
+  const flat = document.createElement('canvas');
+  flat.width = clip.width; flat.height = clip.height; flat.style.width = '42vw';
+  video.closest('section').querySelector('div').append(flat);
+  const ctx = flat.getContext('2d', { willReadFrequently: true });
+  const expected = clip.patches.map(p => decode(p.yuv, { matrix: 'bt709', range: 'limited', swap: false }, clip.bitDepth));
+  const error = measured => measured.reduce((sum, m, i) => sum + Math.abs(m[0] - expected[i][0]) + Math.abs(m[1] - expected[i][1]) + Math.abs(m[2] - expected[i][2]), 0) / clip.patches.length;
+  canvasListen(gl.canvas);
+  canvasListen(renderer?.canvas);
+  let count = 0;
+  const measure = why => {
+    try {
+      ctx.drawImage(video, 0, 0);
+      const data = ctx.getImageData(0, 0, clip.width, clip.height).data;
+      const m2d = clip.patches.map(p => { const i = ((p.y + 32) * clip.width + p.x + 64) * 4; return [data[i], data[i + 1], data[i + 2]]; });
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      const mgl = sample(gl, clip);
+      renderer?.draw();
+      line(`mesure ${++count} (${why}) t=${video.currentTime.toFixed(2)} rs=${video.readyState} vw=${video.videoWidth} ` +
+        `2D=${error(m2d).toFixed(0)} GL=${error(mgl).toFixed(0)} glErr=${gl.getError()} ` +
+        `shader=${renderer ? `${!!renderer.ready}/${!!renderer.failed}` : 'n/a'} ctxLost=${gl.isContextLost()}`);
+      if (error(mgl) > 15) line(`  >>> GL mesuré=${JSON.stringify(mgl)}`);
+      if (error(m2d) > 15) line(`  >>> 2D mesuré=${JSON.stringify(m2d)}`);
+    } catch (e) { line(`mesure ${++count} (${why}) exception: ${e.message}`); }
+  };
+  document.addEventListener('visibilitychange', () => measure(document.hidden ? 'caché' : 'visible'));
+  window.addEventListener('focus', () => measure('focus'));
+  window.addEventListener('pageshow', () => measure('pageshow'));
+  setInterval(() => { if (!document.hidden) measure('intervalle'); }, 3000);
+  line('\n--- phase 2 : clip A maintenu à l\'écran ---');
+  line('1) Mets le téléphone en veille ou passe à une autre app ~15 s (sans fermer l\'onglet).');
+  line('2) Reviens : les nouvelles mesures apparaissent automatiquement ci-dessous.');
+}
+
+function canvasListen(canvas) {
+  canvas?.addEventListener('webglcontextlost', () => line('>>> webglcontextlost'));
+  canvas?.addEventListener('webglcontextrestored', () => line('>>> webglcontextrestored'));
 }
 
 report.textContent = '';
@@ -128,9 +175,14 @@ try {
   const info = gl?.getExtension('WEBGL_debug_renderer_info');
   if (gl && info) line(`GL_RENDERER: ${gl.getParameter(info.UNMASKED_RENDERER_WEBGL)}`);
 } catch { }
+let stateA;
 for (const clip of clips) {
   line(`\n=== ${clip.name} ===`);
-  try { await Promise.race([runClip(clip), new Promise((_, reject) => setTimeout(() => reject(new Error('délai dépassé')), 12000))]); }
+  try {
+    const state = await Promise.race([runClip(clip), new Promise((_, reject) => setTimeout(() => reject(new Error('délai dépassé')), 12000))]);
+    if (clip === clips[0]) stateA = state;
+  }
   catch (error) { line(error.message); }
 }
-line('\nTerminé. Copiez ce rapport ou envoyez une capture d’écran.');
+try { await phase2(stateA); } catch (error) { line(`phase 2: ${error.message}`); }
+line('\nPhase 1 terminée. Copiez ce rapport ou envoyez une capture d’écran après le test de veille.');
