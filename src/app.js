@@ -139,7 +139,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     res.json(tuned);
   });
   app.post('/api/join', inviteLimiter, (req, res) => {
-    const room = hub.findByCode(req.body.code?.trim().toLowerCase());
+    const room = hub.findByCode(req.body.code);
     if (!room) throw fail(404, 'Code invalide ou expiré.');
     const session = req.session ?? { admin: false, rooms: new Set(), expires: Date.now() + TTL };
     session.rooms.add(room.id);
