@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createStore } from '../src/storage.js';
-import { run, probeFile, prepareMovie, inspectProbe, decodeSubtitleText, subtitleFileFormat, addSubtitle } from '../src/media.js';
+import { run, probeFile, prepareMovie, inspectProbe, decodeSubtitleText, subtitleFileFormat, addSubtitle, refreshStaleProbes, PROBE_SCHEMA } from '../src/media.js';
 import { defaultTrackNames } from '../public/track-names.js';
 
 // Retagging rewrites the sequence header, so compare decoded samples: no picture may change.
@@ -49,6 +49,24 @@ test('copies 4K video exactly and prepares embedded audio and external subtitles
   assert.deepEqual(await colourBox(prepared), { primaries: 1, transfer: 1, matrix: 1, fullRange: false });
   assert.match(await readFile(path.join(prepared, 'master.m3u8'), 'utf8'), /CHANNELS="2"/);
   assert.ok(result.maxSegmentSeconds <= 4.05);
+});
+
+test('startup refresh reprobes only movies stored with an older probe schema', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-probes-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createStore(root);
+  const stale = { id: randomUUID(), title: 'Old', status: 'uploaded', probe: { schema: PROBE_SCHEMA - 1 } };
+  const current = { id: randomUUID(), title: 'New', status: 'uploaded', probe: { schema: PROBE_SCHEMA } };
+  const ready = { id: randomUUID(), title: 'Ready', status: 'ready', probe: { schema: 1 } };
+  for (const movie of [stale, current, ready]) store.save(movie);
+  await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=gray:size=128x72:rate=24',
+    '-t', '1', '-c:v', 'libx264', '-f', 'matroska', path.join(store.directory(stale.id), 'source')]);
+  // current and ready have no source: probing either would fail and mark the movie 'failed'.
+  await refreshStaleProbes(store);
+  assert.equal(stale.probe.schema, PROBE_SCHEMA);
+  assert.equal(stale.probe.video.codec, 'h264');
+  assert.equal(current.status, 'uploaded');
+  assert.equal(ready.status, 'ready');
 });
 
 test('decodes legacy subtitle charsets to UTF-8', () => {
