@@ -50,7 +50,7 @@ export class Room {
     const buffered = report && report.bufferedUntil >= Math.min(this.duration, position + reserve);
     const reason = !waiting ? null : !report ? 'no-report' : !fresh ? 'stale-report'
       : !report.ready ? 'not-ready' : !buffered ? 'low-buffer' : 'misaligned';
-    return { waiting, reason, blockers: report?.blockers ?? [] };
+    return { waiting, reason, blockers: report?.blockers ?? [], failure: report?.failure ?? null };
   }
 
   freeze() {
@@ -115,17 +115,18 @@ export class Room {
     return { snapshot: this.snapshot(), changed: true };
   }
 
-  report(id, { epoch, sequence, position, bufferedUntil, ready, ackStartsAt = null, blockers = null }) {
+  report(id, { epoch, sequence, position, bufferedUntil, ready, ackStartsAt = null, blockers = null, failure = null }) {
     const member = this.requireMember(id);
     if (epoch !== this.epoch || !Number.isSafeInteger(sequence) || sequence <= member.sequence) {
       return { snapshot: this.snapshot(), changed: false };
     }
     if (!Number.isFinite(position) || position < 0 || !Number.isFinite(bufferedUntil) || bufferedUntil < position || typeof ready !== 'boolean' ||
-      (blockers !== null && (!Array.isArray(blockers) || blockers.length > 12 || blockers.some(name => typeof name !== 'string' || name.length > 40)))) {
+      (blockers !== null && (!Array.isArray(blockers) || blockers.length > 12 || blockers.some(name => typeof name !== 'string' || name.length > 40))) ||
+      (failure !== null && (typeof failure !== 'string' || failure.length > 200))) {
       throw new RangeError('Invalid playback report');
     }
     member.sequence = sequence;
-    member.report = { position, bufferedUntil, ready, ackStartsAt, receivedAt: this.now(), blockers };
+    member.report = { position, bufferedUntil, ready, ackStartsAt, receivedAt: this.now(), blockers, failure };
     return this.tick();
   }
 

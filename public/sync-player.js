@@ -269,7 +269,7 @@ export class SyncPlayer {
     if (force === false && !blockers.length) blockers = ['stalled'];
     this.send({ type: 'report', epoch: this.state.epoch, sequence: this.sequence++, position,
       bufferedUntil: Math.max(position, bufferEnd(this.video) - this.offset), ready,
-      blockers: ready ? undefined : blockers,
+      blockers: ready ? undefined : blockers, failure: this.failure ?? null,
       ackStartsAt: ready && this.scheduled === this.state.startsAt ? this.scheduled : null });
   }
   dispose() {
