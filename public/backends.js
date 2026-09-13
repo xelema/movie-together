@@ -1,0 +1,89 @@
+// The seam between SyncPlayer and the engine that feeds the video element.
+// Two real adapters: hls.js over MSE, and the browser's native HLS (Safari).
+// Each owns track enumeration, track selection, fatal-error recovery and the
+// media-PTS anchor (timelineOffset) that maps séance positions onto media time.
+
+// Native HLS lists chapters and metadata alongside subtitles in textTracks.
+const subtitleTracks = video => Array.from(video.textTracks ?? []).filter(track => ['subtitles', 'captions'].includes(track.kind));
+
+export function createBackend(video, url, options, handlers) {
+  // Prefer native HLS on Safari; its media policies and audio track API differ from MSE.
+  if (video.canPlayType('application/vnd.apple.mpegurl') &&
+    (/Apple/.test(navigator.vendor) || !window.Hls?.isSupported())) {
+    return new NativeHlsBackend(video, url, handlers);
+  }
+  if (window.Hls?.isSupported()) return new HlsJsBackend(video, url, options, handlers);
+  return null;
+}
+
+export class HlsJsBackend {
+  // Bounded recovery happens inside the adapter; the media element's own error
+  // event must not short-circuit it.
+  recoversErrors = true;
+
+  constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 8, bitrate } = {},
+    { onTracksChanged, onBuffered, onStalled, onFatal } = {}) {
+    this.video = video; this.timelineOffset = timelineOffset;
+    this.mediaRecoveries = 0; this.networkRecoveries = 0;
+    // The byte cap must hold minBuffer seconds of this stream: on a high-bitrate
+    // film a fixed cap would stall the room before playback could ever start.
+    const bytes = Math.max(60 * 1024 ** 2, Math.ceil(minBuffer * (bitrate ?? 20_000_000) / 8));
+    this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
+      maxBufferSize: bytes, backBufferLength: 10, enableWorker: true });
+    this.hls.loadSource(url); this.hls.attachMedia(video);
+    this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => onBuffered?.());
+    for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) {
+      this.hls.on(window.Hls.Events[name], () => onTracksChanged?.());
+    }
+    this.hls.on(window.Hls.Events.ERROR, (event, data) => {
+      if (!data.fatal) return;
+      onStalled?.();
+      // Hls.js already retries transient requests. Bound recovery after a fatal error.
+      if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && this.mediaRecoveries++ < 1) this.hls.recoverMediaError();
+      else if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && this.networkRecoveries++ < 1) this.hls.startLoad(video.currentTime);
+      else onFatal?.('Chargement interrompu. Rechargez la page pour réessayer.');
+    });
+  }
+
+  audioTracks() {
+    return this.hls.audioTracks.map((track, index) => ({ index, label: track.name || track.lang }));
+  }
+  subtitleTracks() {
+    return this.hls.subtitleTracks.map((track, index) => ({ index, label: track.name || track.lang }));
+  }
+  applyChoices(audio, subtitles) {
+    if (this.hls.audioTracks[audio] && this.hls.audioTrack !== audio) this.hls.audioTrack = audio;
+    if (subtitles < 0 || this.hls.subtitleTracks[subtitles]) {
+      if (this.hls.subtitleTrack !== subtitles) this.hls.subtitleTrack = subtitles;
+      this.hls.subtitleDisplay = subtitles >= 0;
+    }
+  }
+  destroy() { this.hls.destroy(); }
+}
+
+export class NativeHlsBackend {
+  constructor(video, url, { onTracksChanged } = {}) {
+    this.video = video;
+    // Native HLS presents a zero-based playlist timeline; MSE retains media PTS.
+    this.timelineOffset = 0;
+    this.abort = new AbortController();
+    const signal = this.abort.signal;
+    video.src = url;
+    if (video.audioTracks) video.audioTracks.addEventListener('addtrack', () => onTracksChanged?.(), { signal });
+    video.textTracks.addEventListener('addtrack', () => onTracksChanged?.(), { signal });
+  }
+
+  audioTracks() {
+    return Array.from(this.video.audioTracks ?? [])
+      .map((track, index) => ({ index, label: track.label || track.language || `Audio ${index + 1}` }));
+  }
+  subtitleTracks() {
+    return subtitleTracks(this.video)
+      .map((track, index) => ({ index, label: track.label || track.language || `Subtitles ${index + 1}` }));
+  }
+  applyChoices(audio, subtitles) {
+    Array.from(this.video.audioTracks ?? []).forEach((track, i) => { track.enabled = i === audio; });
+    subtitleTracks(this.video).forEach((track, i) => { track.mode = i === subtitles ? 'showing' : 'disabled'; });
+  }
+  destroy() { this.abort.abort(); }
+}
