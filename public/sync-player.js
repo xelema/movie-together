@@ -1,4 +1,5 @@
 import { ColorRenderer } from './color-renderer.js';
+import { createBackend } from './backends.js';
 
 export class Clock {
   constructor() { this.samples = []; }
@@ -20,9 +21,6 @@ export function bufferEnd(video) {
   return video.currentTime;
 }
 
-// Native HLS lists chapters and metadata alongside subtitles in textTracks.
-const subtitleTracks = video => Array.from(video.textTracks ?? []).filter(track => ['subtitles', 'captions'].includes(track.kind));
-
 export class SyncPlayer {
   constructor({ video, roomId, name = '', onStatus, onState, onTracks, onActivation }) {
     Object.assign(this, { video, roomId, onStatus, onState, onTracks, onActivation });
@@ -43,15 +41,13 @@ export class SyncPlayer {
     this.listen(video, 'loadedmetadata', () => { this.applyTrackChoices(); this.tracks(); });
     this.listen(video, 'loadeddata', () => { this.decoded = true; });
     this.listen(video, 'emptied', () => { this.decoded = false; });
-    if (video.audioTracks) this.listen(video.audioTracks, 'addtrack', () => this.tracks());
-    this.listen(video.textTracks, 'addtrack', () => this.tracks());
     this.listen(video.textTracks, 'addtrack', event => {
       const raise = () => this.positionSubtitles();
       this.listen(event.track, 'cuechange', raise); raise();
     });
     for (const event of ['controlsshown', 'controlshidden']) this.listen(video, event, () => this.positionSubtitles());
     this.listen(window, 'resize', () => this.positionSubtitles());
-    this.listen(video, 'error', () => { if (!this.hls) this.failPlayback('Lecture impossible sur cet appareil.'); });
+    this.listen(video, 'error', () => { if (!this.backend?.recoversErrors) this.failPlayback('Lecture impossible sur cet appareil.'); });
     this.listen(video, 'play', () => {
       // Browsers can dispatch a queued play event after activate() already paused: internalUntil
       // keeps that stale notification from leaking a play command into a paused room.
@@ -159,53 +155,30 @@ export class SyncPlayer {
     const activated = sameMovie && this.activated;
     if (!sameMovie) { this.audioChoice = 0; this.subtitleChoice = -1; }
     clearTimeout(this.startTimer); this.scheduled = null;
-    this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.hls?.destroy(); this.hls = null;
+    this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.backend?.destroy(); this.backend = null;
     this.loadToken = (this.loadToken || 0) + 1; this.activating = false; this.recovering = false;
-    this.networkRecoveries = 0; this.mediaRecoveries = 0;
     this.movie = movie; this.failure = null; this.activated = activated; this.autoActivationTried = false; this.activationBlocked = false; this.onActivation(activated);
     this.video.removeAttribute('src'); this.video.load();
     if (!movie) return;
     const versions = movie.renditions?.length ? movie.renditions : [{ id: 'original', manifest: 'master.m3u8', timelineOffset: 0 }];
     this.rendition = versions[0];
-    this.offset = this.rendition.timelineOffset ?? 0;
     if (this.rendition.color) {
       try { this.colorRenderer = new ColorRenderer(this.video, this.rendition.color, message => this.failPlayback(message)); }
       catch (error) { this.failPlayback(error.message); return; }
     }
     const url = `/media/${movie.id}/${this.rendition.manifest}`;
-    // Prefer native HLS on Safari; its media policies and audio track API differ from MSE.
-    if (this.video.canPlayType('application/vnd.apple.mpegurl') &&
-      (/Apple/.test(navigator.vendor) || !window.Hls?.isSupported())) {
-      // Native HLS presents a zero-based playlist timeline; MSE retains media PTS.
-      this.offset = 0;
-      this.video.src = url;
-    } else if (window.Hls?.isSupported()) {
-      const target = this.bufferSeconds;
-      // The byte cap must hold minBuffer seconds of this stream: on a high-bitrate
-      // film a fixed cap would stall the room before playback could ever start.
-      const bytes = Math.max(60 * 1024 ** 2, Math.ceil(this.sync.minBuffer * (movie.bitrate ?? 20_000_000) / 8));
-      this.hls = new window.Hls({ maxBufferLength: target, maxMaxBufferLength: target * 2,
-        maxBufferSize: bytes, backBufferLength: 10, enableWorker: true });
-      this.hls.loadSource(url); this.hls.attachMedia(this.video);
-      this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => { if (this.video.readyState >= 3) this.recovering = false; });
-      for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) this.hls.on(window.Hls.Events[name], () => { this.applyTrackChoices(); this.tracks(); });
-      this.hls.on(window.Hls.Events.ERROR, (event, data) => {
-        if (!data.fatal) return;
-        this.pauseLocal(); this.report(false);
-        this.recovering = true;
-        // Hls.js already retries transient requests. Bound recovery after a fatal error.
-        if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && this.mediaRecoveries++ < 1) this.hls.recoverMediaError();
-        else if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && this.networkRecoveries++ < 1) this.hls.startLoad(this.video.currentTime);
-        else this.failPlayback('Chargement interrompu. Rechargez la page pour réessayer.');
-      });
-    } else this.failPlayback('Ce navigateur ne permet pas la lecture HLS.');
+    this.backend = createBackend(this.video, url,
+      { timelineOffset: this.rendition.timelineOffset ?? 0, bufferSeconds: this.bufferSeconds,
+        minBuffer: this.sync.minBuffer, bitrate: movie.bitrate },
+      { onTracksChanged: () => { this.applyTrackChoices(); this.tracks(); },
+        onBuffered: () => { if (this.video.readyState >= 3) this.recovering = false; },
+        onStalled: () => { this.pauseLocal(); this.report(false); this.recovering = true; },
+        onFatal: message => this.failPlayback(message) });
+    if (!this.backend) { this.failPlayback('Ce navigateur ne permet pas la lecture HLS.'); return; }
+    this.offset = this.backend.timelineOffset;
   }
   tracks() {
-    const audio = this.hls ? this.hls.audioTracks.map((track, index) => ({ index, label: track.name || track.lang })) :
-      Array.from(this.video.audioTracks ?? []).map((track, index) => ({ index, label: track.label || track.language || `Audio ${index + 1}` }));
-    const subtitles = this.hls ? this.hls.subtitleTracks.map((track, index) => ({ index, label: track.name || track.lang })) :
-      subtitleTracks(this.video).map((track, index) => ({ index, label: track.label || track.language || `Subtitles ${index + 1}` }));
-    this.onTracks(audio, subtitles);
+    this.onTracks(this.backend?.audioTracks() ?? [], this.backend?.subtitleTracks() ?? []);
   }
   async activate() {
     if (!this.movie || this.activating || this.failure) return;
@@ -247,24 +220,9 @@ export class SyncPlayer {
   // drops to buffering and resumes on its own once we are ready again.
   changeTrack(type, index) {
     if (type === 'audio') this.audioChoice = index; else this.subtitleChoice = index;
-    if (this.hls) {
-      if (type === 'audio') this.hls.audioTrack = index;
-      else { this.hls.subtitleTrack = index; this.hls.subtitleDisplay = index >= 0; }
-    } else if (type === 'audio') Array.from(this.video.audioTracks ?? []).forEach((track, i) => { track.enabled = i === index; });
-    else subtitleTracks(this.video).forEach((track, i) => { track.mode = i === index ? 'showing' : 'disabled'; });
+    this.applyTrackChoices();
   }
-  applyTrackChoices() {
-    if (this.hls) {
-      if (this.hls.audioTracks[this.audioChoice] && this.hls.audioTrack !== this.audioChoice) this.hls.audioTrack = this.audioChoice;
-      if (this.subtitleChoice < 0 || this.hls.subtitleTracks[this.subtitleChoice]) {
-        if (this.hls.subtitleTrack !== this.subtitleChoice) this.hls.subtitleTrack = this.subtitleChoice;
-        this.hls.subtitleDisplay = this.subtitleChoice >= 0;
-      }
-    } else {
-      Array.from(this.video.audioTracks ?? []).forEach((track, i) => { track.enabled = i === this.audioChoice; });
-      subtitleTracks(this.video).forEach((track, i) => { track.mode = i === this.subtitleChoice ? 'showing' : 'disabled'; });
-    }
-  }
+  applyTrackChoices() { this.backend?.applyChoices(this.audioChoice, this.subtitleChoice); }
   reconcile() {
     if (this.activating) return;
     if (!this.state || !this.clock.ready || document.hidden || navigator.onLine === false || performance.now() - this.lastMessage > this.silenceMs) { this.pauseLocal(); return; }
@@ -315,7 +273,7 @@ export class SyncPlayer {
   dispose() {
     this.disposed = true; clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings);
     clearTimeout(this.startTimer); clearTimeout(this.retry); this.listeners.forEach(remove => remove());
-    this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.hls?.destroy(); this.video.removeAttribute('src'); this.video.load();
+    this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load();
     this.releaseWakeLock();
   }
 }
