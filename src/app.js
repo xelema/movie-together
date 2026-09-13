@@ -10,6 +10,7 @@ import { createStore } from './storage.js';
 import { probeFile, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat } from './media.js';
 import { SUBTITLE_FORMATS, SUBTITLE_EXT } from '../public/subtitle-formats.js';
 import { createRoomHub } from './sync/hub.js';
+import { createJobs } from './jobs.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const ID = /^[a-f0-9-]{36}$/;
@@ -56,9 +57,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   const app = express();
   const server = createServer(app);
   const store = createStore(dataDir);
-  const sessions = new Map(), locks = new Set(), mediaLocks = new Set();
+  const sessions = new Map();
   const salt = randomBytes(32), hash = scryptSync(password, salt, 64);
-  let processing = false;
   app.disable('x-powered-by');
   if (trustProxy) app.set('trust proxy', 1);
   app.use(helmet({ contentSecurityPolicy: { directives: {
@@ -88,18 +88,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     if (!movie) throw fail(404, 'Film introuvable.');
     return movie;
   };
+  const jobs = createJobs({ getMovie, movieInUse: id => hub.movieInUse(id) });
   const hub = createRoomHub({ origin, ttl: TTL, syncOptions, sessionFor,
     sessionActive: session => session.expires > Date.now() && [...sessions.values()].includes(session),
     canAccess: (session, room) => access({ session }, room),
     movieFor: id => publicMovie(getMovie(id)),
-    moviePlayable: id => store.movies.get(id)?.status === 'ready' && !mediaLocks.has(id) });
-  const idleMovie = id => {
-    const movie = getMovie(id);
-    if (mediaLocks.has(id)) throw fail(409, 'Modification du film en cours.');
-    if (['processing', 'probing'].includes(movie.status)) throw fail(409, 'Traitement en cours.');
-    if (hub.movieInUse(id)) throw fail(409, 'Film utilisé dans une room.');
-    return movie;
-  };
+    moviePlayable: id => jobs.playable(store.movies.get(id)) });
   const cookie = (res, session) => {
     const token = randomBytes(32).toString('hex');
     sessions.set(token, session);
@@ -127,7 +121,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   });
   app.post('/api/rooms', admin, (req, res) => {
     const movie = getMovie(req.body.movieId);
-    if (movie.status !== 'ready' || mediaLocks.has(movie.id)) throw fail(409, 'Film non préparé.');
+    if (!jobs.playable(movie)) throw fail(409, 'Film non préparé.');
     const room = hub.create({ movieId: movie.id, duration: movie.duration, code: req.body.code });
     res.status(201).json({ id: room.id, code: room.code, link: `${origin}/#invite=${room.code}` });
   });
@@ -153,7 +147,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     const room = hub.get(req.params.id);
     if (!access(req, room)) throw fail(404, 'Room introuvable.');
     const movie = getMovie(req.body.movieId);
-    if (movie.status !== 'ready' || mediaLocks.has(movie.id)) throw fail(409, 'Film non préparé.');
+    if (!jobs.playable(movie)) throw fail(409, 'Film non préparé.');
     hub.setMovie(room, movie); res.json({ ok: true });
   });
   const uploadPath = id => {
@@ -169,7 +163,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     const { kind = 'movie', movieId, label = name, language = 'und' } = req.body;
     if (!['movie', 'subtitle'].includes(kind)) throw fail(400, 'Fichier invalide.');
     if (kind !== 'movie') {
-      const movie = idleMovie(movieId);
+      const movie = jobs.idle(movieId);
       if ((movie.externalTracks?.length ?? 0) >= 24) throw fail(400, 'Trop de fichiers ajoutés.');
       if (typeof label !== 'string' || !label.trim() || label.length > 100 || !/^[a-z]{2,3}$/.test(language)) throw fail(400, 'Nom ou langue invalide.');
       if (!SUBTITLE_EXT.test(name) || size > 2 * 1024 ** 2) throw fail(400, SUBTITLE_EXT_MESSAGE);
@@ -197,8 +191,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     offset: (await stat(path.join(uploadPath(req.params.id), 'source'))).size, chunkSize: CHUNK }));
   app.put('/api/uploads/:id', admin, express.raw({ type: 'application/octet-stream', limit: CHUNK }), async (req, res) => {
     const id = req.params.id;
-    if (locks.has(id)) throw fail(409, 'Upload occupé.');
-    locks.add(id);
+    const release = jobs.claimUpload(id);
     try {
       const info = await uploadInfo(id), file = path.join(uploadPath(id), 'source');
       const offset = (await stat(file)).size;
@@ -206,23 +199,21 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       if (Number(req.headers['upload-offset']) !== offset) return res.status(409).json({ error: 'Reprendre à la position courante.', offset });
       await writeFile(file, req.body, { flag: 'a' });
       res.json({ offset: offset + req.body.length });
-    } finally { locks.delete(id); }
+    } finally { release(); }
   });
   app.delete('/api/uploads/:id', admin, async (req, res) => {
-    if (locks.has(req.params.id)) throw fail(409, 'Upload occupé.');
-    locks.add(req.params.id);
+    const release = jobs.claimUpload(req.params.id);
     try { await rm(uploadPath(req.params.id), { recursive: true, force: true }); res.json({ ok: true }); }
-    finally { locks.delete(req.params.id); }
+    finally { release(); }
   });
   app.post('/api/uploads/:id/complete', admin, async (req, res) => {
     const id = req.params.id;
-    if (processing || locks.has(id)) throw fail(409, 'Un import est déjà en cours.');
-    processing = true; locks.add(id);
+    const release = jobs.claimImport(id);
     try {
       const info = await uploadInfo(id), source = path.join(uploadPath(id), 'source');
       if ((await stat(source)).size !== info.size) throw fail(409, 'Upload incomplet.');
       if (info.kind && info.kind !== 'movie') {
-        const movie = idleMovie(info.movieId);
+        const movie = jobs.idle(info.movieId);
         // Stored files carry no extension and may use a legacy charset: normalize to UTF-8 first.
         await writeFile(source, decodeSubtitleText(await readFile(source)));
         const formats = SUBTITLE_FORMATS[path.extname(info.name).slice(1).toLowerCase()] ?? [];
@@ -247,27 +238,29 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         movie.status = movie.probe.compatible ? 'uploaded' : 'incompatible';
       } catch (error) { movie.status = 'failed'; movie.error = error.message; }
       store.save(movie); res.json(movie);
-    } finally { processing = false; locks.delete(id); }
+    } finally { release(); }
   });
   app.post('/api/movies/:id/probe', admin, async (req, res) => {
-    const movie = idleMovie(req.params.id);
-    if (processing || movie.status === 'ready') throw fail(409, 'Analyse indisponible.');
-    processing = true; movie.status = 'probing'; movie.error = null; store.save(movie);
+    const movie = jobs.idle(req.params.id);
+    if (movie.status === 'ready') throw fail(409, 'Analyse indisponible.');
+    const done = jobs.claimHeavy('Analyse indisponible.');
+    movie.status = 'probing'; movie.error = null; store.save(movie);
     res.status(202).json({ ok: true });
     try {
       movie.probe = await probeFile(path.join(store.directory(movie.id), 'source'));
       movie.status = movie.probe.compatible ? 'uploaded' : 'incompatible';
     } catch (error) { movie.status = 'failed'; movie.error = error.message; }
-    finally { store.save(movie); processing = false; }
+    finally { store.save(movie); done(); }
   });
   app.post('/api/movies/:id/prepare', admin, async (req, res) => {
-    const movie = idleMovie(req.params.id);
-    if (processing) throw fail(409, 'Un import est déjà en cours.');
+    const movie = jobs.idle(req.params.id);
+    if (jobs.heavyBusy()) throw fail(409, 'Un import est déjà en cours.');
     if (req.body.names !== undefined) {
       if (typeof req.body.names !== 'object' || req.body.names === null) throw fail(400, 'Noms de pistes invalides.');
       movie.trackNames = { audio: trackNames(req.body.names.audio), subtitles: trackNames(req.body.names.subtitles) };
     }
-    processing = true; movie.status = 'processing'; movie.error = null; store.save(movie);
+    const done = jobs.claimHeavy();
+    movie.status = 'processing'; movie.error = null; store.save(movie);
     res.status(202).json({ ok: true });
     try {
       movie.progress = { stage: 'analysis', percent: 0 }; store.save(movie);
@@ -292,26 +285,26 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       const servable = movie.generation && await stat(path.join(store.directory(movie.id), movie.generation)).then(() => true, () => false);
       movie.status = servable ? 'ready' : 'failed'; movie.error = error.message;
     }
-    finally { delete movie.progress; store.save(movie); processing = false; }
+    finally { delete movie.progress; store.save(movie); done(); }
   });
   app.patch('/api/movies/:id', admin, (req, res) => {
-    const movie = idleMovie(req.params.id);
+    const movie = jobs.idle(req.params.id);
     if (typeof req.body.title !== 'string' || !req.body.title.trim() || req.body.title.length > 150) throw fail(400, 'Titre invalide.');
     movie.title = req.body.title.trim(); store.save(movie); res.json(movie);
   });
   app.delete('/api/movies/:id', admin, async (req, res) => {
-    const movie = idleMovie(req.params.id);
+    const movie = jobs.idle(req.params.id);
     if (hub.movieAssigned(movie.id)) throw fail(409, 'Fermer les rooms de ce film avant suppression.');
-    mediaLocks.add(movie.id);
+    const release = jobs.claimMovie(movie.id);
     try { await rm(store.directory(movie.id), { recursive: true, force: true }); store.movies.delete(movie.id); res.json({ ok: true }); }
-    finally { mediaLocks.delete(movie.id); }
+    finally { release(); }
   });
   app.post('/api/movies/:id/subtitles', admin, express.raw({ type: 'text/plain', limit: 2 * 1024 ** 2 }), async (req, res) => {
-    const movie = idleMovie(req.params.id);
-    if (processing || movie.status !== 'ready') throw fail(409, 'Film indisponible.');
+    const movie = jobs.idle(req.params.id);
+    if (movie.status !== 'ready' || jobs.heavyBusy()) throw fail(409, 'Film indisponible.');
     if (!Buffer.isBuffer(req.body) || !req.body.length) throw fail(400, 'Sous-titre vide.');
     if (req.query.name !== undefined && (typeof req.query.name !== 'string' || !SUBTITLE_EXT.test(req.query.name))) throw fail(400, SUBTITLE_EXT_MESSAGE);
-    processing = true; mediaLocks.add(movie.id);
+    const release = jobs.claimEdit(movie);
     const directory = path.join(store.directory(movie.id), movie.generation);
     const input = path.join(directory, 'subtitle-input');
     try {
@@ -329,14 +322,14 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       track.external = true;
       movie.subtitles.push(track); await writeMaster(directory, movie.audio, movie.subtitles, movie.renditions); store.save(movie);
       res.json(movie);
-    } finally { await unlink(input).catch(() => {}); processing = false; mediaLocks.delete(movie.id); }
+    } finally { await unlink(input).catch(() => {}); release(); }
   });
   app.delete('/api/movies/:id/subtitles/:track', admin, async (req, res) => {
-    const movie = idleMovie(req.params.id);
-    if (processing) throw fail(409, 'Un import est déjà en cours.');
+    const movie = jobs.idle(req.params.id);
+    if (jobs.heavyBusy()) throw fail(409, 'Un import est déjà en cours.');
     const track = movie.subtitles?.find(item => item.id === req.params.track);
     if (!track) throw fail(404, 'Piste introuvable.');
-    mediaLocks.add(movie.id);
+    const release = jobs.claimMovie(movie.id);
     try {
       const subtitles = movie.subtitles.filter(item => item !== track);
       const directory = path.join(store.directory(movie.id), movie.generation);
@@ -347,19 +340,19 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         for (const ext of ['vtt', 'm3u8']) await rm(path.join(directory, `sub_${track.id}_${rendition.id}.${ext}`), { force: true });
       }
       res.json(movie);
-    } finally { mediaLocks.delete(movie.id); }
+    } finally { release(); }
   });
   app.delete('/api/movies/:id/external/:track', admin, async (req, res) => {
-    const movie = idleMovie(req.params.id);
-    if (processing) throw fail(409, 'Un import est déjà en cours.');
+    const movie = jobs.idle(req.params.id);
+    if (jobs.heavyBusy()) throw fail(409, 'Un import est déjà en cours.');
     const track = movie.externalTracks?.find(item => item.id === req.params.track);
     if (!track) throw fail(404, 'Piste introuvable.');
-    mediaLocks.add(movie.id);
+    const release = jobs.claimMovie(movie.id);
     try {
       movie.externalTracks = movie.externalTracks.filter(item => item !== track);
       await unlink(path.join(store.directory(movie.id), track.filename)).catch(() => {});
       store.save(movie); res.json(movie);
-    } finally { mediaLocks.delete(movie.id); }
+    } finally { release(); }
   });
   app.get('/media/:id/:file', authenticated, (req, res, next) => {
     const movie = getMovie(req.params.id);
