@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile, readdir, stat, statfs, rm, unlink } from 'n
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import jschardet from 'jschardet';
+import { colorParameters } from '../public/color-renderer.js';
 
 export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, includeStderr = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -228,6 +229,8 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   if (movie.probe.audio.length && !audio.length) throw new Error('Choisir au moins une piste audio.');
   const video = movie.probe.video;
   const transport = transportMetadata(video);
+  // Colour metadata the WebGL renderer cannot map would fail mid-playback: refuse earlier.
+  if (transport.color) colorParameters(transport.color);
   const renditions = [{ id: 'original', manifest: 'master_original.m3u8', streamIndex: 0,
     codec: video.codec, width: video.width, height: video.height,
     videoRange: transport.videoRange, color: transport.color }];
