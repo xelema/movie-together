@@ -125,7 +125,13 @@ export class Room {
     if (epoch !== this.epoch || !Number.isSafeInteger(sequence) || sequence <= member.sequence) {
       return { snapshot: this.snapshot(), changed: false };
     }
-    if (!Number.isFinite(position) || position < 0 || !Number.isFinite(bufferedUntil) || bufferedUntil < position || typeof ready !== 'boolean' ||
+    // Positions are bounded to the film (+1 s of decode overshoot): a report the room can
+    // never satisfy is invalid input, not a member to wait on. Same for an acknowledgement
+    // that is not the current start: storing it would freeze every future start.
+    const bound = (this.duration ?? Infinity) + 1;
+    if (!Number.isFinite(position) || position < 0 || position > bound ||
+      !Number.isFinite(bufferedUntil) || bufferedUntil < position || bufferedUntil > bound || typeof ready !== 'boolean' ||
+      (ackStartsAt !== null && ackStartsAt !== this.startsAt) ||
       (blockers !== null && (!Array.isArray(blockers) || blockers.length > 12 || blockers.some(name => typeof name !== 'string' || name.length > 40))) ||
       (failure !== null && (typeof failure !== 'string' || failure.length > 200))) {
       throw new RangeError('Invalid playback report');
