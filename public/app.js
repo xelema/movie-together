@@ -224,6 +224,10 @@ async function refresh() {
   $('pending-heading').hidden = !pending.length; $('ready-heading').hidden = !ready.length;
   const rooms = await api('/api/rooms');
   $('rooms-section').hidden = !rooms.length;
+  const settings = await api('/api/settings');
+  if (![$('sync-min'), $('sync-low')].includes(document.activeElement)) {
+    $('sync-min').value = settings.minBuffer; $('sync-low').value = settings.lowBuffer;
+  }
   $('rooms').replaceChildren(...rooms.map(room => {
     const card = el('div', undefined, 'card');
     card.append(el('p', `${movies.find(movie => movie.id === room.movieId)?.title ?? ''} · ${room.participants} ${t('personne(s)', '명')} · ${t('jusqu’à', '까지')} ${new Date(room.expires).toTimeString().slice(0, 5)}`), el('code', room.code),
@@ -441,6 +445,10 @@ $('audio').addEventListener('change', () => player?.changeTrack('audio', Number(
 $('subtitles').addEventListener('change', () => player?.changeTrack('subtitles', Number($('subtitles').value)));
 $('leave').addEventListener('click', handle(async () => { player?.dispose(); player = null; activeRoom = null; $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await refresh(); }));
 $('choose-film').addEventListener('submit', handle(() => api(`/api/rooms/${activeRoom}/movie`, { method: 'POST', body: { movieId: $('room-movie').value } })));
+$('sync-form').addEventListener('submit', handle(async () => {
+  await api('/api/settings', { method: 'PATCH', body: { minBuffer: Number($('sync-min').value), lowBuffer: Number($('sync-low').value) } });
+  notice(t('Seuils enregistrés.', '버퍼 값을 저장했습니다.'));
+}));
 window.addEventListener('beforeunload', event => { if (uploadBusy) { event.preventDefault(); event.returnValue = ''; } });
 setInterval(() => { if (!player && !uploadBusy && movies.some(movie => ['processing', 'probing'].includes(movie.status))) refresh().catch(error => notice(error.message)); }, 3000);
 translate();

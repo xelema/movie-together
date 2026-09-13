@@ -49,6 +49,8 @@ test('authenticated upload, original video and audio, private rooms and access c
   const cookie = login.headers.get('set-cookie').split(';')[0];
   const storage = await (await request('/api/storage', { cookie })).json();
   assert.ok(storage.free > 0 && storage.total >= storage.free);
+  // No syncOptions and no saved file: the defaults must still reach the endpoint.
+  assert.deepEqual(await (await request('/api/settings', { cookie })).json(), { minBuffer: 8, lowBuffer: 3 });
   const file = path.join(dataDir, 'fixture.mp4');
   // Use a small synthetic source for a real preparation and access-control check.
   await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=25',
@@ -238,4 +240,31 @@ test('authenticated upload, original video and audio, private rooms and access c
   assert.equal((await request(`/media/${movie.id}/master.m3u8`, { cookie: guest })).status, 403);
   assert.equal((await request(`/media/${movie.id}/init_0.mp4`, { cookie: guest, headers: { 'If-None-Match': etag, 'Cache-Control': 'max-age=0' } })).status, 403);
   assert.equal((await request('/api/join', { method: 'POST', body: { code: room.code } })).status, 404);
+});
+
+test('admin tunes buffer thresholds at runtime and they persist', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
+  const origin = 'http://localhost:3000';
+  t.after(async () => rm(dataDir, { recursive: true, force: true }));
+  const boot = async () => {
+    const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin,
+      syncOptions: { minBuffer: 20, lowBuffer: 5 } });
+    await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${instance.server.address().port}`;
+    const request = (url, { cookie, method = 'GET', body } = {}) => fetch(base + url, {
+      method, headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body === undefined ? undefined : JSON.stringify(body) });
+    const login = await request('/api/login', { method: 'POST', body: { password: 'test-password-long-enough' } });
+    return { instance, request, cookie: login.headers.get('set-cookie').split(';')[0] };
+  };
+  const first = await boot();
+  assert.equal((await first.request('/api/settings')).status, 401);
+  assert.deepEqual(await (await first.request('/api/settings', { cookie: first.cookie })).json(), { minBuffer: 20, lowBuffer: 5 });
+  assert.equal((await first.request('/api/settings', { cookie: first.cookie, method: 'PATCH', body: { minBuffer: 12, lowBuffer: 4 } })).status, 200);
+  assert.equal((await first.request('/api/settings', { cookie: first.cookie, method: 'PATCH', body: { minBuffer: 4, lowBuffer: 12 } })).status, 400);
+  assert.deepEqual(await (await first.request('/api/settings', { cookie: first.cookie })).json(), { minBuffer: 12, lowBuffer: 4 });
+  await first.instance.close();
+  const second = await boot();
+  t.after(() => second.instance.close());
+  assert.deepEqual(await (await second.request('/api/settings', { cookie: second.cookie })).json(), { minBuffer: 12, lowBuffer: 4 });
 });
