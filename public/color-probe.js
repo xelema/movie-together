@@ -150,17 +150,22 @@ async function phase2(state) {
       line(`mesure ${++count} (${why}) t=${video.currentTime.toFixed(2)} rs=${video.readyState} vw=${video.videoWidth} ` +
         `2D=${error(m2d).toFixed(0)} GL=${error(mgl).toFixed(0)} glErr=${gl.getError()} ` +
         `shader=${renderer ? `${!!renderer.ready}/${!!renderer.failed}` : 'n/a'} ctxLost=${gl.isContextLost()}`);
-      if (error(mgl) > 15) line(`  >>> GL mesuré=${JSON.stringify(mgl)}`);
+      if (error(mgl) > 15) line(`  >>> GL mesuré=${JSON.stringify(mgl)} shader0=${renderer ? JSON.stringify(sample(renderer.gl, clip)[0]) : 'n/a'}`);
       if (error(m2d) > 15) line(`  >>> 2D mesuré=${JSON.stringify(m2d)}`);
     } catch (e) { line(`mesure ${++count} (${why}) exception: ${e.message}`); }
   };
+  line('\n--- phase 2 : lecture en boucle puis pause ---');
+  video.loop = true;
+  try { await video.play(); } catch { }
+  for (let i = 0; i < 6; i++) { await new Promise(r => setTimeout(r, 500)); measure('lecture'); }
+  video.pause();
+  measure('pause+0s'); await new Promise(r => setTimeout(r, 1000)); measure('pause+1s');
+  await new Promise(r => setTimeout(r, 2000)); measure('pause+3s');
   document.addEventListener('visibilitychange', () => measure(document.hidden ? 'caché' : 'visible'));
   window.addEventListener('focus', () => measure('focus'));
   window.addEventListener('pageshow', () => measure('pageshow'));
   setInterval(() => { if (!document.hidden) measure('intervalle'); }, 3000);
-  line('\n--- phase 2 : clip A maintenu à l\'écran ---');
-  line('1) Mets le téléphone en veille ou passe à une autre app ~15 s (sans fermer l\'onglet).');
-  line('2) Reviens : les nouvelles mesures apparaissent automatiquement ci-dessous.');
+  line('Ensuite : mets le téléphone en veille ou change d\'app ~15 s puis reviens, les mesures continuent.');
 }
 
 function canvasListen(canvas) {
