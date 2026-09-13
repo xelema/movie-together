@@ -25,6 +25,25 @@ vocabulaire partage.
 - **Freeze** : la seance fige sa position et repasse en `paused` ou `buffering`.
   Tout rapport anterieur est invalide : la preparation recommence a zero.
 
+## Films
+
+- **Film** : un fichier video de la bibliotheque, avec ses pistes.
+- **Preparation** : la transformation d'un film en version servie aux seances.
+  Etats :
+  - `uploaded` : a preparer, les pistes n'ont pas encore ete choisies.
+  - `probing`, `processing` : analyse ou preparation en cours.
+  - `ready` : pret, la selection de pistes est figee dans la version servie.
+    Re-preparer reconduit la meme selection.
+  - `failed` : preparation echouee, a relancer.
+  - `incompatible` : fichier illisible.
+- **Piste integree** : piste audio ou de sous-titres presente dans le fichier
+  source. Elle se choisit a la preparation et ne change plus ensuite.
+- **Piste ajoutee** (external) : fichier de sous-titres fourni par
+  l'administrateur. Peut s'ajouter ou se retirer meme sur un film pret.
+- **Nom affiche** : nom de piste vu par les participants. Par defaut la langue,
+  plus un qualifieur quand il faut distinguer deux pistes (forced, commentary,
+  SDH, titre d'origine, layout audio, numero).
+
 ## Pistes
 
 - **Piste audio** : langue du film, choisie par participant. Changer de piste
