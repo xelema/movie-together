@@ -79,7 +79,7 @@ test('rejects acknowledgements and positions the room cannot satisfy', () => {
   // A stored acknowledgement that never equals startsAt would freeze every start.
   assert.throws(() => report('a', { ackStartsAt: 'soon' }), /Invalid playback report/);
   assert.throws(() => report('a', { ackStartsAt: 12345 }), /Invalid playback report/);
-  // Out-of-range positions keep a member misaligned forever; the report is invalid input.
+  // Out-of-range positions keep a member misaligned forever, so the report is invalid input.
   assert.throws(() => report('a', { position: 999 }), /Invalid playback report/);
   assert.throws(() => report('a', { position: 0, bufferedUntil: 9999 }), /Invalid playback report/);
   // Rejected reports must not consume the sequence slot.
