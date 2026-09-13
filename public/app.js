@@ -471,7 +471,7 @@ async function upload(file, extra = {}) {
       try {
         const response = await fetch(`/api/uploads/${info.id}`, { method: 'PUT', headers: {
           'Content-Type': 'application/octet-stream', 'Upload-Offset': String(offset),
-        }, body: file.slice(offset, offset + 8 * 1024 ** 2) });
+        }, body: file.slice(offset, offset + (info.chunkSize ?? 8 * 1024 ** 2)) });
         const result = await response.json();
         if (response.status === 409 && Number.isFinite(result.offset)) offset = result.offset;
         else if (!response.ok) throw new Error(result.error);
