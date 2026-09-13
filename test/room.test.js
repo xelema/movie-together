@@ -96,3 +96,28 @@ test('a pause from a slightly outdated participant still stops the group', () =>
   room.command('b', { epoch: room.epoch - 1, type: 'pause' });
   assert.equal(room.phase, 'paused');
 });
+
+test('member status mirrors the phase gates: ready, fresh, aligned', () => {
+  const { room, command, report, advance } = setup();
+  report('a'); report('b');
+  assert.equal(room.memberStatus('a').waiting, false);
+  // A participant away from the shared position blocks the start and shows waiting.
+  command('seek', 60); command('play');
+  report('a', { position: 0, bufferedUntil: 120 });
+  assert.equal(room.memberStatus('a').waiting, true);
+  report('a', { position: 60, bufferedUntil: 120 });
+  assert.equal(room.memberStatus('a').waiting, false);
+  advance(4000);
+  assert.equal(room.memberStatus('a').waiting, true);
+});
+
+test('changed marks epoch or phase moves only', () => {
+  const { room, command, report } = setup();
+  assert.equal(command('play').changed, true);
+  assert.equal(report('a').changed, false);
+  assert.equal(report('a', { epoch: -1 }).changed, false);
+  // The last aligned report starts playback: a transition.
+  assert.equal(report('b').changed, true);
+  assert.equal(room.phase, 'playing');
+  assert.equal(report('a').changed, false);
+});
