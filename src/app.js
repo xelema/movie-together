@@ -137,7 +137,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.get('/api/rooms/:id', authenticated, (req, res) => {
     const room = hub.get(req.params.id);
     if (!access(req, room)) throw fail(404, 'Room introuvable.');
-    res.json(hub.state(room));
+    res.json(hub.state(room, { details: !!req.session?.admin }));
   });
   app.delete('/api/rooms/:id', admin, (req, res) => {
     hub.remove(req.params.id);

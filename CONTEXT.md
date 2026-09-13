@@ -23,6 +23,8 @@ vocabulaire partage.
   premiere condition qui bloque (`no-report`, `stale-report`, `not-ready`,
   `low-buffer`, `misaligned`) et `blockers` liste les verrous de disponibilite
   que le participant declare lui-meme (`activation`, `clock`, `data`, `drift`…).
+  Ces diagnostics ne sont diffuses qu'aux clients administrateurs ; les invites
+  ne recoivent que le booleen `waiting`.
 - **Seuils de buffer** : `minBuffer` exige de chacun pour demarrer ou
   reprendre, `lowBuffer` en dessous duquel un participant fait repasser
   la seance en `buffering`. Valeurs par defaut 8 s / 3 s, configurees a
