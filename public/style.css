@@ -78,6 +78,7 @@ input::file-selector-button:hover{background:#2b2d35}
 .card,#upload-form,#choose-film{background:var(--raise);border:1px solid var(--line-soft);border-radius:12px;padding:22px;transition:border-color .25s var(--ease)}
 .card:hover{border-color:var(--line)}
 .card{min-width:0}
+.card.clickable{cursor:pointer}
 .card h2{overflow-wrap:anywhere;font-size:17px;margin-bottom:6px}
 .card p{margin:6px 0}
 .card button{margin:10px 8px 0 0;font-size:14px;min-height:40px;padding:9px 16px}
