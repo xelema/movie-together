@@ -28,7 +28,7 @@ export class SyncPlayer {
     this.offset = 0; this.audioChoice = 0; this.subtitleChoice = -1;
     this.name = name;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
-    this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.listeners = [];
+    this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.retries = 0; this.listeners = [];
     // Defaults until the room publishes its sync policy in welcome.
     this.sync = { minBuffer: 8, tickMs: 200, startDelay: 1000 };
     this.silenceMs = 1500; this.bufferSeconds = 30; this.reportEveryMs = 200;
@@ -91,6 +91,7 @@ export class SyncPlayer {
     if (this.disposed) return;
     this.ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws?room=${this.roomId}`);
     this.ws.onopen = () => {
+      this.retries = 0;
       if (this.name) this.send({ type: 'identify', name: this.name });
       this.clock = new Clock(); this.lastMessage = performance.now(); this.sequence = 0;
       this.ping();
@@ -121,7 +122,8 @@ export class SyncPlayer {
       clearInterval(this.initialPings); this.pauseLocal(); clearTimeout(this.startTimer); this.state = null;
       if ([1000, 1008].includes(event.code)) this.failure = 'Room fermée ou session expirée.';
       this.onStatus(event.code === 1000 || event.code === 1008 ? 'Room fermée ou session expirée.' : 'Connexion perdue. Séance en pause, reconnexion…');
-      if (!this.disposed && ![1000, 1008].includes(event.code)) this.retry = setTimeout(() => this.connect(), 2000);
+      // Back off reconnects so a down server is not hammered every two seconds.
+      if (!this.disposed && ![1000, 1008].includes(event.code)) this.retry = setTimeout(() => this.connect(), Math.min(2000 * 2 ** this.retries++, 30_000));
     };
     this.ws.onerror = () => this.onStatus('Connexion à la room impossible. Vérifier l’invitation.');
   }
