@@ -172,6 +172,11 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     try { return JSON.parse(await readFile(path.join(uploadPath(id), 'upload.json'), 'utf8')); }
     catch (error) { if (error.code === 'ENOENT') throw fail(404, 'Upload introuvable.'); throw error; }
   };
+  // Only directories are pending uploads; a stray file must not count toward the cap.
+  const listUploads = async () => {
+    try { return (await readdir(path.join(store.root, 'uploads'), { withFileTypes: true })).filter(entry => entry.isDirectory()).map(entry => entry.name); }
+    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  };
   app.post('/api/uploads', admin, async (req, res) => {
     const { size, name, fingerprint } = req.body;
     const { kind = 'movie', movieId, label = name, language = 'und' } = req.body;
@@ -184,7 +189,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     }
     if (!Number.isSafeInteger(size) || size <= 0 || size > 20 * 1024 ** 3 || typeof name !== 'string' || name.length > 250) throw fail(400, 'Fichier invalide (maximum 20 Go).');
     if (fingerprint !== undefined && (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint))) throw fail(400, 'Empreinte invalide.');
-    if ((await readdir(path.join(store.root, 'uploads'))).length >= 2) throw fail(409, 'Terminer ou supprimer les uploads précédents.');
+    if ((await listUploads()).length >= 2) throw fail(409, 'Terminer ou supprimer les uploads précédents.');
     const disk = await statfs(store.root);
     if (disk.bavail * disk.bsize < size * 2.2) throw fail(409, 'Espace disque insuffisant pour l’original et sa préparation.');
     const id = randomUUID(); await mkdir(uploadPath(id));
@@ -198,9 +203,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   });
   app.get('/api/uploads', admin, async (req, res) => {
     const result = [];
-    for (const id of await readdir(path.join(store.root, 'uploads'))) {
+    for (const id of await listUploads()) {
       try { result.push({ ...await uploadInfo(id), offset: (await stat(path.join(uploadPath(id), 'source'))).size, chunkSize: CHUNK }); }
-      catch { /* An upload may have just been finalized. */ }
+      catch (error) {
+        // An upload may have just been finalized; anything else is a real corruption.
+        if (error.status !== 404 && error.code !== 'ENOENT') throw error;
+      }
     }
     res.json(result);
   });
