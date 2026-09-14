@@ -75,5 +75,5 @@ export function label(french) {
   const pair = french.split(' / ');
   if (pair.length === 2 && /[가-힣]/.test(pair[1])) return ko ? pair[1] : pair[0];
   if (ko) return korean[french] ?? (/[가-힣]/.test(french) || !french ? french : '요청을 완료하지 못했습니다. 다시 시도하세요.');
-  return french.replace('Room', 'Séance').replace('room', 'séance').replace('Ce navigateur ne permet pas la lecture HLS.', 'Ce navigateur ne peut pas lire ce film.');
+  return french.replaceAll('Room', 'Séance').replaceAll('room', 'séance').replace('Ce navigateur ne permet pas la lecture HLS.', 'Ce navigateur ne peut pas lire ce film.');
 }
