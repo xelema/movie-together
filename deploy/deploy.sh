@@ -54,6 +54,7 @@ tar -czf - \
   --exclude='./test-results' \
   --exclude='./playwright-report' \
   --exclude='./.env' \
+  --exclude='./.env.*' \
   --exclude='*.log' \
   --exclude='./comparaison_couleur_gauche_firefox_droite_chrome.png' \
   --exclude='./conversation-export.txt' \
