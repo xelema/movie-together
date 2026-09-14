@@ -91,6 +91,23 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(host.locator('#picture-settings')).toHaveCount(0);
     await expect(guest.locator('#picture-settings')).toHaveCount(0);
     await expect(host.locator('#participants')).toContainText('민지');
+    // Member diagnostics go to admins only and can be arbitrarily long: the pill must
+    // wrap instead of crushing the film column or overflowing the page. The injected
+    // li mirrors what app.js builds for a waiting member and is measured before the
+    // next state frame re-renders the list.
+    const diagnosticBreaksLayout = () => host.evaluate(() => {
+      const li = document.createElement('li'); li.dataset.ready = 'false';
+      li.innerHTML = '<span class="avatar">C</span><strong>chrome</strong><span>Chargement…</span>' +
+        '<small class="track-tag">not-ready: failure, activation, hidden, data [Ce film utilise un codec vidéo que cet appareil ne peut pas lire.]</small>';
+      document.querySelector('#participants').append(li);
+      const broken = document.querySelector('#movie-title').getBoundingClientRect().height > 120 || document.documentElement.scrollWidth > innerWidth;
+      li.remove();
+      return broken;
+    });
+    expect(await diagnosticBreaksLayout()).toBe(false);
+    await host.setViewportSize({ width: 390, height: 844 });
+    expect(await diagnosticBreaksLayout()).toBe(false);
+    await host.setViewportSize({ width: 1280, height: 720 });
     await host.locator('.plyr__control--overlaid').click();
     await expect(host.locator('#buffering-label')).toContainText('민지');
     releaseMedia();
