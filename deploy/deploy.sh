@@ -54,6 +54,7 @@ tar -czf - \
   --exclude='./test-results' \
   --exclude='./playwright-report' \
   --exclude='./.env' \
+  --exclude='./.env.*' \
   --exclude='*.log' \
   --exclude='./comparison.png' \
   --exclude='./private-notes.txt' \
