@@ -32,7 +32,7 @@ export class Room {
   healthy(report, reserve, position, time) {
     return report && report.ready &&
       time - report.receivedAt < this.reportTimeout &&
-      report.bufferedUntil >= Math.min(this.duration, position + reserve);
+      report.bufferedUntil >= Math.min(this.duration ?? Infinity, position + reserve);
   }
 
   // What the séance knows of a participant, for display. `waiting` mirrors the
@@ -49,7 +49,7 @@ export class Room {
     const waiting = !this.healthy(report, reserve, position, time) ||
       (this.wantsPlay && this.phase !== 'playing' && !aligned);
     const fresh = report && time - report.receivedAt < this.reportTimeout;
-    const buffered = report && report.bufferedUntil >= Math.min(this.duration, position + reserve);
+    const buffered = report && report.bufferedUntil >= Math.min(this.duration ?? Infinity, position + reserve);
     const reason = !waiting ? null : !report ? 'no-report' : !fresh ? 'stale-report'
       : !report.ready ? 'not-ready' : !buffered ? 'low-buffer' : 'misaligned';
     // Seconds of buffer ahead of the shared position vs what the room requires.
