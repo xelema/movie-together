@@ -74,6 +74,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   };
   app.use((req, res, next) => {
     req.session = sessionFor(req);
+    // A non-JSON content type leaves req.body undefined; routes read it freely.
+    req.body ??= {};
     if (req.path.startsWith('/api')) res.set('Cache-Control', 'no-store');
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin !== origin) {
       return res.status(403).json({ error: 'Origine refusée.' });
