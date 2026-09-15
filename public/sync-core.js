@@ -19,10 +19,11 @@ export function roomTarget(state, serverNow) {
 //   seekTo         realign to this media-element position
 //   scheduleStart  arm the start timer, firing in startIn ms
 //   reportUnready  send a forced not-ready report (drift too large)
+//   rate           catch up or fall back by stretching playback briefly
 //   normalizeRate  restore playbackRate to 1
 export function decide({ activating, state, clockReady, hidden, online, silent,
   decoded, seeking, paused, currentTime, bufferedStart, target, serverNow,
-  activated, scheduled }) {
+  activated, scheduled, rate }) {
   if (activating) return {};
   if (!state || !clockReady || hidden || !online || silent) return { pause: true };
   if (state.phase !== 'playing' || serverNow < state.startsAt) {
@@ -39,9 +40,15 @@ export function decide({ activating, state, clockReady, hidden, online, silent,
     return action;
   }
   if (paused) return {};
-  // Keep audio at its native speed: repeated time stretching can create audible
-  // artifacts. Larger drift still pauses and realigns the entire room.
-  return Math.abs(target - currentTime) > 0.35 ? { pause: true, reportUnready: true } : { normalizeRate: true };
+  // Mid-range drift is caught up with a short playback-rate nudge: inaudible and
+  // invisible next to a room-wide pause. A constant reporting bias (Android's
+  // currentTime lags ~0.3 s) hovers near the gate, so a correcting member keeps
+  // correcting until drift falls below 0.2 s instead of toggling every tick.
+  // Only a real desync still pauses and realigns the entire room.
+  const drift = target - currentTime;
+  if (Math.abs(drift) > 1.2) return { pause: true, reportUnready: true };
+  if (Math.abs(drift) > (rate !== undefined && rate !== 1 ? 0.2 : 0.35)) return { rate: drift > 0 ? 1.08 : 0.92 };
+  return { normalizeRate: true };
 }
 
 // The single readiness bit a member reports: activation, clock, liveness,
@@ -61,7 +68,7 @@ export function readyBlockers({ state, failure, rendererReady, recovering, activ
   if (silent) blockers.push('silent');
   if (seeking) blockers.push('seeking');
   if (readyState < 3) blockers.push('data');
-  if (running && (paused || Math.abs(position - target) > 0.35)) blockers.push('drift');
+  if (running && (paused || Math.abs(position - target) > 1.2)) blockers.push('drift');
   return blockers;
 }
 export const memberReady = observables => readyBlockers(observables).length === 0;

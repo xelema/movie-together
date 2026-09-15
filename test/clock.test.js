@@ -19,7 +19,13 @@ test('keeps audio at normal speed and pauses the group for excessive drift', () 
     target: 10, serverNow: 1000, activated: true, scheduled: 0,
   };
   assert.deepEqual(decide(base), { normalizeRate: true });
-  assert.deepEqual(decide({ ...base, currentTime: 9.5 }), { pause: true, reportUnready: true });
+  // Mid-range drift stretches the playback rate instead of freezing the room.
+  assert.deepEqual(decide({ ...base, currentTime: 9.5 }), { rate: 1.08 });
+  assert.deepEqual(decide({ ...base, currentTime: 10.5 }), { rate: 0.92 });
+  // A correcting member keeps correcting until drift falls under the release band.
+  assert.deepEqual(decide({ ...base, currentTime: 9.75, rate: 1.08 }), { rate: 1.08 });
+  assert.deepEqual(decide({ ...base, currentTime: 9.85, rate: 1.08 }), { normalizeRate: true });
+  assert.deepEqual(decide({ ...base, currentTime: 8.5 }), { pause: true, reportUnready: true });
   // A backward seek must reload evicted segments rather than clamp to the buffered range.
   const paused = { ...base, state: { ...base.state, phase: 'paused' }, currentTime: 44, bufferedStart: 40 };
   assert.equal(decide(paused).seekTo, 10);
@@ -55,7 +61,8 @@ test('readiness folds activation, decode, liveness and alignment into one bit', 
   assert.ok(!memberReady({ ...base, recovering: true }));
   assert.ok(!memberReady({ ...base, silent: true }));
   // Once the start has run past its grace window, drift beyond tolerance reports not-ready.
-  assert.ok(!memberReady({ ...base, position: 11 }));
+  assert.ok(!memberReady({ ...base, position: 11.5 }));
+  assert.ok(memberReady({ ...base, position: 10.6 }));
   assert.ok(memberReady({ ...base, position: 10.2 }));
   // Before that window, position checks do not apply.
   assert.ok(memberReady({ ...base, serverNow: 100, position: 11, paused: true }));
@@ -71,7 +78,7 @@ test('readiness blockers name each failing gate', () => {
   assert.deepEqual(readyBlockers({ ...base, activated: false }), ['activation']);
   assert.deepEqual(readyBlockers({ ...base, clockReady: false, hidden: true }), ['clock', 'hidden']);
   assert.deepEqual(readyBlockers({ ...base, seeking: true, readyState: 2 }), ['seeking', 'data']);
-  assert.deepEqual(readyBlockers({ ...base, position: 11 }), ['drift']);
+  assert.deepEqual(readyBlockers({ ...base, position: 11.5 }), ['drift']);
   assert.deepEqual(readyBlockers({ ...base, failure: 'x', rendererReady: false, recovering: true }),
     ['failure', 'renderer', 'recovering']);
 });
