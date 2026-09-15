@@ -183,7 +183,10 @@ export class ColorRenderer {
         // Sur certains appareils texImage2D ne reçoit jamais les pixels de la vidéo et la
         // texture garde une couleur sentinelle uniforme (violet sous Firefox Android,
         // bugzilla 1884282). On détecte la frame uniforme et la vidéo native reprend le relais.
-        this.canvas.style.visibility = this.deadImport() ? 'hidden' : '';
+        // La vidéo native affiche alors ses propres sous-titres : l'overlay se tait aussi.
+        const dead = this.deadImport();
+        this.canvas.style.visibility = dead ? 'hidden' : '';
+        this.captions.style.display = dead ? 'none' : '';
       }
       this.lastTime = video.currentTime; this.drawErrors = 0;
       if (!this.ready) { this.ready = true; canvas.dataset.ready = 'true'; }
