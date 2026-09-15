@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { Room, validThresholds } from './room.js';
+import { Room, validThresholds, cleanText } from './room.js';
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 
@@ -9,9 +9,10 @@ const fail = (status, message) => Object.assign(new Error(message), { status });
 // this interface. Sessions and media stay outside: sessionFor/sessionActive,
 // canAccess, movieFor and moviePlayable are injected at the seam.
 export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, sweepMs = 10_000,
-  maxRooms = 20, maxClients = 8, sessionFor, sessionActive, canAccess, movieFor, moviePlayable } = {}) {
+  maxRooms = 20, maxClients = 8, maxSocketsPerSession = 2, sessionFor, sessionActive, canAccess, movieFor, moviePlayable } = {}) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8192 });
   const rooms = new Map();
+  const countSessions = room => new Set([...room.clients].map(client => client.session)).size;
 
   // Waiting diagnostics are for the host: guests only need the shared bit.
   const state = (room, { details = true } = {}) => ({ type: 'state', roomId: room.id, code: room.code,
@@ -84,8 +85,13 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
   const attach = server => server.on('upgrade', (request, socket, head) => {
     const session = sessionFor(request);
     const url = new URL(request.url, origin), room = rooms.get(url.searchParams.get('room'));
+    // Capacity is per participant: sessions, not sockets. A session may hold a
+    // spare socket so a reconnect is not locked out by its dying predecessor.
+    const held = room ? [...room.clients].filter(client => client.session === session).length : 0;
+    const sessions = room ? countSessions(room) : 0;
     if (url.pathname !== '/ws' || request.headers.origin !== origin || !session ||
-      !canAccess(session, room) || room.expires <= Date.now() || room.clients.size >= maxClients ||
+      !canAccess(session, room) || room.expires <= Date.now() ||
+      held >= maxSocketsPerSession || (!held && sessions >= maxClients) ||
       !moviePlayable(room.movieId)) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
     }
@@ -108,7 +114,7 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
           const message = JSON.parse(data);
           if (message.type === 'identify') {
             if (typeof message.name !== 'string' || message.name.length > 40) throw new Error('Pseudo invalide.');
-            const name = message.name.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '').trim();
+            const name = cleanText(message.name).trim();
             if (!name) throw new Error('Pseudo requis.');
             ws.displayName = name; broadcast(room); return;
           }
@@ -153,7 +159,8 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
       ? [...rooms.values()].find(room => room.code === code.trim().toLowerCase() && room.expires > Date.now())
       : undefined,
     list: () => [...rooms.values()].map(room => ({ id: room.id, code: room.code, movieId: room.movieId,
-      expires: room.expires, participants: room.clients.size, link: `${origin}/#invite=${room.code}` })),
+      expires: room.expires, participants: countSessions(room),
+      link: `${origin}/#invite=${room.code}` })),
     setMovie(room, movie) { room.movieId = movie.id; room.engine.load(movie.duration); broadcast(room); },
     remove(id) {
       const room = rooms.get(id);
