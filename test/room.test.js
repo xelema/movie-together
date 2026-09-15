@@ -145,6 +145,18 @@ test('waiting status names the gate that blocks the member', () => {
   assert.equal(room.memberStatus('a').reason, 'stale-report');
 });
 
+test('report diagnostics are stripped of control characters like the nickname', () => {
+  const { room, report } = setup();
+  report('a', { ready: false, blockers: ['clock', 'net\u0007work'], failure: 'stalled\n\u2028[room fake] eve: ready) [\u001b[2J' });
+  assert.deepEqual(room.memberStatus('a').blockers, ['clock', 'network']);
+  assert.equal(room.memberStatus('a').failure, 'stalled[room fake] eve: ready) [[2J');
+  // Clean values pass through unchanged. Wrong shapes stay rejected.
+  report('a', { failure: 'Lecture impossible.' });
+  assert.equal(room.memberStatus('a').failure, 'Lecture impossible.');
+  assert.throws(() => report('a', { blockers: Array(13).fill('x') }), /Invalid playback report/);
+  assert.throws(() => report('a', { failure: 42 }), /Invalid playback report/);
+});
+
 test('changed marks epoch or phase moves only', () => {
   const { room, command, report } = setup();
   assert.equal(command('play').changed, true);
