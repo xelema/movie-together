@@ -28,6 +28,15 @@ export function createStore(root) {
       writeFileSync(path.join(root, 'settings.json.tmp'), JSON.stringify(settings, null, 2));
       renameSync(path.join(root, 'settings.json.tmp'), path.join(root, 'settings.json'));
     },
+    // Séances instrumentées : recréées à chaque démarrage, repérées par leur code.
+    rooms() {
+      try { return JSON.parse(readFileSync(path.join(root, 'rooms.json'), 'utf8')); }
+      catch { return []; }
+    },
+    saveRooms(rooms) {
+      writeFileSync(path.join(root, 'rooms.json.tmp'), JSON.stringify(rooms, null, 2));
+      renameSync(path.join(root, 'rooms.json.tmp'), path.join(root, 'rooms.json'));
+    },
     save(movie) {
       const dir = path.join(root, 'movies', movie.id);
       mkdirSync(dir, { recursive: true });
