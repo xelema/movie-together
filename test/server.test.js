@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
@@ -289,6 +289,51 @@ test('a rejected upload creation does not count against the pending upload cap',
   assert.equal((await create({ name: 'film.mkv', size: 1024 })).status, 201);
   const pending = await (await request('/api/uploads', { cookie })).json();
   assert.deepEqual(await readdir(path.join(dataDir, 'uploads')), [pending[0].id]);
+});
+
+test('room capacity counts distinct sessions and a session holds at most two sockets', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
+  const origin = 'http://localhost:3000';
+  // A ready movie seeded on disk avoids a real ffmpeg preparation.
+  const movieId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  await mkdir(path.join(dataDir, 'movies', movieId), { recursive: true });
+  await writeFile(path.join(dataDir, 'movies', movieId, 'movie.json'),
+    JSON.stringify({ id: movieId, title: 'Cap Film', status: 'ready', duration: 120 }));
+  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin });
+  await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${instance.server.address().port}`;
+  const sockets = [];
+  t.after(async () => { sockets.forEach(socket => socket.terminate()); await instance.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const request = async (url, { cookie, method = 'GET', body } = {}) => fetch(base + url, {
+    method, headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body) });
+  const login = await request('/api/login', { method: 'POST', body: { password: 'test-password-long-enough' } });
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const room = await (await request('/api/rooms', { cookie, method: 'POST', body: { movieId, code: 'cap-room' } })).json();
+  const join = async () => (await request('/api/join', { method: 'POST', body: { code: room.code } }))
+    .headers.get('set-cookie').split(';')[0];
+  // A refused upgrade surfaces as unexpected-response, an accepted one sends welcome.
+  const open = cookieValue => new Promise(resolve => {
+    const socket = new WebSocket(`${base.replace('http', 'ws')}/ws?room=${room.id}`,
+      { headers: { Cookie: cookieValue, Origin: origin } });
+    sockets.push(socket);
+    socket.on('unexpected-response', () => resolve(null));
+    socket.on('error', () => resolve(null));
+    socket.on('message', data => { if (JSON.parse(data).type === 'welcome') resolve(socket); });
+  });
+  const guestA = await join();
+  const first = await open(guestA);
+  assert.ok(first);
+  assert.ok(await open(guestA));
+  assert.equal(await open(guestA), null);
+  first.close(); await new Promise(resolve => first.on('close', resolve));
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.ok(await open(guestA));
+  const guestB = await join();
+  assert.ok(await open(guestB));
+  // Sessions in the room: A (two sockets) + B = 2 of 8. Six more fill it.
+  for (let count = 0; count < 6; count++) assert.ok(await open(await join()), `guest ${count}`);
+  assert.equal(await open(await join()), null);
 });
 
 test('joining a room with a malformed code is a client error, not a crash', async t => {
