@@ -13,7 +13,8 @@ test('renderer sizes to display pixels, limits GPU checks and skips idle frames'
   });
   let now = 0, draws = 0, checks = 0;
   const renderer = Object.assign(Object.create(ColorRenderer.prototype), {
-    canvas: { width: 300, height: 150, dataset: {}, style: {} }, displayWidth: 400, displayHeight: 300,
+    canvas: { width: 300, height: 150, dataset: {}, style: {} }, captions: { style: {} },
+    displayWidth: 400, displayHeight: 300,
     video: { readyState: 4, videoWidth: 3840, videoHeight: 2160, currentTime: 1, paused: true },
     gl: { NO_ERROR: 0, getParameter: () => 8192, viewport() {}, texImage2D() {}, flush() {},
       drawArrays() { draws++; }, getError() { checks++; return 0; },
@@ -53,7 +54,7 @@ test('renderer falls back to the native video while the texture import is dead',
     }
   });
   const renderer = Object.assign(Object.create(ColorRenderer.prototype), {
-    canvas: { width: 800, height: 400, dataset: {}, style: {} },
+    canvas: { width: 800, height: 400, dataset: {}, style: {} }, captions: { style: {} },
     video: { readyState: 4, videoWidth: 800, videoHeight: 400, currentTime: 1, paused: true },
     gl: { NO_ERROR: 0, getParameter: () => 8192, viewport() {}, texImage2D() {}, flush() {},
       drawArrays() {}, getError() { return 0; },
@@ -61,7 +62,9 @@ test('renderer falls back to the native video while the texture import is dead',
   });
   renderer.draw();
   assert.equal(renderer.canvas.style.visibility, 'hidden');
+  assert.equal(renderer.captions.style.display, 'none');
   renderer.gl.readPixels = (x, y, w, h, f, t, pixel) => { pixel[0] = x & 255; };
   renderer.draw();
   assert.equal(renderer.canvas.style.visibility, '');
+  assert.equal(renderer.captions.style.display, '');
 });
