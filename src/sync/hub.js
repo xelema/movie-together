@@ -15,6 +15,7 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
 
   // Waiting diagnostics are for the host: guests only need the shared bit.
   const state = (room, { details = true } = {}) => ({ type: 'state', roomId: room.id, code: room.code,
+    probe: !!room.probe,
     state: room.engine.snapshot(), movie: room.movieId ? movieFor(room.movieId) : null,
     sync: { minBuffer: room.engine.minBuffer, lowBuffer: room.engine.lowBuffer },
     members: [...room.engine.members.keys()].map(id => {
@@ -55,13 +56,14 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
     }
   };
 
-  const create = ({ movieId, duration, code }) => {
+  const create = ({ movieId, duration, code, probe }) => {
     if (rooms.size >= maxRooms) throw fail(409, 'Fermer une room avant d’en créer une autre.');
     if (code !== undefined && (typeof code !== 'string' || !/^[a-z0-9-]{4,32}$/i.test(code.trim()))) throw fail(400, 'Code : 4 à 32 lettres, chiffres ou tirets.');
     code = code?.trim().toLowerCase() || randomBytes(8).toString('hex');
     if ([...rooms.values()].some(room => room.code === code && room.expires > Date.now())) throw fail(409, 'Ce code est déjà utilisé.');
-    const room = { id: randomUUID(), code, expires: Date.now() + ttl, movieId, engine: new Room(syncOptions), clients: new Set(),
-      logged: new Map(), loggedPhase: null };
+    // Séance instrumentée : dix ans au lieu de douze heures, télémétrie activée.
+    const room = { id: randomUUID(), code, expires: Date.now() + (probe ? 10 * 365 * 86400_000 : ttl), movieId, engine: new Room(syncOptions), clients: new Set(),
+      probe: !!probe, logged: new Map(), loggedPhase: null };
     room.engine.load(duration); rooms.set(room.id, room);
     return room;
   };
@@ -97,7 +99,7 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
       // The client derives its cadence and buffer targets from these thresholds:
       // shipping them keeps the timing contract explicit instead of hardcoded twice.
       const { minBuffer, lowBuffer, reportTimeout, startDelay } = room.engine;
-      ws.send(JSON.stringify({ type: 'welcome', id,
+      ws.send(JSON.stringify({ type: 'welcome', id, probe: !!room.probe,
         sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs } })); broadcast(room);
       ws.on('pong', () => { ws.alive = true; });
       ws.on('error', () => {});
@@ -153,7 +155,7 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
       ? [...rooms.values()].find(room => room.code === code.trim().toLowerCase() && room.expires > Date.now())
       : undefined,
     list: () => [...rooms.values()].map(room => ({ id: room.id, code: room.code, movieId: room.movieId,
-      expires: room.expires, participants: room.clients.size, link: `${origin}/#invite=${room.code}` })),
+      probe: !!room.probe, expires: room.expires, participants: room.clients.size, link: `${origin}/#invite=${room.code}` })),
     setMovie(room, movie) { room.movieId = movie.id; room.engine.load(movie.duration); broadcast(room); },
     remove(id) {
       const room = rooms.get(id);

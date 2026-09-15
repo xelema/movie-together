@@ -34,6 +34,14 @@ vocabulaire partage.
   chaud s'applique aux seances ouvertes et aux clients connectes.
 - **Freeze** : la seance fige sa position et repasse en `paused` ou `buffering`.
   Tout rapport anterieur est invalide : la preparation recommence a zero.
+- **Seance instrumentee** (probe) : une seance creee avec le drapeau `probe`.
+  Elle n'expire pas et survit aux redemarrages du serveur tant que son film
+  reste pret. Elle sert a verifier le fonctionnement sur un appareil reel.
+- **Telemetrie** : flux d'evenements de diagnostic envoye par le client d'une
+  seance instrumentee vers le serveur (capacites de l'appareil, buffer, images
+  perdues, horloge, renderer couleur, segments telecharges). A la difference
+  du rapport, qui alimente la machine a etats, la telemetrie est ecrite dans
+  un journal et ne change rien a la seance.
 
 ## Films
 
