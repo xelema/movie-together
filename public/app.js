@@ -1,4 +1,5 @@
 import { SyncPlayer } from './sync-player.js';
+import { attachTelemetry } from './telemetry.js';
 import { label } from './labels.js';
 import { trackName, defaultTrackNames, sourceTitle, trackLayout } from './track-names.js';
 import { SUBTITLE_EXT, SUBTITLE_ACCEPT, IMAGE_SUBTITLE_CODECS } from './subtitle-formats.js';
@@ -6,7 +7,8 @@ import { SUBTITLE_EXT, SUBTITLE_ACCEPT, IMAGE_SUBTITLE_CODECS } from './subtitle
 const $ = id => document.getElementById(id);
 const t = (fr, ko) => sessionStorage.getItem('language') === 'ko' ? ko : fr;
 const adminPage = location.pathname === '/admin';
-let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null, diskInfo = null;
+let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null, diskInfo = null, telemetry = null;
+function disposePlayer() { telemetry?.dispose(); telemetry = null; player?.dispose(); player = null; refreshBandwidth(); }
 const movieCards = new Map(), openPanels = new Set(), closedPanels = new Set();
 const playbackUI = new window.Plyr($('video'), {
   controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'fullscreen'],
@@ -35,6 +37,24 @@ $('close-settings').addEventListener('click', event => showSettings(false, event
 document.addEventListener('pointerdown', event => { if (!$('player-settings').contains(event.target) && !settingsButton.contains(event.target)) showSettings(false); });
 $('screen').addEventListener('keydown', event => { if (event.key === 'Escape' && !$('player-settings').hidden) { event.preventDefault(); event.stopPropagation(); showSettings(false, true); } });
 playbackUI.on('enterfullscreen exitfullscreen', () => showSettings(false));
+// Admin-only live bandwidth badge. hls.js exposes a live estimate; native HLS does not.
+const bandwidthToggle = $('bandwidth-toggle'), bandwidthBadge = $('bandwidth-badge');
+let bandwidthTimer = null;
+bandwidthToggle.checked = localStorage.getItem('bandwidth-badge') === 'on';
+bandwidthToggle.addEventListener('change', () => {
+  localStorage.setItem('bandwidth-badge', bandwidthToggle.checked ? 'on' : 'off');
+  refreshBandwidth();
+});
+function refreshBandwidth() {
+  const on = session.admin && player && bandwidthToggle.checked;
+  if (on && !bandwidthTimer) bandwidthTimer = setInterval(refreshBandwidth, 1000);
+  if (!on && bandwidthTimer) { clearInterval(bandwidthTimer); bandwidthTimer = null; }
+  bandwidthBadge.hidden = !on;
+  if (on) {
+    const bps = player.backend?.hls?.bandwidthEstimate;
+    bandwidthBadge.textContent = bps ? `${(bps / 1e6).toFixed(1)} Mb/s` : '—';
+  }
+}
 // The page chrome follows the player controls: visible in pause and on hover, gone during playback.
 playbackUI.on('controlsshown', () => { $('watch').dataset.chrome = 'true'; });
 playbackUI.on('controlshidden', () => { $('watch').dataset.chrome = 'false'; });
@@ -57,6 +77,7 @@ function translate() {
   document.documentElement.lang = lang; $('language').value = lang;
   $('language-flag').src = `/flags/${lang}.svg`;
   for (const node of document.querySelectorAll('[data-fr]')) node.textContent = node.dataset[lang];
+  bandwidthBadge.title = bandwidthBadge.ariaLabel = t('Débit en direct', '실시간 속도');
   const words = { play: t('Lecture', '재생'), pause: t('Pause', '일시정지'), seek: t('Avancer ou reculer', '재생 위치'),
     currentTime: t('Position', '재생 위치'), duration: t('Durée', '길이'), volume: t('Volume', '음량'),
     mute: t('Couper le son', '음소거'), unmute: t('Activer le son', '소리 켜기'),
@@ -202,6 +223,8 @@ async function refresh() {
   $('join-form').hidden = adminPage; $('login-form').hidden = !adminPage;
   $('library').hidden = !adminPage || !session.admin || !!player;
   $('choose-film').hidden = !session.admin;
+  $('bandwidth-row').hidden = !session.admin;
+  refreshBandwidth();
   if (!session.admin) return;
   movies = await api('/api/movies');
   selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title]));
@@ -394,11 +417,11 @@ async function enterRoom(id, name, context = {}) {
   $('room-code').textContent = context.code ?? '';
   sessionStorage.setItem('nickname', name); showSettings(false);
   await api(`/api/rooms/${id}`); session = await api('/api/session');
-  player?.dispose(); activeRoom = id; roomMessage = null;
+  disposePlayer(); activeRoom = id; roomMessage = null;
   $('entry').hidden = true; $('library').hidden = true; $('watch').hidden = false; $('choose-film').hidden = !session.admin;
   history.replaceState(null, '', `${adminPage ? '/admin' : '/'}#room=${id}`);
   player = new SyncPlayer({ video: $('video'), roomId: id, name,
-    onStatus: message => { $('playback-status').textContent = label(message); updatePlayback(player); },
+    onStatus: message => { telemetry?.event('status', { msg: message }); $('playback-status').textContent = label(message); updatePlayback(player); },
     onActivation: () => updatePlayback(player),
     onTracks: (audio, subtitles) => {
       selectOptions($('audio'), audio.length ? audio.map(track => [track.index, trackName(track)]) : [[-1, t('Sans son', '음성 없음')]]); $('audio').disabled = audio.length < 2;
@@ -407,6 +430,7 @@ async function enterRoom(id, name, context = {}) {
       updateFilmMeta();
     },
     onState: (message, controller) => {
+      if (message.probe && !telemetry) telemetry = attachTelemetry(controller, $('video'), id);
       roomMessage = message; updatePlayback(controller);
       const key = JSON.stringify([message.movie?.id, message.movie?.title, message.code, controller.memberId,
         t('fr', 'ko'), message.members.map(({ id, name, waiting, reason, blockers, failure, buffered }) => [id, name, waiting, reason, blockers, failure, Math.round(buffered ?? 0)])]);
@@ -427,6 +451,7 @@ async function enterRoom(id, name, context = {}) {
       }));
     },
   });
+  refreshBandwidth();
   if (session.admin) { movies = await api('/api/movies'); selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title])); }
 }
 $('language').addEventListener('change', handle(async () => { sessionStorage.setItem('language', $('language').value); translate(); notice(); if (!player && !uploadBusy) await refresh(); }));
@@ -436,14 +461,14 @@ $('join-form').addEventListener('submit', handle(async event => {
   const room = await api('/api/join', { method: 'POST', body: { code: data.get('code') } }); notice();
   await enterRoom(room.id, undefined, { code: String(data.get('code')).trim() });
 }));
-$('logout').addEventListener('click', handle(async () => { player?.dispose(); player = null; $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await api('/api/logout', { method: 'POST', body: {} }); await refresh(); }));
+$('logout').addEventListener('click', handle(async () => { disposePlayer(); $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await api('/api/logout', { method: 'POST', body: {} }); await refresh(); }));
 $('refresh').addEventListener('click', handle(refresh));
 $('allow-sound').addEventListener('click', handle(() => player?.activate()));
 $('upload-form').addEventListener('submit', handle(() => upload($('upload-file').files[0])));
 $('upload-file').addEventListener('change', renderDisk);
 $('audio').addEventListener('change', () => player?.changeTrack('audio', Number($('audio').value)));
 $('subtitles').addEventListener('change', () => player?.changeTrack('subtitles', Number($('subtitles').value)));
-$('leave').addEventListener('click', handle(async () => { player?.dispose(); player = null; activeRoom = null; $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await refresh(); }));
+$('leave').addEventListener('click', handle(async () => { disposePlayer(); activeRoom = null; $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await refresh(); }));
 $('choose-film').addEventListener('submit', handle(() => api(`/api/rooms/${activeRoom}/movie`, { method: 'POST', body: { movieId: $('room-movie').value } })));
 $('sync-form').addEventListener('submit', handle(async () => {
   await api('/api/settings', { method: 'PATCH', body: { minBuffer: Number($('sync-min').value), lowBuffer: Number($('sync-low').value) } });
@@ -454,6 +479,7 @@ setInterval(() => { if (!player && !uploadBusy && movies.some(movie => ['process
 translate();
 await handle(async () => {
   await refresh(); const params = new URLSearchParams(location.hash.slice(1));
+  if (['fr', 'ko'].includes(params.get('lang'))) { sessionStorage.setItem('language', params.get('lang')); translate(); }
   if (params.has('invite')) $('join-form').elements.code.value = params.get('invite');
   else if (params.has('room')) await enterRoom(params.get('room'));
 })();

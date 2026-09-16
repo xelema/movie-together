@@ -244,7 +244,7 @@ export class SyncPlayer {
       currentTime: this.video.currentTime,
       bufferedStart: this.video.buffered.length ? this.video.buffered.start(0) : 0,
       target: this.target() + this.offset, serverNow: this.serverTime(),
-      activated: this.activated, scheduled: this.scheduled,
+      activated: this.activated, scheduled: this.scheduled, rate: this.video.playbackRate,
     });
     if (action.pause) this.pauseLocal();
     if (action.seekTo !== undefined) this.seekLocal(action.seekTo);
@@ -253,7 +253,8 @@ export class SyncPlayer {
       this.startTimer = setTimeout(() => this.begin(), action.startIn);
     }
     if (action.reportUnready) this.report(false);
-    if (action.normalizeRate && this.video.playbackRate !== 1) this.video.playbackRate = 1;
+    const rate = action.rate ?? (action.normalizeRate ? 1 : undefined);
+    if (rate !== undefined && this.video.playbackRate !== rate) this.video.playbackRate = rate;
   }
   async begin() {
     this.startTimer = null;

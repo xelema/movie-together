@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="dark"><title>Movie Together</title>
+  <link rel="icon" href="/favicon.png" type="image/png">
   <link rel="preload" href="/fonts/instrument-sans-400-600-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/fonts/fonts.css">
   <link rel="stylesheet" href="/vendor/plyr.css"><link rel="stylesheet" href="/style.css">
@@ -72,11 +73,13 @@
         <div class="video-stage">
           <video id="video" playsinline preload="auto" disablepictureinpicture disableremoteplayback></video>
           <div id="buffering-overlay" hidden><div class="playback-message"><span id="playback-spinner" class="spinner" aria-hidden="true"></span><span id="buffering-label" role="status" aria-live="polite"></span><button id="allow-sound" type="button" data-fr="Activer le son" data-ko="소리 켜기" hidden></button></div></div>
+          <div id="bandwidth-badge" hidden></div>
         </div>
         <div id="player-settings" class="track-controls" role="region" hidden>
           <div class="heading"><strong data-fr="Réglages" data-ko="설정"></strong><button id="close-settings" type="button" aria-label="Fermer / 닫기">×</button></div>
           <label><span data-fr="Langue du film" data-ko="음성 언어"></span><select id="audio"></select></label>
           <label><span data-fr="Sous-titres" data-ko="자막"></span><select id="subtitles"></select></label>
+          <label id="bandwidth-row" hidden><span data-fr="Débit en direct" data-ko="실시간 속도"></span><input type="checkbox" id="bandwidth-toggle"></label>
         </div>
       </div>
       <div class="watch-info">
