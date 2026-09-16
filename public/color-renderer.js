@@ -197,7 +197,11 @@ export class ColorRenderer {
         // Une frame en pause peut être légitimement unie : le test n'a de sens qu'en lecture.
         // La vidéo native affiche alors ses propres sous-titres : l'overlay se tait aussi.
         if (!video.paused) {
-          const dead = this.deadImport();
+          // Un seul tirage uniforme peut etre une frame noire du film : on ne
+          // bascule sur la video native qu'apres deux checks morts d'affilee,
+          // sinon le canvas clignote sur les imports intermittents.
+          this.deadStreak = this.deadImport() ? (this.deadStreak || 0) + 1 : 0;
+          const dead = this.deadStreak >= 2;
           this.canvas.style.visibility = dead ? 'hidden' : '';
           this.captions.style.display = dead ? 'none' : '';
         }

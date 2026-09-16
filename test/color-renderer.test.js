@@ -62,10 +62,12 @@ test('renderer falls back to the native video while the texture import is dead',
       readPixels(x, y, w, h, f, t, pixel) { pixel.fill(51); } },
   });
   renderer.draw();
+  assert.equal(renderer.canvas.style.visibility, '');
+  now = 3000; renderer.draw();
   assert.equal(renderer.canvas.style.visibility, 'hidden');
   assert.equal(renderer.captions.style.display, 'none');
   renderer.gl.readPixels = (x, y, w, h, f, t, pixel) => { pixel[0] = x & 255; };
-  now = 3000; renderer.draw();
+  now = 6000; renderer.draw();
   assert.equal(renderer.canvas.style.visibility, '');
   assert.equal(renderer.captions.style.display, '');
 });
