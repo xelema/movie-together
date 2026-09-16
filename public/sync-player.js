@@ -1,4 +1,4 @@
-import { ColorRenderer } from './color-renderer.js';
+import { ColorRenderer, colorNeedsRenderer } from './color-renderer.js';
 import { codecPlayable, createBackend } from './backends.js';
 import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, readyBlockers, canBegin } from './sync-core.js';
 
@@ -173,7 +173,7 @@ export class SyncPlayer {
       this.failPlayback('Ce film utilise un codec vidéo que cet appareil ne peut pas lire.');
       return;
     }
-    if (this.rendition.color) {
+    if (this.rendition.color && colorNeedsRenderer(this.rendition.color)) {
       try { this.colorRenderer = new ColorRenderer(this.video, this.rendition.color, message => this.failPlayback(message)); }
       catch (error) { this.failPlayback(error.message); return; }
     }

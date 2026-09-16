@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile, readdir, stat, statfs, rm, unlink } from 'n
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import jschardet from 'jschardet';
-import { colorParameters } from '../public/color-renderer.js';
+import { colorParameters, colorNeedsRenderer } from '../public/color-renderer.js';
 import { defaultTrackNames } from '../public/track-names.js';
 import { TEXT_SUBTITLE_CODECS, SUBTITLE_DEMUXERS } from '../public/subtitle-formats.js';
 
@@ -247,7 +247,7 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   const video = movie.probe.video;
   const transport = transportMetadata(video);
   // Colour metadata the WebGL renderer cannot map would fail mid-playback: refuse earlier.
-  if (transport.color) colorParameters(transport.color);
+  if (transport.color && colorNeedsRenderer(transport.color)) colorParameters(transport.color);
   const renditions = [{ id: 'original', manifest: 'master_original.m3u8', streamIndex: 0,
     codec: video.codec, width: video.width, height: video.height,
     videoRange: transport.videoRange, color: transport.color }];
