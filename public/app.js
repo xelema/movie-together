@@ -37,6 +37,22 @@ $('close-settings').addEventListener('click', event => showSettings(false, event
 document.addEventListener('pointerdown', event => { if (!$('player-settings').contains(event.target) && !settingsButton.contains(event.target)) showSettings(false); });
 $('screen').addEventListener('keydown', event => { if (event.key === 'Escape' && !$('player-settings').hidden) { event.preventDefault(); event.stopPropagation(); showSettings(false, true); } });
 playbackUI.on('enterfullscreen exitfullscreen', () => showSettings(false));
+// Admin-only live bandwidth badge. hls.js exposes a live estimate; native HLS does not.
+const bandwidthToggle = $('bandwidth-toggle'), bandwidthBadge = $('bandwidth-badge');
+bandwidthToggle.checked = localStorage.getItem('bandwidth-badge') === 'on';
+bandwidthToggle.addEventListener('change', () => {
+  localStorage.setItem('bandwidth-badge', bandwidthToggle.checked ? 'on' : 'off');
+  refreshBandwidth();
+});
+function refreshBandwidth() {
+  const on = session.admin && player && bandwidthToggle.checked;
+  bandwidthBadge.hidden = !on;
+  if (on) {
+    const bps = player.backend?.hls?.bandwidthEstimate;
+    bandwidthBadge.textContent = bps ? `${(bps / 1e6).toFixed(1)} Mb/s` : '—';
+  }
+}
+setInterval(refreshBandwidth, 1000);
 // The page chrome follows the player controls: visible in pause and on hover, gone during playback.
 playbackUI.on('controlsshown', () => { $('watch').dataset.chrome = 'true'; });
 playbackUI.on('controlshidden', () => { $('watch').dataset.chrome = 'false'; });
@@ -204,6 +220,7 @@ async function refresh() {
   $('join-form').hidden = adminPage; $('login-form').hidden = !adminPage;
   $('library').hidden = !adminPage || !session.admin || !!player;
   $('choose-film').hidden = !session.admin;
+  $('bandwidth-row').hidden = !session.admin;
   if (!session.admin) return;
   movies = await api('/api/movies');
   selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title]));
