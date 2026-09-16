@@ -13,12 +13,10 @@
 #   SSH_KEY     cle privee            (defaut : .env PROD_SSH_KEY, sinon ~/.ssh/id_rsa)
 #   REMOTE_DIR  dossier sur la VM     (defaut : movie-together, relatif au home)
 #   PUSH_ENV    fichier local envoye comme .env distant (un seul hote a la fois)
-#   BBR=1       inclut compose.bbr.yaml
 #
 # Exemples :
 #   SSH_HOST=korea_florian@34.22.88.253 bash deploy/deploy.sh
 #   PUSH_ENV=.env.production SSH_HOST=ubuntu@192.0.2.10 bash deploy/deploy.sh
-#   BBR=1 bash deploy/deploy.sh
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
@@ -37,7 +35,6 @@ SSH_KEY=${SSH_KEY:-$HOME/.ssh/id_rsa}
 SSH_KEY=${SSH_KEY/#\~/$HOME}
 REMOTE_DIR=${REMOTE_DIR:-movie-together}
 PUSH_ENV=${PUSH_ENV:-}
-BBR=${BBR:-0}
 
 SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 
@@ -89,10 +86,9 @@ deploy_one() {
   cat "$TARBALL" | ssh "${SSH_OPTS[@]}" "$host" "mkdir -p \"$REMOTE_DIR\" 2>/dev/null || sudo mkdir -p \"$REMOTE_DIR\"; cat > /tmp/movie-night-deploy.tgz"
 
   echo ">> Extraction et reconstruction sur $host"
-  ssh "${SSH_OPTS[@]}" "$host" bash -s -- "$REMOTE_DIR" "$BBR" <<'REMOTE'
+  ssh "${SSH_OPTS[@]}" "$host" bash -s -- "$REMOTE_DIR" <<'REMOTE'
 set -euo pipefail
 case $1 in /*) APP_DIR=$1 ;; *) APP_DIR=$HOME/$1 ;; esac
-BBR=$2
 
 # Refuse de vider un dossier sensible si REMOTE_DIR est mal configure.
 case $APP_DIR in "$HOME"|"/"|"") echo "REMOTE_DIR invalide : $APP_DIR" >&2; exit 1 ;; esac
@@ -121,12 +117,20 @@ $FSUDO cp -a "$TMP_DIR"/. "$APP_DIR"/
 $FSUDO rm -rf "$TMP_DIR"
 
 cd "$APP_DIR"
+# Reglages reseau hote : BBR tient mieux les liens transcontinentaux et
+# ip_forward protege le NAT Docker d'un sysctl --system qui le remettrait a 0.
+# Best-effort, le conteneur proxy a deja BBR via compose.yaml.
+if sudo -n true 2>/dev/null; then
+  sudo install -m644 deploy/99-movie-together-network.conf /etc/sysctl.d/ &&
+    sudo sysctl -p /etc/sysctl.d/99-movie-together-network.conf ||
+    echo "Attention : sysctl hote non applique." >&2
+else
+  echo "Attention : pas de sudo, sysctl hote (BBR, ip_forward) non applique." >&2
+fi
 if docker info >/dev/null 2>&1; then DSUDO=; else DSUDO=sudo; fi
-args=(-f compose.yaml)
-[[ $BBR == 1 ]] && args+=(-f compose.bbr.yaml)
-$DSUDO docker compose "${args[@]}" config --quiet
-$DSUDO docker compose "${args[@]}" up -d --build --wait --wait-timeout 300
-$DSUDO docker compose "${args[@]}" ps
+$DSUDO docker compose config --quiet
+$DSUDO docker compose up -d --build --wait --wait-timeout 300
+$DSUDO docker compose ps
 REMOTE
 }
 
