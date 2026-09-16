@@ -92,6 +92,14 @@ export function colorParameters(color) {
   return { gamut, transfer, shoulder: [source, target, 1.5 * target - .5] };
 }
 
+// Le rendu WebGL ne sert qu'aux transferts HDR : en SDR tous les navigateurs
+// affichent la meme chose et la video native suffit, ce qui epargne
+// texImage2D 4K par frame aux GPU qui ne suivent pas.
+export function colorNeedsRenderer(color) {
+  if (color?.version !== 1) return true;
+  return ['smpte2084', 'arib-std-b67'].includes(color.transfer);
+}
+
 export class ColorRenderer {
   constructor(video, color, onFailure) {
     this.video = video; this.onFailure = onFailure; this.listeners = []; this.disposed = false;
