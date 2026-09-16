@@ -62,6 +62,18 @@ Single Node process, no build step, no framework.
 - FFmpeg and FFprobe must be installed. `npm run setup` finds them, also via
   Chocolatey on Windows.
 
+## Prod access and telemetry
+
+- Prod runs at `https://movie-together.duckdns.org` on a VPS via Docker Compose.
+  Credentials live in the local `.env` (never committed): `PROD_SSH_HOST`,
+  `PROD_SSH_PASSWORD`, `PROD_SSH_KEY` (dedicated agent key
+  `~/.ssh/movie_night_prod`, since `id_rsa` has a passphrase). Deploy with
+  `SSH_KEY="$PROD_SSH_KEY" bash deploy/deploy.sh`. Server logs:
+  `docker compose logs -f app` on the host.
+- Probe rooms (`POST /api/rooms` with `probe: true`) never expire and survive
+  restarts. Their members stream telemetry to `data/telemetry/*.ndjson`;
+  `node scripts/telemetry-report.js data/telemetry` summarizes it.
+
 ## Agent skills
 
 ### Issue tracker

@@ -3,7 +3,7 @@ import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import { createServer } from 'node:http';
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
-import { mkdir, readFile, writeFile, stat, statfs, rename, unlink, rm, readdir } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile, stat, statfs, rename, unlink, rm, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './storage.js';
@@ -102,6 +102,21 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     canAccess: (session, room) => access({ session }, room),
     movieFor: id => publicMovie(getMovie(id)),
     moviePlayable: id => jobs.playable(store.movies.get(id)) });
+  // Probe sessions are kept in rooms.json so they survive restarts; they are
+  // recreated as long as their film is still playable.
+  const persistRoom = room => {
+    store.saveRooms([...store.rooms().filter(saved => saved.code !== room.code),
+      { code: room.code, movieId: room.movieId, probe: true }]);
+  };
+  const forgetRoom = room => {
+    if (room?.probe) store.saveRooms(store.rooms().filter(saved => saved.code !== room.code));
+  };
+  for (const saved of store.rooms()) {
+    const movie = store.movies.get(saved?.movieId);
+    try {
+      if (saved?.probe && movie && jobs.playable(movie)) hub.create({ movieId: movie.id, duration: movie.duration, code: saved.code, probe: true });
+    } catch { }
+  }
   const cookie = (res, session) => {
     const token = randomBytes(32).toString('hex');
     sessions.set(token, session);
@@ -130,7 +145,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.post('/api/rooms', admin, (req, res) => {
     const movie = getMovie(req.body.movieId);
     if (!jobs.playable(movie)) throw fail(409, 'Film non préparé.');
-    const room = hub.create({ movieId: movie.id, duration: movie.duration, code: req.body.code });
+    const room = hub.create({ movieId: movie.id, duration: movie.duration, code: req.body.code, probe: req.body.probe === true });
+    if (room.probe) persistRoom(room);
     res.status(201).json({ id: room.id, code: room.code, link: `${origin}/#invite=${room.code}` });
   });
   app.get('/api/rooms', admin, (req, res) => res.json(hub.list()));
@@ -154,6 +170,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     res.json(hub.state(room, { details: !!req.session?.admin }));
   });
   app.delete('/api/rooms/:id', admin, (req, res) => {
+    forgetRoom(hub.get(req.params.id));
     hub.remove(req.params.id);
     res.json({ ok: true });
   });
@@ -162,7 +179,28 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     if (!access(req, room)) throw fail(404, 'Room introuvable.');
     const movie = getMovie(req.body.movieId);
     if (!jobs.playable(movie)) throw fail(409, 'Film non préparé.');
-    hub.setMovie(room, movie); res.json({ ok: true });
+    hub.setMovie(room, movie); if (room.probe) persistRoom(room); res.json({ ok: true });
+  });
+  // Séances instrumentées : chaque participant y envoie sa télémétrie, appendée
+  // en NDJSON sous data/telemetry/<code>-<membre>.ndjson pour analyse a posteriori.
+  const telemetryFiles = new Set();
+  app.post('/api/rooms/:id/telemetry', authenticated, async (req, res) => {
+    const room = hub.get(req.params.id);
+    if (!access(req, room) || !room.probe) throw fail(404, 'Room introuvable.');
+    const { memberId, events } = req.body;
+    if (typeof memberId !== 'string' || !/^[a-f0-9-]{1,40}$/.test(memberId) ||
+      !Array.isArray(events) || !events.length || events.length > 600 ||
+      events.some(event => !event || typeof event !== 'object' || !Number.isFinite(event.t) ||
+        typeof event.type !== 'string' || event.type.length > 40 || JSON.stringify(event).length > 4000)) {
+      throw fail(400, 'Commande invalide.');
+    }
+    const directory = path.join(store.root, 'telemetry');
+    await mkdir(directory, { recursive: true });
+    const file = path.join(directory, `${room.code}-${memberId}.ndjson`);
+    if (!telemetryFiles.has(file)) { telemetryFiles.add(file); console.log(`[room ${room.code}] télémétrie -> data/telemetry/${path.basename(file)}`); }
+    const at = Date.now();
+    await appendFile(file, events.map(event => JSON.stringify({ at, member: memberId, ...event })).join('\n') + '\n');
+    res.status(204).end();
   });
   const uploadPath = id => {
     if (!ID.test(id)) throw fail(404, 'Upload introuvable.');
