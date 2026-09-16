@@ -8,7 +8,7 @@ const $ = id => document.getElementById(id);
 const t = (fr, ko) => sessionStorage.getItem('language') === 'ko' ? ko : fr;
 const adminPage = location.pathname === '/admin';
 let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null, diskInfo = null, telemetry = null;
-function disposePlayer() { telemetry?.dispose(); telemetry = null; player?.dispose(); player = null; }
+function disposePlayer() { telemetry?.dispose(); telemetry = null; player?.dispose(); player = null; refreshBandwidth(); }
 const movieCards = new Map(), openPanels = new Set(), closedPanels = new Set();
 const playbackUI = new window.Plyr($('video'), {
   controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'fullscreen'],
@@ -39,6 +39,7 @@ $('screen').addEventListener('keydown', event => { if (event.key === 'Escape' &&
 playbackUI.on('enterfullscreen exitfullscreen', () => showSettings(false));
 // Admin-only live bandwidth badge. hls.js exposes a live estimate; native HLS does not.
 const bandwidthToggle = $('bandwidth-toggle'), bandwidthBadge = $('bandwidth-badge');
+let bandwidthTimer = null;
 bandwidthToggle.checked = localStorage.getItem('bandwidth-badge') === 'on';
 bandwidthToggle.addEventListener('change', () => {
   localStorage.setItem('bandwidth-badge', bandwidthToggle.checked ? 'on' : 'off');
@@ -46,13 +47,14 @@ bandwidthToggle.addEventListener('change', () => {
 });
 function refreshBandwidth() {
   const on = session.admin && player && bandwidthToggle.checked;
+  if (on && !bandwidthTimer) bandwidthTimer = setInterval(refreshBandwidth, 1000);
+  if (!on && bandwidthTimer) { clearInterval(bandwidthTimer); bandwidthTimer = null; }
   bandwidthBadge.hidden = !on;
   if (on) {
     const bps = player.backend?.hls?.bandwidthEstimate;
     bandwidthBadge.textContent = bps ? `${(bps / 1e6).toFixed(1)} Mb/s` : '—';
   }
 }
-setInterval(refreshBandwidth, 1000);
 // The page chrome follows the player controls: visible in pause and on hover, gone during playback.
 playbackUI.on('controlsshown', () => { $('watch').dataset.chrome = 'true'; });
 playbackUI.on('controlshidden', () => { $('watch').dataset.chrome = 'false'; });
@@ -75,6 +77,7 @@ function translate() {
   document.documentElement.lang = lang; $('language').value = lang;
   $('language-flag').src = `/flags/${lang}.svg`;
   for (const node of document.querySelectorAll('[data-fr]')) node.textContent = node.dataset[lang];
+  bandwidthBadge.title = bandwidthBadge.ariaLabel = t('Débit en direct', '실시간 속도');
   const words = { play: t('Lecture', '재생'), pause: t('Pause', '일시정지'), seek: t('Avancer ou reculer', '재생 위치'),
     currentTime: t('Position', '재생 위치'), duration: t('Durée', '길이'), volume: t('Volume', '음량'),
     mute: t('Couper le son', '음소거'), unmute: t('Activer le son', '소리 켜기'),
@@ -221,6 +224,7 @@ async function refresh() {
   $('library').hidden = !adminPage || !session.admin || !!player;
   $('choose-film').hidden = !session.admin;
   $('bandwidth-row').hidden = !session.admin;
+  refreshBandwidth();
   if (!session.admin) return;
   movies = await api('/api/movies');
   selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title]));
@@ -447,6 +451,7 @@ async function enterRoom(id, name, context = {}) {
       }));
     },
   });
+  refreshBandwidth();
   if (session.admin) { movies = await api('/api/movies'); selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title])); }
 }
 $('language').addEventListener('change', handle(async () => { sessionStorage.setItem('language', $('language').value); translate(); notice(); if (!player && !uploadBusy) await refresh(); }));

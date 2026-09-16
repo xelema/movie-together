@@ -152,7 +152,10 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(host.locator('#bandwidth-row')).toBeVisible();
     await host.locator('#bandwidth-toggle').check();
     await host.locator('#close-settings').click();
-    await expect(host.locator('#bandwidth-badge')).toContainText(/[\d.]+ Mb\/s/, { timeout: 5000 });
+    await expect(host.locator('#bandwidth-badge')).toBeVisible();
+    // hls.js exposes a live estimate; native HLS (Safari) shows the unavailable marker instead.
+    await expect(host.locator('#bandwidth-badge')).toContainText(/[\d.]+ Mb\/s|—/, { timeout: 5000 });
+    expect(await host.evaluate(() => localStorage.getItem('bandwidth-badge'))).toBe('on');
     await expect(guest.locator('#bandwidth-badge')).toBeHidden();
     await expect(host.locator('#audio')).toHaveValue('0');
     await host.locator('[data-plyr=seek]').fill('20'); await host.locator('[data-plyr=seek]').dispatchEvent('input');
