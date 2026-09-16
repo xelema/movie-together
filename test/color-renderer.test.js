@@ -69,3 +69,22 @@ test('renderer falls back to the native video while the texture import is dead',
   assert.equal(renderer.canvas.style.visibility, '');
   assert.equal(renderer.captions.style.display, '');
 });
+
+test('captions deduplicate cues shared by several showing tracks', t => {
+  const previous = { document: globalThis.document };
+  globalThis.document = { hidden: false, createElement: () => ({ append() {} }) };
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+    }
+  });
+  const cue = { startTime: 68.9, endTime: 71.1, text: 'ligne', line: 84, snapToLines: false, getCueAsHTML: () => 'ligne' };
+  const track = mode => ({ kind: 'subtitles', mode, activeCues: [cue] });
+  const renderer = Object.assign(Object.create(ColorRenderer.prototype), {
+    captions: { style: {}, nodes: null, replaceChildren(...nodes) { this.nodes = nodes; } },
+    video: { textTracks: [track('showing'), track('showing'), track('disabled'), { kind: 'metadata', mode: 'showing', activeCues: [cue] }] },
+  });
+  renderer.updateCaptions();
+  assert.equal(renderer.captions.nodes.length, 1);
+  assert.equal(renderer.captions.style.bottom, '16%');
+});
