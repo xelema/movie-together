@@ -14,8 +14,9 @@ pleine plage, le mixage des voix centrales et les silences. Les tests navigateur
 vérifient l'absence de curseurs d'image et de filtres sur la vidéo ou ses ancêtres,
 y compris lorsque le menu des pistes est ouvert.
 
-Les tests de séance utilisent une source SDR et vérifient également le canvas,
+Les tests de séance utilisent une source HDR et vérifient également le canvas,
 les sous-titres visibles au-dessus de l'image et la pause sur perte du contexte GPU.
+Une source SDR ne crée pas de canvas : elle passe par la vidéo native.
 `npm run test:colors` compare séparément les pixels HDR10, HLG, SDR BT.709 et SDR
 BT.601 dans Chrome et Firefox. Les captures et `report.json` se trouvent dans
 `test-results/colors`. Les mires doivent produire une image non noire ; l'écart

@@ -27,9 +27,11 @@ conversion supplémentaire vers l'espace de travail.
 2. `rendition.color` conserve les caractéristiques couleur originales. Le fichier
    reste lisible nativement, mais le rendu de référence reste celui du lecteur
    de l'application.
-3. L'élément vidéo décode et synchronise normalement, avec la matrice de la
-   source. WebGL importe les images avec la conversion automatique désactivée,
-   applique PQ ou HLG et transforme les primaires en Rec.709.
+3. Pour une source HDR, l'élément vidéo décode et synchronise normalement, avec
+   la matrice de la source. WebGL importe les images avec la conversion
+   automatique désactivée, applique PQ ou HLG et transforme les primaires en
+   Rec.709. Une source SDR garde la lecture native : tous les navigateurs y
+   appliquent déjà la même conversion, le shader ne ferait que coûter du GPU.
 4. Une courbe BT.2390 commune ramène le HDR à un blanc SDR de référence de 203 nits.
    HLG utilise le moniteur de référence de 1 000 nits et le gamma système 1,2. Les
    couleurs hors gamut sont rapprochées de leur luminance. Les sources SDR
