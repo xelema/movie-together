@@ -1,6 +1,10 @@
 // All timestamps use one server-side monotonic clock, in milliseconds.
 export const validThresholds = ({ minBuffer, lowBuffer }) => minBuffer > lowBuffer && lowBuffer > 0;
 
+// Control and bidi characters let a participant forge log lines. Nicknames and
+// report diagnostics share this filter.
+export const cleanText = value => String(value).replace(/[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/g, '');
+
 export class Room {
   constructor({ now = () => performance.now(), minBuffer = 8, lowBuffer = 3,
     reportTimeout = 3000, startDelay = 1000 } = {}) {
@@ -137,7 +141,8 @@ export class Room {
       throw new RangeError('Invalid playback report');
     }
     member.sequence = sequence;
-    member.report = { position, bufferedUntil, ready, ackStartsAt, receivedAt: this.now(), blockers, failure };
+    member.report = { position, bufferedUntil, ready, ackStartsAt, receivedAt: this.now(),
+      blockers: blockers?.map(cleanText) ?? null, failure: failure === null ? null : cleanText(failure) };
     return this.tick();
   }
 
