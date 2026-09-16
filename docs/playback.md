@@ -111,6 +111,51 @@ Une ancienne préparation doit être actualisée pour utiliser ce rendu.
 `HDR_PEAK_NITS` n'est plus utilisé. Les versions sans `rendition.color` conservent
 leur ancien chemin de lecture pendant la migration.
 
+## Lecture native : la courbe vidéo de Firefox sous Windows
+
+Firefox Windows applique à la vidéo une courbe de contraste fixe, absente de
+Chromium. Mesurée sur un dégradé de gris de 256 niveaux encodé en H.264 BT.709
+et lu par un élément vidéo nu, sans code de l'application :
+
+| Niveau d'entrée | 16 | 32 | 64 | 96 | 128 | 160 | 176 | 208 | 240 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Chromium | 16 | 31 | 64 | 95 | 128 | 159 | 176 | 208 | 223 |
+| Firefox | 5 | 21 | 56 | 90 | 125 | 158 | 176 | 211 | 244 |
+
+Les ombres perdent jusqu'à onze niveaux, le point de pivot se situe vers 176 et
+les hautes lumières remontent légèrement : l'image paraît plus sombre et plus
+contrastée. La courbe ressort à l'identique d'une capture de l'élément vidéo
+composé à l'écran, pas seulement d'une extraction `drawImage` vers un canvas 2D.
+C'est bien ce que voit le spectateur, pas un artefact de mesure.
+
+La courbe reste identique, au niveau près, dans toutes les variations testées :
+
+- flux tagué BT.709, VUI `unspecified` ou sans aucune indication couleur ;
+- boîte `colr` présente ou absente, VUI forcée dans l'extradata par
+  `h264_metadata`, SPS en bande retirés du flux ;
+- H.264 ou VP9, profil Baseline, Main ou High ;
+- décodage matériel désactivé ;
+- `gfx.color_management.mode` à 0 ou 1, `gfx.color_management.native_srgb`
+  vrai ou faux.
+
+Le même dégradé affiché en `<img>` sort identique dans les deux navigateurs :
+seule la présentation vidéo est concernée, pas la gestion de couleur globale de
+la page. Sur un extrait réel, Chromium colle à la référence FFmpeg à environ un
+niveau près alors que Firefox rend la même frame environ huit niveaux plus
+sombre en moyenne. C'est un comportement connu de Firefox sous Windows
+([bug Mozilla 1834680](https://bugzilla.mozilla.org/show_bug.cgi?id=1834680) et
+rapports apparentés), situé dans la conversion des images décodées vers
+l'espace d'affichage.
+
+Conséquence : la lecture native d'un film SDR ne rend pas la même image sous
+Firefox et sous Chromium, quelles que soient les métadonnées du fichier. Aucun
+contournement côté serveur n'existe sans réintroduire un traitement par image,
+écarté pour le SDR. La courbe est visible dès `drawImage`, donc elle vit dans
+la conversion image décodée vers RGBA et atteint probablement aussi un import
+de texture WebGL : remettre le shader ne la corrigerait sans doute pas. La
+courbe exacte peut dépendre de la machine, pilote GPU et profil d'écran ; elle
+reste à vérifier sur un autre poste.
+
 ## Son et préparation
 
 AAC-LC intégré mono/stéréo 44,1/48 kHz est copié. Le reste de l'audio est converti
@@ -164,7 +209,7 @@ Cette API fonctionne sur le thread principal et ne garantit pas une livraison
 | Worker Hls.js | Déjà activé, avec les permissions CSP nécessaires et la bibliothèque servie localement |
 | Adaptation automatique du débit ou de la résolution | Hls.js la propose déjà, mais il faut plusieurs versions vidéo. Le flux unique actuel ne peut pas devenir un 1080p moins lourd avec un réglage du lecteur |
 | Versions mobiles 1080p ou 720p | Réduiraient aussi le décodage, l'import GPU et le débit. Demandent une source alternative ou un réencodage, exclu par la règle actuelle de copie vidéo exacte |
-| Lecture native sans canvas | Évite l'import GPU et le shader. Le fichier porte les vraies métadonnées couleur, donc la lecture native affiche des couleurs correctes, mais sans le tone mapping de référence ni le rendu commun entre navigateurs |
+| Lecture native sans canvas | Évite l'import GPU et le shader. Le fichier porte les vraies métadonnées couleur, donc la lecture native affiche des couleurs correctes, mais sans le tone mapping de référence ni le rendu commun entre navigateurs (voir la courbe vidéo de Firefox plus haut) |
 | Shaka Player | Prend en charge HLS et DASH, mais utilise aussi le lecteur du navigateur. Son remplacement ne supprime pas notre shader ni le coût du décodage du même fichier |
 | Media Capabilities | Peut indiquer `supported`, `smooth` et `powerEfficient` pour une configuration. Utile pour choisir entre plusieurs sources, sans garantir la fluidité du canvas ajouté après décodage |
 | OffscreenCanvas, WebCodecs, WebGPU | Déplacement ou remplacement du rendu à envisager si les optimisations simples ne suffisent pas. La gestion des images, leur transfert et la disponibilité du décodeur HEVC demanderaient un autre pipeline |
