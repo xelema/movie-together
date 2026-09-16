@@ -57,7 +57,7 @@ export function attachTelemetry(player, video, roomId) {
     push('tick', {
       pos: +player.position().toFixed(2), target: +player.target().toFixed(2),
       ahead: +Math.max(0, bufferEnd(video) - player.offset - player.position()).toFixed(2), ranges,
-      rs: video.readyState, ns: video.networkState, paused: video.paused, rate: video.playbackRate,
+      rs: video.readyState, ns: video.networkState, paused: video.paused, rate: video.playbackRate, phase: player.state?.phase,
       dropped: quality?.droppedVideoFrames, frames: quality?.totalVideoFrames,
       rtt: player.clock.best ? Math.round(player.clock.best.rtt) : undefined, off: Math.round(player.clock.offset), cok: player.clock.ready,
       act: player.activated || undefined, blk: player.activationBlocked || undefined, rec: player.recovering || undefined,

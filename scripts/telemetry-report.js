@@ -11,7 +11,7 @@ const files = statSync(arg).isDirectory()
 
 const median = values => values.length ? [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] : undefined;
 const p95 = values => values.length ? [...values].sort((a, b) => a - b)[Math.floor(values.length * .95)] : undefined;
-const fmt = value => value === undefined || value === null ? 'n/a' : typeof value === 'number' ? +value.toFixed(2) : value;
+const fmt = value => Number.isFinite(value) ? +value.toFixed(2) : 'n/a';
 
 for (const file of files) {
   const events = readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
