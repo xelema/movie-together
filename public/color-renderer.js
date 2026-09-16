@@ -149,7 +149,18 @@ export class ColorRenderer {
   listen(target, event, handler) { target.addEventListener(event, handler); this.listeners.push(() => target.removeEventListener(event, handler)); }
   watchTrack(track) { this.listen(track, 'cuechange', () => this.updateCaptions()); this.updateCaptions(); }
   updateCaptions() {
-    const cues = Array.from(this.video.textTracks).filter(track => track.mode === 'showing').flatMap(track => Array.from(track.activeCues ?? []));
+    // iPadOS expose parfois une piste HLS sous plusieurs TextTrack en mode showing :
+    // sans déduplication la même cue serait dessinée une fois par doublon.
+    const seen = new Set();
+    const cues = Array.from(this.video.textTracks)
+      .filter(track => track.mode === 'showing' && ['subtitles', 'captions'].includes(track.kind))
+      .flatMap(track => Array.from(track.activeCues ?? []))
+      .filter(cue => {
+        const key = `${cue.startTime}-${cue.endTime}-${cue.text}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
     this.captions.replaceChildren(...cues.map(cue => {
       const line = document.createElement('div'); line.append(cue.getCueAsHTML()); return line;
     }));
