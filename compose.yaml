@@ -31,6 +31,10 @@ services:
   proxy:
     image: caddy:2.11-alpine
     restart: unless-stopped
+    # BBR sustains far more throughput than cubic on the high-RTT transcontinental
+    # links viewers sit behind. The container netns needs it set explicitly.
+    sysctls:
+      net.ipv4.tcp_congestion_control: bbr
     environment:
       DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
     ports:
