@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ColorRenderer } from '../public/color-renderer.js';
+import { ColorRenderer, colorNeedsRenderer } from '../public/color-renderer.js';
+
+test('only HDR transfers use the colour renderer', () => {
+  const needs = color => colorNeedsRenderer({ version: 1, matrix: 'bt709', fullRange: false, bitDepth: 8, peakNits: 1000, ...color });
+  // SDR plays through the native video element, whatever its gamut.
+  assert.equal(needs({ transfer: 'bt709', primaries: 'bt709' }), false);
+  assert.equal(needs({ transfer: 'bt709', primaries: 'bt2020', matrix: 'bt2020nc' }), false);
+  assert.equal(needs({ transfer: 'smpte170m', primaries: 'smpte170m', matrix: 'smpte170m' }), false);
+  assert.equal(needs({ transfer: 'iec61966-2-1', primaries: 'bt709' }), false);
+  assert.equal(needs({ transfer: 'smpte2084', primaries: 'bt2020', matrix: 'bt2020nc', bitDepth: 10 }), true);
+  assert.equal(needs({ transfer: 'arib-std-b67', primaries: 'bt2020', matrix: 'bt2020nc', bitDepth: 10 }), true);
+  // Unknown metadata keeps the old behaviour: try the renderer, fail loudly if unmappable.
+  assert.equal(colorNeedsRenderer({ version: 2 }), true);
+});
 
 test('renderer sizes to display pixels, limits GPU checks and skips idle frames', t => {
   t.mock.method(performance, 'now', () => now);
