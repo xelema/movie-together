@@ -1,3 +1,11 @@
+{
+    # Long-haul links do better on TCP+BBR than on quic-go's NewReno, and the
+    # kernel cannot pace QUIC: stay on h1/h2 so BBR applies to every client.
+    servers {
+        protocols h1 h2
+    }
+}
+
 {$DOMAIN} {
     reverse_proxy app:3000
 }
