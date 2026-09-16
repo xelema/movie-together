@@ -1,24 +1,38 @@
 #!/usr/bin/env bash
-# Deploie le projet sur la VM distante : archive locale, copie scp, build Docker
-# et redemarrage des services. A lancer depuis Git Bash apres une modification :
+# Deploie le projet sur les VM distantes : archive locale construite une fois,
+# copie scp, build Docker et redemarrage des services, en parallele sur chaque
+# hote. A lancer depuis Git Bash apres une modification :
 #
 #   bash deploy/deploy.sh
 #
+# Hotes : variable SSH_HOST (liste separee par des espaces), sinon lus dans
+# .env via PROD_SSH_HOST (Amsterdam) et SEOUL_SSH_HOST (Seoul).
+#
 # Options via variables d'environnement :
-#   SSH_HOST    hote distant          (obligatoire : variable, ou SSH_HOST=... dans .env.production)
-#   SSH_KEY     cle privee            (defaut : ~/.ssh/id_rsa)
+#   SSH_HOST    un ou plusieurs hotes (defaut : .env PROD_SSH_HOST + SEOUL_SSH_HOST)
+#   SSH_KEY     cle privee            (defaut : .env PROD_SSH_KEY, sinon ~/.ssh/id_rsa)
 #   REMOTE_DIR  dossier sur la VM     (defaut : movie-together, relatif au home)
-#   PUSH_ENV    fichier local envoye comme .env distant, puis conserve
+#   PUSH_ENV    fichier local envoye comme .env distant (un seul hote a la fois)
 #   BBR=1       inclut compose.bbr.yaml
 #
 # Exemples :
-#   PUSH_ENV=.env.production bash deploy/deploy.sh
+#   SSH_HOST=ubuntu@192.0.2.20 bash deploy/deploy.sh
+#   PUSH_ENV=.env.production SSH_HOST=ubuntu@192.0.2.10 bash deploy/deploy.sh
 #   BBR=1 bash deploy/deploy.sh
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
-SSH_HOST=${SSH_HOST:-$(sed -n 's/^SSH_HOST=//p' .env.production 2>/dev/null | head -1)}
-[[ -n $SSH_HOST ]] || { echo "SSH_HOST requis : SSH_HOST=ubuntu@192.0.2.10 bash deploy/deploy.sh" >&2; exit 1; }
+env_var() { sed -n "s/^$1=//p" "$2" 2>/dev/null | head -1; }
+
+# SSH_HOST explicite est pris tel quel ; sinon la liste par defaut vient de .env.
+if [[ -z ${SSH_HOST:-} ]]; then
+  SSH_HOST=$(env_var SSH_HOST .env.production)
+  SSH_HOST=${SSH_HOST:-$(env_var PROD_SSH_HOST .env)}
+  SEOUL_HOST=$(env_var SEOUL_SSH_HOST .env)
+  [[ -n $SEOUL_HOST ]] && SSH_HOST="${SSH_HOST:+$SSH_HOST }$SEOUL_HOST"
+fi
+[[ -n ${SSH_HOST// /} ]] || { echo "SSH_HOST requis : SSH_HOST=ubuntu@192.0.2.10 bash deploy/deploy.sh" >&2; exit 1; }
+SSH_KEY=${SSH_KEY:-$(env_var PROD_SSH_KEY .env)}
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/id_rsa}
 REMOTE_DIR=${REMOTE_DIR:-movie-together}
 PUSH_ENV=${PUSH_ENV:-}
@@ -32,19 +46,16 @@ if [[ -n $PUSH_ENV && ! -f $PUSH_ENV ]]; then
   exit 1
 fi
 
-echo ">> Connexion a $SSH_HOST"
-ssh "${SSH_OPTS[@]}" "$SSH_HOST" 'echo connecte'
-
-if [[ -n $PUSH_ENV ]]; then
-  echo ">> Envoi de $PUSH_ENV comme .env distant"
-  scp "${SSH_OPTS[@]}" "$PUSH_ENV" "$SSH_HOST:/tmp/movie-night.env"
-  ssh "${SSH_OPTS[@]}" "$SSH_HOST" \
-    "mkdir -p \"$REMOTE_DIR\" 2>/dev/null || sudo mkdir -p \"$REMOTE_DIR\";" \
-    "install -m 600 /tmp/movie-night.env \"$REMOTE_DIR/.env\" 2>/dev/null || sudo install -m 600 /tmp/movie-night.env \"$REMOTE_DIR/.env\""
+read -ra HOSTS <<< "$SSH_HOST"
+if [[ -n $PUSH_ENV && ${#HOSTS[@]} -gt 1 ]]; then
+  echo "PUSH_ENV ecrirait le meme .env partout (DOMAIN compris) : vise un seul hote via SSH_HOST." >&2
+  exit 1
 fi
 
-echo ">> Envoi du projet"
-tar -czf - \
+echo ">> Construction de l'archive"
+TARBALL=$(mktemp)
+trap 'rm -f "$TARBALL"' EXIT
+tar -czf "$TARBALL" \
   --exclude='./.git' \
   --exclude='./node_modules' \
   --exclude='./data' \
@@ -58,10 +69,26 @@ tar -czf - \
   --exclude='*.log' \
   --exclude='./comparaison_couleur_gauche_firefox_droite_chrome.png' \
   --exclude='./conversation-export.txt' \
-  . | ssh "${SSH_OPTS[@]}" "$SSH_HOST" "mkdir -p \"$REMOTE_DIR\" 2>/dev/null || sudo mkdir -p \"$REMOTE_DIR\"; cat > /tmp/movie-night-deploy.tgz"
+  .
 
-echo ">> Extraction et reconstruction sur la VM"
-ssh "${SSH_OPTS[@]}" "$SSH_HOST" bash -s -- "$REMOTE_DIR" "$BBR" <<'REMOTE'
+deploy_one() {
+  local host=$1
+  echo ">> Connexion a $host"
+  ssh "${SSH_OPTS[@]}" "$host" 'echo connecte'
+
+  if [[ -n $PUSH_ENV ]]; then
+    echo ">> Envoi de $PUSH_ENV comme .env distant"
+    scp "${SSH_OPTS[@]}" "$PUSH_ENV" "$host:/tmp/movie-night.env"
+    ssh "${SSH_OPTS[@]}" "$host" \
+      "mkdir -p \"$REMOTE_DIR\" 2>/dev/null || sudo mkdir -p \"$REMOTE_DIR\";" \
+      "install -m 600 /tmp/movie-night.env \"$REMOTE_DIR/.env\" 2>/dev/null || sudo install -m 600 /tmp/movie-night.env \"$REMOTE_DIR/.env\""
+  fi
+
+  echo ">> Envoi du projet vers $host"
+  cat "$TARBALL" | ssh "${SSH_OPTS[@]}" "$host" "mkdir -p \"$REMOTE_DIR\" 2>/dev/null || sudo mkdir -p \"$REMOTE_DIR\"; cat > /tmp/movie-night-deploy.tgz"
+
+  echo ">> Extraction et reconstruction sur $host"
+  ssh "${SSH_OPTS[@]}" "$host" bash -s -- "$REMOTE_DIR" "$BBR" <<'REMOTE'
 set -euo pipefail
 case $1 in /*) APP_DIR=$1 ;; *) APP_DIR=$HOME/$1 ;; esac
 BBR=$2
@@ -100,5 +127,19 @@ $DSUDO docker compose "${args[@]}" config --quiet
 $DSUDO docker compose "${args[@]}" up -d --build --wait --wait-timeout 300
 $DSUDO docker compose "${args[@]}" ps
 REMOTE
+}
+
+if ((${#HOSTS[@]} == 1)); then
+  deploy_one "${HOSTS[0]}"
+else
+  pids=()
+  for host in "${HOSTS[@]}"; do
+    (set -o pipefail; deploy_one "$host" 2>&1 | sed -u "s/^/[${host##*@}] /") &
+    pids+=($!)
+  done
+  fail=0
+  for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
+  ((fail == 0)) || { echo ">> Au moins un deploiement a echoue." >&2; exit 1; }
+fi
 
 echo ">> Deploiement termine. Les rooms en cours ont ete fermees par le redemarrage."
