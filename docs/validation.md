@@ -17,6 +17,9 @@ y compris lorsque le menu des pistes est ouvert.
 Les tests de séance utilisent une source HDR et vérifient également le canvas,
 les sous-titres visibles au-dessus de l'image et la pause sur perte du contexte GPU.
 Une source SDR ne crée pas de canvas : elle passe par la vidéo native.
+Attention, Firefox Windows applique une courbe de contraste fixe à toute vidéo
+native, absente de Chromium (voir [playback.md](playback.md)) : une comparaison
+de pixels entre navigateurs sur le chemin natif n'y a pas de sens.
 `npm run test:colors` compare séparément les pixels HDR10, HLG, SDR BT.709 et SDR
 BT.601 dans Chrome et Firefox. Les captures et `report.json` se trouvent dans
 `test-results/colors`. Les mires doivent produire une image non noire ; l'écart
