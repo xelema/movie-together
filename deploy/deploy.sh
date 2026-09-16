@@ -34,6 +34,7 @@ fi
 [[ -n ${SSH_HOST// /} ]] || { echo "SSH_HOST requis : SSH_HOST=ubuntu@192.0.2.10 bash deploy/deploy.sh" >&2; exit 1; }
 SSH_KEY=${SSH_KEY:-$(env_var PROD_SSH_KEY .env)}
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/id_rsa}
+SSH_KEY=${SSH_KEY/#\~/$HOME}
 REMOTE_DIR=${REMOTE_DIR:-movie-together}
 PUSH_ENV=${PUSH_ENV:-}
 BBR=${BBR:-0}
