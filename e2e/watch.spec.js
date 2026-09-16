@@ -144,8 +144,16 @@ test('admin manages a film and two named viewers join in their language with one
       return true;
     })).toBe(true);
     await guest.screenshot({ path: 'test-results/watch-settings.png', fullPage: true });
+    await expect(guest.locator('#bandwidth-row')).toBeHidden();
     await guest.locator('#close-settings').click();
     await expect(guest.locator('#player-settings select')).toHaveCount(2);
+    // Live bandwidth is admin-only: the host gets the toggle and the badge, the guest neither.
+    await clickControl(host, '#open-settings');
+    await expect(host.locator('#bandwidth-row')).toBeVisible();
+    await host.locator('#bandwidth-toggle').check();
+    await host.locator('#close-settings').click();
+    await expect(host.locator('#bandwidth-badge')).toContainText(/[\d.]+ Mb\/s/, { timeout: 5000 });
+    await expect(guest.locator('#bandwidth-badge')).toBeHidden();
     await expect(host.locator('#audio')).toHaveValue('0');
     await host.locator('[data-plyr=seek]').fill('20'); await host.locator('[data-plyr=seek]').dispatchEvent('input');
     await expect.poll(() => guest.locator('video').evaluate(video => video.currentTime)).toBeGreaterThan(9);

@@ -193,6 +193,8 @@ video::cue{color:#fff;background:transparent;font-family:Arial,"Segoe UI",sans-s
 #close-settings{background:transparent;color:var(--text-2);padding:0 6px;font-size:22px;min-height:28px;border:0}
 #close-settings:hover{background:transparent;color:var(--text)}
 #open-settings{font-size:19px;line-height:1}
+#bandwidth-badge{position:absolute;z-index:4;top:12px;right:12px;padding:4px 10px;border:1px solid var(--line);border-radius:8px;
+  background:rgba(15,17,21,.85);font-family:var(--mono);font-size:12px;color:var(--text);pointer-events:none}
 #screen.settings-open .plyr__controls,#screen .plyr__controls:has(:focus-visible){opacity:1;transform:none;pointer-events:auto}
 #screen.settings-open .plyr--hide-controls,#screen.settings-open .plyr--hide-controls video{cursor:auto}
 
