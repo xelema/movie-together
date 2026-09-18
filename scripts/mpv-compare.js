@@ -4,6 +4,7 @@
 // screenshot « scaled », --target-* seulement en HDR : ils reproduisent la
 // transformée d'écran mesurée, en SDR ils fausseraient le passthrough).
 // Usage : node --env-file-if-exists=.env scripts/mpv-compare.js [--times 8,20,35] [--size 1600x670] [--film hdr|sdr]
+// --perf : pas de mpv, mesure la lecture réelle (dropped frames, temps de draw CPU/GPU) à la définition source.
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { copyFile, link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -19,6 +20,7 @@ import { prepareMovie, probeFile, run } from '../src/media.js';
 const { values: args } = parseArgs({ options: {
   times: { type: 'string' }, size: { type: 'string', default: '1600x670' },
   film: { type: 'string', default: 'both' }, out: { type: 'string', default: 'test-results/mpv-compare' },
+  perf: { type: 'boolean' }, seconds: { type: 'string', default: '12' },
 }});
 const [W, H] = args.size.split('x').map(Number);
 const FILMS = {
@@ -136,6 +138,7 @@ async function browserShots(page, film, rendition, shots, w, h) {
     const { ColorRenderer, colorNeedsRenderer } = await import('/public/color-renderer.js');
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     const video = document.querySelector('video');
+    window.hls?.destroy(); window.renderer?.dispose();
     video.style.width = `${w}px`; video.style.height = `${h}px`;
     let fatal; const hls = new Hls({ enableWorker: false });
     hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) fatal = `${data.type}/${data.details}`; });
@@ -168,9 +171,79 @@ async function browserShots(page, film, rendition, shots, w, h) {
       }
       results.push({ t, currentTime: video.currentTime, pixels: b64(pixels) });
     }
-    window.hls?.destroy(); window.hls = hls; window.renderer = renderer;
+    window.hls = hls; window.renderer = renderer;
     return results;
   }, { film, rendition, shots, w, h });
+}
+
+// --perf : deux passes de lecture au timepos donné. La passe « clean » compte les
+// dropped frames sans instrumentation ; la passe « timed » ajoute gl.finish()
+// après chaque draw pour borner le temps GPU frame (le finish fausse les drops,
+// d'où deux passes). Le canvas est forcé à la définition source : texImage2D
+// envoie toujours la frame 4K entière, seule la rasterisation dépend du canvas.
+async function perfRun(page, film, rendition, seconds) {
+  return page.evaluate(async ({ film, rendition, seconds }) => {
+    const { ColorRenderer, colorNeedsRenderer } = await import('/public/color-renderer.js');
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const video = document.querySelector('video');
+    window.hls?.destroy(); window.renderer?.dispose();
+    let fatal; const hls = new Hls({ enableWorker: false });
+    hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) fatal = `${data.type}/${data.details}`; });
+    hls.loadSource(`/${film}/${rendition.manifest}`); hls.attachMedia(video);
+    await video.play().catch(error => { throw new Error(fatal || error.message); });
+    video.pause();
+    if (!video.videoWidth) await new Promise(resolve => video.addEventListener('loadedmetadata', resolve, { once: true }));
+    video.style.width = `${video.videoWidth}px`; video.style.height = `${video.videoHeight}px`;
+    let renderer;
+    if (colorNeedsRenderer(rendition.color)) {
+      renderer = new ColorRenderer(video, rendition.color, message => { throw new Error(message); });
+      renderer.displayWidth = video.videoWidth; renderer.displayHeight = video.videoHeight;
+    }
+    let presented = 0;
+    if (video.requestVideoFrameCallback) {
+      const loop = (_, meta) => { presented = meta.presentedFrames; video.requestVideoFrameCallback(loop); };
+      video.requestVideoFrameCallback(loop);
+    }
+    let active = null, timed = false;
+    if (renderer) {
+      const original = renderer.draw.bind(renderer);
+      renderer.draw = (...drawArgs) => {
+        const t0 = performance.now(); original(...drawArgs);
+        const submit = performance.now() - t0;
+        if (!active || video.seeking || video.paused || video.readyState < 2) return;
+        active.draws++; active.submit.push(submit);
+        if (timed) { const t1 = performance.now(); renderer.gl.finish(); active.finish.push(performance.now() - t1); }
+      };
+    }
+    const stats = values => values.length ? {
+      mean: values.reduce((sum, v) => sum + v, 0) / values.length,
+      p95: [...values].sort((a, b) => a - b)[Math.floor(values.length * .95)],
+      max: Math.max(...values) } : null;
+    const pass = async (withFinish) => {
+      const quality = video.getVideoPlaybackQuality?.() ?? {};
+      const presented0 = presented, t0 = performance.now();
+      const samples = { draws: 0, submit: [], finish: [] };
+      video.currentTime = 20;
+      await new Promise(resolve => video.addEventListener('seeked', resolve, { once: true }));
+      active = samples; timed = withFinish;
+      await video.play(); await sleep(seconds * 1000); video.pause();
+      active = null;
+      const after = video.getVideoPlaybackQuality?.() ?? {};
+      return { seconds: (performance.now() - t0) / 1000,
+        frames: (after.totalVideoFrames ?? 0) - (quality.totalVideoFrames ?? 0),
+        dropped: (after.droppedVideoFrames ?? 0) - (quality.droppedVideoFrames ?? 0),
+        presented: presented - presented0, draws: samples.draws,
+        submit: stats(samples.submit), finish: stats(samples.finish) };
+    };
+    const clean = await pass(false);
+    const timedPass = renderer ? await pass(true) : null;
+    window.hls = hls; window.renderer = renderer;
+    const debug = renderer?.gl.getExtension('WEBGL_debug_renderer_info');
+    return { video: [video.videoWidth, video.videoHeight],
+      canvas: renderer ? [renderer.canvas.width, renderer.canvas.height] : null,
+      gpu: debug ? renderer.gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : null,
+      clean, timed: timedPass };
+  }, { film, rendition, seconds });
 }
 
 async function pngToRaw(png) {
@@ -220,7 +293,10 @@ async function diffShot(mpv, browser, w, h, base, outDir) {
 
 const films = (args.film === 'both' ? Object.keys(FILMS) : [args.film]).filter(name => FILMS[name]);
 await mkdir(out, { recursive: true });
+// Un run --perf et un run de diff accumulent dans le meme rapport.
+const reportPath = path.join(out, 'report.json');
 const prepared = {}, report = { size: [W, H], date: new Date().toISOString(), films: {} };
+if (existsSync(reportPath)) Object.assign(report.films, JSON.parse(await readFile(reportPath, 'utf8')).films);
 for (const film of films) prepared[film] = await prepare(film, FILMS[film]);
 const requested = args.times?.split(',').map(Number);
 const app = express();
@@ -235,13 +311,23 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   for (const film of films) {
     const outDir = path.join(out, film); await mkdir(outDir, { recursive: true });
+    if (args.perf) {
+      const perf = await perfRun(page, film, prepared[film].rendition, Number(args.seconds));
+      report.films[film] = { ...report.films[film], perf };
+      const { clean, timed } = perf;
+      console.log(`${film} perf ${perf.video.join('x')} -> canvas ${perf.canvas?.join('x') ?? 'natif'} : ` +
+        `${clean.frames} frames, ${clean.dropped} dropped, ${clean.draws} draws en ${clean.seconds.toFixed(1)}s` +
+        (timed ? ` ; submit moy ${timed.submit?.mean.toFixed(2)}ms p95 ${timed.submit?.p95.toFixed(2)}ms, ` +
+        `gpu moy ${timed.finish?.mean.toFixed(2)}ms p95 ${timed.finish?.p95.toFixed(2)}ms max ${timed.finish?.max.toFixed(1)}ms` : ''));
+      continue;
+    }
     const times = requested ?? [0.15, 0.45, 0.75].map(f => Math.round(prepared[film].duration * f * 10) / 10);
     const shots = await mpvCapture(film, FILMS[film], times, outDir);
     const first = await pngToRaw(shots[0].png);
     const [w, h] = [first.width, first.height];
     console.log(`${film} : captures mpv ${w}x${h}`);
     const browsers = await browserShots(page, film, prepared[film].rendition, shots, w, h);
-    report.films[film] = { shots: [] };
+    report.films[film] = { ...report.films[film], shots: [] };
     for (const [index, shot] of shots.entries()) {
       const raw = index === 0 ? first : await pngToRaw(shot.png);
       if (raw.width !== w || raw.height !== h) throw new Error(`${film} t=${shot.t} : taille mpv ${raw.width}x${raw.height} != ${w}x${h}`);
@@ -256,6 +342,6 @@ try {
     }
   }
 } finally {
-  await writeFile(path.join(out, 'report.json'), JSON.stringify(report, null, 2));
+  await writeFile(reportPath, JSON.stringify(report, null, 2));
   await browser.close(); await new Promise(resolve => server.close(resolve));
 }
