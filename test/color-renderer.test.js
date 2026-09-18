@@ -25,13 +25,16 @@ test('renderer sizes to display pixels, limits GPU checks and skips idle frames'
     }
   });
   let now = 0, draws = 0, checks = 0;
+  // Stub GL permissif : toute methode est absorbee, les constantes valent 0.
+  const gl = new Proxy({ NO_ERROR: 0, getParameter: () => 8192,
+    drawArrays() { draws++; }, getError() { checks++; return 0; },
+    readPixels(x, y, w, h, f, t, pixel) { pixel[0] = x & 255; } },
+    { get: (target, prop) => (prop in target ? target[prop] : /^[A-Z_0-9]+$/.test(String(prop)) ? 0 : () => {}) });
   const renderer = Object.assign(Object.create(ColorRenderer.prototype), {
     canvas: { width: 300, height: 150, dataset: {}, style: {} }, captions: { style: {} },
     displayWidth: 400, displayHeight: 300,
     video: { readyState: 4, videoWidth: 3840, videoHeight: 2160, currentTime: 1, paused: false },
-    gl: { NO_ERROR: 0, getParameter: () => 8192, viewport() {}, texImage2D() {}, flush() {},
-      drawArrays() { draws++; }, getError() { checks++; return 0; },
-      readPixels(x, y, w, h, f, t, pixel) { pixel[0] = x & 255; } },
+    gl,
   });
   renderer.draw();
   assert.deepEqual([renderer.canvas.width, renderer.canvas.height], [800, 450]);
@@ -67,12 +70,13 @@ test('renderer falls back to the native video while the texture import is dead',
       if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
     }
   });
+  const gl = new Proxy({ NO_ERROR: 0, getParameter: () => 8192, getError: () => 0,
+    readPixels(x, y, w, h, f, t, pixel) { pixel.fill(51); } },
+    { get: (target, prop) => (prop in target ? target[prop] : /^[A-Z_0-9]+$/.test(String(prop)) ? 0 : () => {}) });
   const renderer = Object.assign(Object.create(ColorRenderer.prototype), {
     canvas: { width: 800, height: 400, dataset: {}, style: {} }, captions: { style: {} },
     video: { readyState: 4, videoWidth: 800, videoHeight: 400, currentTime: 1, paused: false },
-    gl: { NO_ERROR: 0, getParameter: () => 8192, viewport() {}, texImage2D() {}, flush() {},
-      drawArrays() {}, getError() { return 0; },
-      readPixels(x, y, w, h, f, t, pixel) { pixel.fill(51); } },
+    gl,
   });
   renderer.draw();
   assert.equal(renderer.canvas.style.visibility, '');

@@ -156,10 +156,10 @@ async function browserShots(page, film, rendition, shots, w, h) {
       let pixels;
       if (renderer) {
         const { gl, canvas } = renderer;
-        canvas.width = w; canvas.height = h; gl.viewport(0, 0, w, h);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); gl.flush();
+        renderer.displayWidth = w; renderer.displayHeight = h;
+        renderer.draw();
         if (failure) throw new Error(failure);
+        if (canvas.width !== w || canvas.height !== h) throw new Error(`canvas ${canvas.width}x${canvas.height} != ${w}x${h}`);
         const raw = new Uint8Array(w * h * 4);
         gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, raw);
         pixels = new Uint8Array(w * h * 4);
