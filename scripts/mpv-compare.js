@@ -21,7 +21,11 @@ const { values: args } = parseArgs({ options: {
   times: { type: 'string' }, size: { type: 'string', default: '1600x670' },
   film: { type: 'string', default: 'both' }, out: { type: 'string', default: 'test-results/mpv-compare' },
   perf: { type: 'boolean' }, seconds: { type: 'string', default: '12' },
+  gate: { type: 'boolean' },
 }});
+// Gate « pareil que mpv » (#13) : barre uniforme par plan, diff max-3-canaux
+// en LSB 8 bits. `max` reste informatif (bruit de décodage, hors gate).
+const GATE_MEAN = 3, GATE_P99 = 10, GATE_REGION_MEAN = 6;
 const [W, H] = args.size.split('x').map(Number);
 const FILMS = {
   hdr: process.env.MPV_HDR || 'C:/Users/xelem/Videos/ia-spiderman/trailer_demo_HDR.mkv',
@@ -76,11 +80,12 @@ async function mpvShot(ipc, t, png) {
   await ipc.until('seeking', false);
   await sleep(1000);
   const timePos = await ipc.get('time-pos'), frame = await ipc.get('estimated-frame-number');
+  const mpq = await ipc.get('video-out-params/max-pq-y'), apq = await ipc.get('video-out-params/avg-pq-y');
   await ipc.send('screenshot-to-file', png, 'scaled');
   const deadline = Date.now() + 10_000;
   while (!existsSync(png) && Date.now() < deadline) await sleep(100);
   if (!existsSync(png)) throw new Error(`mpv: capture absente ${png}`);
-  return { timePos, frame };
+  return { timePos, frame, mpq, apq };
 }
 async function mpvCapture(film, file, times, outDir) {
   const pipe = `mpvcap-${process.pid}`;
@@ -100,7 +105,8 @@ async function mpvCapture(film, file, times, outDir) {
   for (const t of times) {
     const png = path.join(outDir, `t${t}-mpv.png`);
     shots.push({ t, png, ...await mpvShot(ipc, t, png) });
-    console.log(`mpv ${film} t=${t}s : frame ${shots.at(-1).frame} @ ${shots.at(-1).timePos}s`);
+    console.log(`mpv ${film} t=${t}s : frame ${shots.at(-1).frame} @ ${shots.at(-1).timePos}s` +
+      `, max-pq-y ${shots.at(-1).mpq} avg-pq-y ${shots.at(-1).apq}`);
   }
   await ipc.send('quit'); socket.end();
   await Promise.race([new Promise(resolve => proc.once('exit', resolve)), sleep(10_000).then(() => proc.kill())]);
@@ -315,7 +321,7 @@ const films = (args.film === 'both' ? Object.keys(FILMS) : [args.film]).filter(n
 await mkdir(out, { recursive: true });
 // Un run --perf et un run de diff accumulent dans le meme rapport.
 const reportPath = path.join(out, 'report.json');
-const prepared = {}, report = { size: [W, H], date: new Date().toISOString(), films: {} };
+const prepared = {}, report = { size: [W, H], date: new Date().toISOString(), films: {} }, failures = [];
 if (existsSync(reportPath)) Object.assign(report.films, JSON.parse(await readFile(reportPath, 'utf8')).films);
 for (const film of films) prepared[film] = await prepare(film, FILMS[film]);
 const requested = args.times?.split(',').map(Number);
@@ -355,15 +361,26 @@ try {
       if (browserPixels.length !== w * h * 4) throw new Error(`${film} t=${shot.t} : buffer navigateur inattendu`);
       await rawToPng(browserPixels, w, h, path.join(outDir, `t${shot.t}-browser.png`));
       const diff = await diffShot(raw.buffer, browserPixels, w, h, `t${shot.t}`, outDir);
-      const entry = { t: shot.t, mpvTime: shot.timePos, mpvFrame: shot.frame, videoTime: browsers[index].currentTime,
+      const entry = { t: shot.t, mpvTime: shot.timePos, mpvFrame: shot.frame, mpvPeak: { max: shot.mpq, avg: shot.apq }, videoTime: browsers[index].currentTime,
         mean: diff.mean, p99: diff.p99, max: diff.max, regions: diff.regions, peak: browsers[index].peak };
       if (browsers[index].probe) await writeFile(path.join(outDir, `t${shot.t}-probe.b64`), JSON.stringify(browsers[index].probe));
       report.films[film].shots.push(entry);
       if (browsers[index].peak) console.log(`   peak: max ${browsers[index].peak.max.toFixed(4)} avg ${browsers[index].peak.avg.toFixed(4)} frames ${browsers[index].peak.frames}`);
       console.log(`${film} t=${shot.t}s (mpv ${shot.timePos}s f${shot.frame} / video ${browsers[index].currentTime}s) : mean ${diff.mean.toFixed(2)} p99 ${diff.p99} max ${diff.max}`);
+      if (args.gate) {
+        const badRegion = diff.regions.filter(r => r.mean > GATE_REGION_MEAN).map(r => `${r.region}=${r.mean.toFixed(1)}`);
+        const ok = diff.mean <= GATE_MEAN && diff.p99 <= GATE_P99 && !badRegion.length;
+        console.log(`   gate: ${ok ? 'PASS' : 'FAIL'} (mean ${diff.mean.toFixed(2)}/${GATE_MEAN}, p99 ${diff.p99}/${GATE_P99}` +
+          (badRegion.length ? `, régions ${badRegion.join(' ')}/${GATE_REGION_MEAN}` : '') + ')');
+        if (!ok) failures.push(`${film} t=${shot.t}`);
+      }
     }
   }
 } finally {
   await writeFile(reportPath, JSON.stringify(report, null, 2));
   await browser.close(); await new Promise(resolve => server.close(resolve));
+}
+if (args.gate && failures.length) {
+  console.log(`gate: ${failures.length} plan(s) au-dessus du seuil : ${failures.join(', ')}`);
+  process.exit(1);
 }
