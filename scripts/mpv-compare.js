@@ -169,7 +169,27 @@ async function browserShots(page, film, rendition, shots, w, h) {
         const context = canvas.getContext('2d'); context.drawImage(video, 0, 0, w, h);
         pixels = context.getImageData(0, 0, w, h).data;
       }
-      results.push({ t, currentTime: video.currentTime, pixels: b64(pixels) });
+      let probe = null;
+      if (renderer) {
+        // Diagnostic : decode texture values via the copy pass into a small FBO.
+        const { gl } = renderer, pw = 160, ph = Math.round(160 * video.videoHeight / video.videoWidth);
+        const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, pw, ph, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        const fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+        gl.useProgram(renderer.programs.copy); gl.viewport(0, 0, pw, ph);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, renderer.texture);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        const buf = new Uint8Array(pw * ph * 4);
+        gl.readPixels(0, 0, pw, ph, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(fbo); gl.deleteTexture(tex);
+        probe = { w: pw, h: ph, pixels: b64(buf), stats: b64(renderer.statsPixels), statsW: renderer.statsW, statsH: renderer.statsH };
+      }
+      results.push({ t, currentTime: video.currentTime, pixels: b64(pixels),
+        peak: renderer ? { max: renderer.peak.max, avg: renderer.peak.avg, frames: renderer.peak.frames, tone: renderer.tone } : null,
+        probe });
     }
     window.hls = hls; window.renderer = renderer;
     return results;
@@ -336,8 +356,10 @@ try {
       await rawToPng(browserPixels, w, h, path.join(outDir, `t${shot.t}-browser.png`));
       const diff = await diffShot(raw.buffer, browserPixels, w, h, `t${shot.t}`, outDir);
       const entry = { t: shot.t, mpvTime: shot.timePos, mpvFrame: shot.frame, videoTime: browsers[index].currentTime,
-        mean: diff.mean, p99: diff.p99, max: diff.max, regions: diff.regions };
+        mean: diff.mean, p99: diff.p99, max: diff.max, regions: diff.regions, peak: browsers[index].peak };
+      if (browsers[index].probe) await writeFile(path.join(outDir, `t${shot.t}-probe.b64`), JSON.stringify(browsers[index].probe));
       report.films[film].shots.push(entry);
+      if (browsers[index].peak) console.log(`   peak: max ${browsers[index].peak.max.toFixed(4)} avg ${browsers[index].peak.avg.toFixed(4)} frames ${browsers[index].peak.frames}`);
       console.log(`${film} t=${shot.t}s (mpv ${shot.timePos}s f${shot.frame} / video ${browsers[index].currentTime}s) : mean ${diff.mean.toFixed(2)} p99 ${diff.p99} max ${diff.max}`);
     }
   }
