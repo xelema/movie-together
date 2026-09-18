@@ -240,6 +240,16 @@ async function perfRun(page, film, rendition, seconds) {
         active.draws++; active.submit.push(submit);
         if (timed) { const t1 = performance.now(); renderer.gl.finish(); active.finish.push(performance.now() - t1); }
       };
+      const update = renderer.peak.update.bind(renderer.peak);
+      renderer.peak.update = (...updateArgs) => {
+        const t0 = performance.now(); const out = update(...updateArgs);
+        active?.updates.push(performance.now() - t0);
+        return out;
+      };
+      for (const fn of ['getBufferSubData', 'readPixels']) {
+        const orig = renderer.gl[fn].bind(renderer.gl);
+        renderer.gl[fn] = (...a) => { const t0 = performance.now(); const r = orig(...a); active?.[fn]?.push(performance.now() - t0); return r; };
+      }
     }
     const stats = values => values.length ? {
       mean: values.reduce((sum, v) => sum + v, 0) / values.length,
@@ -248,7 +258,7 @@ async function perfRun(page, film, rendition, seconds) {
     const pass = async (withFinish) => {
       const quality = video.getVideoPlaybackQuality?.() ?? {};
       const presented0 = presented, t0 = performance.now();
-      const samples = { draws: 0, submit: [], finish: [] };
+      const samples = { draws: 0, submit: [], finish: [], updates: [], getBufferSubData: [], readPixels: [] };
       video.currentTime = 20;
       await new Promise(resolve => video.addEventListener('seeked', resolve, { once: true }));
       active = samples; timed = withFinish;
@@ -259,16 +269,35 @@ async function perfRun(page, film, rendition, seconds) {
         frames: (after.totalVideoFrames ?? 0) - (quality.totalVideoFrames ?? 0),
         dropped: (after.droppedVideoFrames ?? 0) - (quality.droppedVideoFrames ?? 0),
         presented: presented - presented0, draws: samples.draws,
-        submit: stats(samples.submit), finish: stats(samples.finish) };
+        submit: stats(samples.submit), finish: stats(samples.finish), updates: stats(samples.updates),
+        getBufferSubData: stats(samples.getBufferSubData), readPixels: stats(samples.readPixels) };
     };
     const clean = await pass(false);
     const timedPass = renderer ? await pass(true) : null;
+    let fenceProbe = null;
+    if (renderer) {
+      const gl = renderer.gl, wrapped = renderer.draw;
+      video.currentTime = 40;
+      await new Promise(resolve => video.addEventListener('seeked', resolve, { once: true }));
+      await video.play(); await sleep(500);
+      let issued = -1, signaled = -1, draws0 = 0;
+      renderer.draw = (...a) => { wrapped(...a); draws0++;
+        if (issued < 0) issued = draws0;
+        else if (signaled < 0 && gl.clientWaitSync(fenceProbe.sync, 0, 0) === gl.ALREADY_SIGNALED) signaled = draws0; };
+      fenceProbe = { sync: gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) };
+      await sleep(4000); video.pause();
+      const stillPending = gl.clientWaitSync(fenceProbe.sync, 0, 0) !== gl.ALREADY_SIGNALED;
+      gl.deleteSync(fenceProbe.sync); renderer.draw = wrapped;
+      fenceProbe = { signaledAfterDraws: signaled < 0 ? null : signaled - issued, draws: draws0, stillPending };
+    }
     window.hls = hls; window.renderer = renderer;
     const debug = renderer?.gl.getExtension('WEBGL_debug_renderer_info');
     return { video: [video.videoWidth, video.videoHeight],
       canvas: renderer ? [renderer.canvas.width, renderer.canvas.height] : null,
       gpu: debug ? renderer.gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : null,
-      clean, timed: timedPass };
+      floatExt: renderer ? !!renderer.floatExt : null,
+      peak: renderer ? { frames: renderer.peak.frames, max: renderer.peak.max, avg: renderer.peak.avg } : null,
+      fenceProbe, clean, timed: timedPass };
   }, { film, rendition, seconds });
 }
 
@@ -344,7 +373,11 @@ try {
       console.log(`${film} perf ${perf.video.join('x')} -> canvas ${perf.canvas?.join('x') ?? 'natif'} : ` +
         `${clean.frames} frames, ${clean.dropped} dropped, ${clean.draws} draws en ${clean.seconds.toFixed(1)}s` +
         (timed ? ` ; submit moy ${timed.submit?.mean.toFixed(2)}ms p95 ${timed.submit?.p95.toFixed(2)}ms, ` +
-        `gpu moy ${timed.finish?.mean.toFixed(2)}ms p95 ${timed.finish?.p95.toFixed(2)}ms max ${timed.finish?.max.toFixed(1)}ms` : ''));
+        `gpu moy ${timed.finish?.mean.toFixed(2)}ms p95 ${timed.finish?.p95.toFixed(2)}ms max ${timed.finish?.max.toFixed(1)}ms` : '') +
+        (perf.peak ? ` ; peak updates ${perf.peak.frames} (moy ${clean.updates?.mean.toFixed(1) ?? '?'}ms), ` +
+          `gbsd moy ${timed?.getBufferSubData?.mean.toFixed(1) ?? clean.getBufferSubData?.mean.toFixed(1) ?? '?'}ms p95 ${timed?.getBufferSubData?.p95.toFixed(1) ?? clean.getBufferSubData?.p95.toFixed(1) ?? '?'}ms, ` +
+          `readPixels p95 ${timed?.readPixels?.p95.toFixed(1) ?? clean.readPixels?.p95.toFixed(1) ?? '?'}ms` : '') +
+        (perf.fenceProbe ? ` ; fence signal après ${perf.fenceProbe.signaledAfterDraws ?? '>' + String(perf.fenceProbe.draws)} draws` : ''));
       continue;
     }
     const times = requested ?? [0.15, 0.45, 0.75].map(f => Math.round(prepared[film].duration * f * 10) / 10);
