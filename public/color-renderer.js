@@ -403,57 +403,67 @@ function blueNoise(size) {
   return lut;
 }
 
-// Histogramme PQ 14 bits biaise (64 bins au dessus du milieu de gamme),
-// percentile 99.995 + moyenne hors noirs, puis IIR 20 frames et hysteresis
-// de changement de scene (update_peak_buf cote CPU).
+// Agregation brute d'une frame de stats : histogramme PQ 14 bits biaise
+// (64 bins au dessus du milieu de gamme), percentile 99.995 + moyenne hors
+// noirs des moyennes de workgroups 16x16 (hors image = bord repete). Calque
+// update_peak_buf. Fonction pure pour tourner dans un worker.
 const PQ_MAX = 16383;
+function peakMeasure(data, w, h) {
+  const hist = new Uint32Array(64);
+  let maxY = 0, wgSum = 0, wgActive = 0, wgCount = 0, blacks = 0;
+  for (let gy = 0; gy * 16 < h; gy++) for (let gx = 0; gx * 16 < w; gx++) {
+    let s = 0, black = 0;
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+      const i = (Math.min(gy * 16 + y, h - 1) * w + Math.min(gx * 16 + x, w - 1)) * 2;
+      const v = data[i] * 256 + data[i + 1];
+      hist[clamp((v >> 7) - 64, 0, 63)]++;
+      s += v; if (v > maxY) maxY = v; if (!v) black++;
+    }
+    blacks += black; wgCount++;
+    const num = 256 - black;
+    if (num) { wgSum += Math.floor(s / num); wgActive++; }
+  }
+  hist[0] -= blacks;
+  let avg = 1e-6, max = 1e-6;
+  if (wgActive) {
+    avg = wgSum / wgActive / PQ_MAX;
+    const total = hist.reduce((a, b) => a + b, 0), target = Math.ceil(.99995 * total);
+    max = maxY / PQ_MAX;
+    if (target < total) {
+      let low = 0;
+      for (let i = 0; i < 64; i++) {
+        const next = low + hist[i];
+        if (next < target) { low = next; continue; }
+        const lo = ((i + 64) << 7) / PQ_MAX;
+        const hi = next + 1 > total ? maxY / PQ_MAX : ((i + 65) << 7) / PQ_MAX;
+        max = lo + (hi - lo) * (target - low) / (next + 1 - low);
+        break;
+      }
+    }
+  }
+  return { max, avg, bias: wgActive / wgCount };
+}
+
+// L'agregation coute ~75 ms de CPU par frame 4K : elle tourne dans un worker
+// blob (CSP worker-src blob:) qui rend le buffer pour reutilisation.
+const peakWorkerSource = `const PQ_MAX=${PQ_MAX},clamp=${clamp},peakMeasure=${peakMeasure};
+onmessage=({data})=>{postMessage({...peakMeasure(data.pixels,data.w,data.h),pixels:data.pixels},[data.pixels.buffer])}`;
 
 // Cible SDR calibree sur le poste de reference : le gate mpv tourne avec
 // --target-peak=75 (blanc SDR Windows mesure, cf. docs de capture #9) et le
 // contraste infere 1000:1 donne un noir a 0.075 nit.
 const TARGET_NITS = 75, TARGET_CONTRAST = 1000;
 const TARGET_BLACK = TARGET_NITS / TARGET_CONTRAST;
-// Agregation cote CPU calquee sur update_peak_buf : workgroups 16x16, les
-// threads hors image repetent le bord, chaque WG contribue sa moyenne entiere
-// (wg_sum/num) a part egale et retire ses pixels noirs de l'histogramme.
+// IIR 20 frames + hysteresis de changement de scene sur les pics mesures
+// (update_peak_buf cote CPU). L'agregation est dans peakMeasure, ici l'etat.
 class PeakTracker {
   frames = 0; max = 0; avg = 0;
-  update(data, w, h, paused = false) {
-    const hist = new Uint32Array(64);
-    let maxY = 0, wgSum = 0, wgActive = 0, wgCount = 0, blacks = 0;
-    for (let gy = 0; gy * 16 < h; gy++) for (let gx = 0; gx * 16 < w; gx++) {
-      let s = 0, black = 0;
-      for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
-        const i = (Math.min(gy * 16 + y, h - 1) * w + Math.min(gx * 16 + x, w - 1)) * 4;
-        const v = data[i] * 256 + data[i + 1];
-        hist[clamp((v >> 7) - 64, 0, 63)]++;
-        s += v; if (v > maxY) maxY = v; if (!v) black++;
-      }
-      blacks += black; wgCount++;
-      const num = 256 - black;
-      if (num) { wgSum += Math.floor(s / num); wgActive++; }
-    }
-    hist[0] -= blacks;
-    let avg = 1e-6, max = 1e-6;
-    if (wgActive) {
-      avg = wgSum / wgActive / PQ_MAX;
-      const total = hist.reduce((a, b) => a + b, 0), target = Math.ceil(.99995 * total);
-      max = maxY / PQ_MAX;
-      if (target < total) {
-        let low = 0;
-        for (let i = 0; i < 64; i++) {
-          const next = low + hist[i];
-          if (next < target) { low = next; continue; }
-          const lo = ((i + 64) << 7) / PQ_MAX;
-          const hi = next + 1 > total ? maxY / PQ_MAX : ((i + 65) << 7) / PQ_MAX;
-          max = lo + (hi - lo) * (target - low) / (next + 1 - low);
-          break;
-        }
-      }
-    }
+  update({ max, avg, bias }, paused = false, gap = 1) {
     if (!this.frames++) { this.max = max; this.avg = avg; return; }
-    const bias = wgActive / wgCount;
-    const steps = paused ? 250 : 1;
+    // gap = frames de rendu ecoulees depuis la mesure appliquee : l'IIR
+    // avance du nombre de frames couvertes, cadence mpv quelle que soit
+    // la frequence des recoltes.
+    const steps = paused ? 250 : gap;
     for (let i = 0; i < steps; i++) {
       const eps = 1 / PQ_MAX;
       if (Math.abs(avg - this.avg) < eps) avg = this.avg;
@@ -594,6 +604,16 @@ export class ColorRenderer {
         // delinearize の黒点スケール: csp_min/csp_max は黒と白を 1/203 nit で表した値
         gl.uniform1f(u.main.dstScale, 203 / (TARGET_NITS - TARGET_BLACK));
         gl.uniform1f(u.main.dstOffset, -TARGET_BLACK / (TARGET_NITS - TARGET_BLACK));
+        this.measureBusy = false;
+        try {
+          this.peakWorker = new Worker(URL.createObjectURL(new Blob([peakWorkerSource], { type: 'text/javascript' })));
+          this.peakWorker.onmessage = ({ data }) => {
+            this.measureBusy = false;
+            this.statsPixels ??= data.pixels;
+            if (!this.disposed) { this.peak.update(data, false, this.peakGap ?? 1); this.peakGap = 0; }
+          };
+          this.peakWorker.onerror = () => { this.peakWorker = null; this.measureBusy = false; };
+        } catch { this.peakWorker = null; }
       }
       gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
       gl.disable(gl.DITHER);
@@ -648,26 +668,38 @@ export class ColorRenderer {
     const sw = video.videoWidth, sh = video.videoHeight;
     if (this.floatExt && (this.statsW !== width || this.statsH !== height || this.statsSW !== sw)) {
       this.statsW = width; this.statsH = height; this.statsSW = sw;
-      this.statsPixels = new Uint8Array(width * height * 4);
+      this.statsPixels = new Uint8Array(width * height * 2);
       this.statsPbo ??= gl.createBuffer();
       gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.statsPbo);
       gl.bufferData(gl.PIXEL_PACK_BUFFER, this.statsPixels.byteLength, gl.STREAM_READ);
       gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
       if (this.statsSync) { gl.deleteSync(this.statsSync); this.statsSync = null; }
       gl.activeTexture(gl.TEXTURE15); gl.bindTexture(gl.TEXTURE_2D, this.statsTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, width, height, 0, gl.RG, gl.UNSIGNED_BYTE, null);
       gl.activeTexture(gl.TEXTURE14); gl.bindTexture(gl.TEXTURE_2D, this.lumaTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, sw, height, 0, gl.RED, gl.HALF_FLOAT, null);
     }
     if (this.floatExt) {
-      // Le readPixels synchrone fige le CPU ~40 ms en 4K : en lecture on passe
-      // par un PBO + fence et on recolte la frame precedente une fois signalée.
+      // Le fence met ~2 frames a remonter signale : un seul readback en vol,
+      // relance apres recolte (un readPixels + fence frais par frame ne
+      // laissait jamais le precedent se signaler : pic fige, 25 Mo perdus).
+      this.peakGap = (this.peakGap ?? 0) + 1;
       if (this.statsSync && gl.clientWaitSync(this.statsSync, 0, 0) === gl.ALREADY_SIGNALED) {
         gl.deleteSync(this.statsSync); this.statsSync = null;
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.statsPbo);
-        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.statsPixels);
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-        this.peak.update(this.statsPixels, width, height, false);
+        if (this.statsPixels && !this.measureBusy) {
+          gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.statsPbo);
+          gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.statsPixels);
+          gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+          if (this.peakWorker) {
+            this.measureBusy = true;
+            this.peakWorker.postMessage({ pixels: this.statsPixels, w: width, h: height }, [this.statsPixels.buffer]);
+            this.statsPixels = null;
+          } else if ((this.peakMisses = ((this.peakMisses ?? 0) + 1) % 4) === 0) {
+            // Sans worker l'agregation reste ici : 1 recolte sur 4 borne ses ~75 ms.
+            this.peak.update(peakMeasure(this.statsPixels, width, height), false, this.peakGap);
+            this.peakGap = 0;
+          }
+        }
       }
       // Comme mpv : passe verticale a pleine largeur source, puis horizontale.
       gl.useProgram(this.programs.statsV);
@@ -687,14 +719,21 @@ export class ColorRenderer {
       // En pause la frame est statique et mpv converge vers ses stats mesurees a
       // chaque vsync ; la lecture synchrone y est donc exacte et sans cout.
       if (video.paused) {
-        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, this.statsPixels);
-        this.peak.update(this.statsPixels, width, height, true);
+        this.statsPixels ??= new Uint8Array(width * height * 2);
+        gl.readPixels(0, 0, width, height, gl.RG, gl.UNSIGNED_BYTE, this.statsPixels);
+        this.peak.update(peakMeasure(this.statsPixels, width, height), true);
+        this.peakGap = 0;
       } else {
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.statsPbo);
-        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, 0);
-        if (this.statsSync) gl.deleteSync(this.statsSync);
-        this.statsSync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+        // ~1 readback pour 6 frames : la copie PBO->CPU coute ~23 ms en 4K,
+        // l'IIR compense l'ecart (gap) pour garder la cadence de mpv.
+        this.statsGap = (this.statsGap ?? 0) + 1;
+        if (!this.statsSync && !this.measureBusy && this.statsGap > 6) {
+          this.statsGap = 0;
+          gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.statsPbo);
+          gl.readPixels(0, 0, width, height, gl.RG, gl.UNSIGNED_BYTE, 0);
+          this.statsSync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+          gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+        }
       }
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
     }
@@ -809,7 +848,7 @@ export class ColorRenderer {
     return true;
   }
   dispose() {
-    this.disposed = true; clearTimeout(this.retryTimer); this.listeners.forEach(remove => remove());
+    this.disposed = true; clearTimeout(this.retryTimer); this.peakWorker?.terminate(); this.listeners.forEach(remove => remove());
     this.resizeObserver?.disconnect();
     if (this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.callback); else cancelAnimationFrame(this.callback);
     if (this.gl) {
