@@ -1,4 +1,4 @@
-import { ColorRenderer, colorNeedsRenderer } from './color-renderer.js';
+import { ColorRenderer, colorNeedsRenderer, nativeHdrPipeline } from './color-renderer.js';
 import { codecPlayable, createBackend } from './backends.js';
 import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, readyBlockers, canBegin } from './sync-core.js';
 
@@ -23,8 +23,8 @@ export function bufferEnd(video) {
 }
 
 export class SyncPlayer {
-  constructor({ video, roomId, name = '', onStatus, onState, onTracks, onActivation }) {
-    Object.assign(this, { video, roomId, onStatus, onState, onTracks, onActivation });
+  constructor({ video, roomId, name = '', forceShader = false, onStatus, onState, onTracks, onActivation }) {
+    Object.assign(this, { video, roomId, forceShader, onStatus, onState, onTracks, onActivation });
     this.offset = 0; this.audioChoice = 0; this.subtitleChoice = -1;
     this.name = name;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
@@ -67,6 +67,10 @@ export class SyncPlayer {
       else if (this.activated) this.acquireWakeLock();
     });
     this.listen(window, 'offline', () => { this.command('pause'); this.report(false); });
+    // dynamic-range follows the screen the window sits on: dragging between
+    // monitors re-runs the native-HDR vs shader decision.
+    this.hdrScreen = matchMedia('(dynamic-range: high)');
+    this.listen(this.hdrScreen, 'change', () => this.updateColorPath());
     this.interval = setInterval(() => { this.reconcile(); this.report(); }, 200);
     this.pinger = setInterval(() => this.ping(), 2000);
     this.connect();
@@ -173,10 +177,8 @@ export class SyncPlayer {
       this.failPlayback('Ce film utilise un codec vidéo que cet appareil ne peut pas lire.');
       return;
     }
-    if (this.rendition.color && colorNeedsRenderer(this.rendition.color)) {
-      try { this.colorRenderer = new ColorRenderer(this.video, this.rendition.color, message => this.failPlayback(message)); }
-      catch (error) { this.failPlayback(error.message); return; }
-    }
+    this.hdrPipeline = undefined; this.probing = false; this.updateColorPath();
+    if (this.failure) return;
     const url = `/media/${movie.id}/${this.rendition.manifest}`;
     this.backend = createBackend(this.video, url,
       { timelineOffset: this.rendition.timelineOffset ?? 0, bufferSeconds: this.bufferSeconds,
@@ -187,6 +189,29 @@ export class SyncPlayer {
         onFatal: message => this.failPlayback(message) });
     if (!this.backend) { this.failPlayback('Ce navigateur ne permet pas la lecture HLS.'); return; }
     this.offset = this.backend.timelineOffset;
+  }
+  // On an HDR screen the native video already presents PQ/HLG correctly (the
+  // passthrough equivalent of mpv, at zero GPU cost), so the tone-map shader
+  // only earns its keep on SDR. forceShader is the escape hatch if a native
+  // HDR presentation ever turns out wrong.
+  updateColorPath() {
+    const color = this.rendition?.color;
+    if (!color || !colorNeedsRenderer(color)) { this.setShader(false); return; }
+    if (this.forceShader || !this.hdrScreen.matches || this.hdrPipeline === false) { this.setShader(true); return; }
+    if (this.hdrPipeline === true) { this.setShader(false); return; }
+    if (this.probing) return;
+    this.probing = true; const token = this.loadToken;
+    nativeHdrPipeline(this.rendition, this.movie?.bitrate).then(ok => {
+      if (token !== this.loadToken) return;
+      this.probing = false; this.hdrPipeline = ok; this.updateColorPath();
+    });
+  }
+  setShader(on) {
+    if (on === Boolean(this.colorRenderer)) return;
+    this.colorRenderer?.dispose(); this.colorRenderer = null;
+    if (!on) return;
+    try { this.colorRenderer = new ColorRenderer(this.video, this.rendition.color, message => this.failPlayback(message)); }
+    catch (error) { this.failPlayback(error.message); }
   }
   tracks() {
     this.onTracks(this.backend?.audioTracks() ?? [], this.backend?.subtitleTracks() ?? []);

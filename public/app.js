@@ -421,6 +421,7 @@ async function enterRoom(id, name, context = {}) {
   $('entry').hidden = true; $('library').hidden = true; $('watch').hidden = false; $('choose-film').hidden = !session.admin;
   history.replaceState(null, '', `${adminPage ? '/admin' : '/'}#room=${id}`);
   player = new SyncPlayer({ video: $('video'), roomId: id, name,
+    forceShader: sessionStorage.getItem('hdr') === 'shader',
     onStatus: message => { telemetry?.event('status', { msg: message }); $('playback-status').textContent = label(message); updatePlayback(player); },
     onActivation: () => updatePlayback(player),
     onTracks: (audio, subtitles) => {
@@ -480,6 +481,7 @@ translate();
 await handle(async () => {
   await refresh(); const params = new URLSearchParams(location.hash.slice(1));
   if (['fr', 'ko'].includes(params.get('lang'))) { sessionStorage.setItem('language', params.get('lang')); translate(); }
+  if (params.has('hdr')) sessionStorage.setItem('hdr', params.get('hdr'));
   if (params.has('invite')) $('join-form').elements.code.value = params.get('invite');
   else if (params.has('room')) await enterRoom(params.get('room'));
 })();

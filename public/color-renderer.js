@@ -504,6 +504,29 @@ export function colorNeedsRenderer(color) {
   return ['smpte2084', 'arib-std-b67'].includes(color.transfer);
 }
 
+// Sur un ecran HDR la video native presente le PQ/HLG avec la fidelite du
+// passthrough de mpv, a cout GPU nul : le shader n'y sert plus. Les champs HDR
+// de decodingInfo confirment que le pipeline video sait presenter ce flux en
+// HDR ; la ou ils ne sont pas implementes ils sont ignores et la reponse ne
+// porte que sur le codec, ce qui reste un garde-fou utile.
+export async function nativeHdrPipeline(rendition, bitrate) {
+  try {
+    const pq = rendition.color?.transfer === 'smpte2084';
+    const info = await navigator.mediaCapabilities?.decodingInfo({
+      type: window.MediaSource ? 'media-source' : 'file',
+      video: {
+        contentType: `video/mp4${rendition.codecs ? `; codecs="${rendition.codecs}"` : ''}`,
+        width: rendition.width || 1920, height: rendition.height || 1080,
+        bitrate: bitrate || 20_000_000, framerate: 24,
+        transferFunction: pq ? 'pq' : 'hlg',
+        colorGamut: rendition.color?.primaries === 'bt2020' ? 'rec2020' : 'srgb',
+        ...(pq ? { hdrMetadataType: 'smpteSt2086' } : {}),
+      },
+    });
+    return Boolean(info?.supported);
+  } catch { return false; }
+}
+
 export class ColorRenderer {
   constructor(video, color, onFailure) {
     this.video = video; this.onFailure = onFailure; this.listeners = []; this.disposed = false;
