@@ -29,37 +29,62 @@ vec3 linearize(vec3 v, int transfer) {
 `;
 
 // Mesure par frame : mpv histogramme la luminance PQ de l'image affichee,
-// reduite a la taille fenetre par son scaler en lumiere lineaire. On reconstruit
-// cette image aux positions du canvas par Catmull-Rom 4 taps (lobes negatifs,
-// comme les scalers mpv) applique a la luma lineaire, puis PQ + black_cutoff
-// comme pl_shader_detect_peak. La grille doit etre dense (tous les pixels
-// canvas) : la queue du percentile 99.995 y tient en quelques dizaines de
-// pixels et toute sous-grille la mesure au hasard.
-const statsFragment = `#version 300 es
+// reduite a la taille fenetre par SON scaler en lumiere lineaire (passe de
+// merge linearise, puis ortho separable : vertical pleine largeur puis
+// horizontal, dscale=mitchell elargi par le ratio). Le percentile 99.995 tient
+// en quelques dizaines de pixels : le moindre noyau plus brillant (catmull-rom
+// mesurait ~0.031 PQ de trop) gonfle la queue. On reproduit les deux passes
+// ortho sur la luma lineaire (le dot commute avec le filtrage), puis PQ +
+// black_cutoff comme pl_shader_detect_peak.
+const mitchellKernel = `
+float mitchell(float x) {
+  x = abs(x);
+  if (x > 2.) return 0.;
+  return x < 1. ? ((21. * x - 36.) * x * x + 16.) / 16. : (((-7. * x + 36.) * x - 60.) * x + 32.) / 16.;
+}
+`;
+const statsVertFragment = `#version 300 es
 precision highp float;
 uniform sampler2D picture;
 uniform int transfer;
 uniform vec3 luma;
-uniform vec2 stride;
-out vec4 frag;
+uniform float inv;
+uniform int taps;
+out float frag;
 ${pq}
-float cr(float t) {
-  t = abs(t);
-  return t < 1. ? (1.5 * t - 2.5) * t * t + 1. : t < 2. ? ((-.5 * t + 2.5) * t - 4.) * t + 2. : 0.;
-}
+${mitchellKernel}
 void main() {
-  vec2 center = gl_FragCoord.xy * stride - .5;
-  ivec2 base = ivec2(floor(center)), size = textureSize(picture, 0);
+  float srcPos = gl_FragCoord.y * inv - .5;
+  float fcoord = fract(srcPos);
+  float center = float(taps) * .5 - 1. + fcoord;
+  int base = int(floor(srcPos)) - (taps / 2 - 1), size = textureSize(picture, 0).y;
   float acc = 0., wsum = 0.;
-  for (int ky = -1; ky <= 2; ky++) {
-    float wy = cr(float(base.y + ky) - center.y);
-    for (int kx = -1; kx <= 2; kx++) {
-      int x = base.x + kx;
-      float w = wy * cr(float(x) - center.x);
-      vec3 rgb = linearize(max(texelFetch(picture, clamp(ivec2(x, base.y + ky), ivec2(0), size - 1), 0).rgb, vec3(0.)), transfer);
-      acc += w * dot(rgb, luma);
-      wsum += w;
-    }
+  for (int i = 0; i < taps; i++) {
+    float w = mitchell((float(i) - center) / inv);
+    vec3 rgb = linearize(max(texelFetch(picture, ivec2(gl_FragCoord.x, clamp(base + i, 0, size - 1)), 0).rgb, vec3(0.)), transfer);
+    acc += w * dot(rgb, luma);
+    wsum += w;
+  }
+  frag = acc / wsum;
+}
+`;
+const statsHorizFragment = `#version 300 es
+precision highp float;
+uniform sampler2D picture;
+uniform float inv;
+uniform int taps;
+out vec4 frag;
+${mitchellKernel}
+void main() {
+  float srcPos = gl_FragCoord.x * inv - .5;
+  float fcoord = fract(srcPos);
+  float center = float(taps) * .5 - 1. + fcoord;
+  int base = int(floor(srcPos)) - (taps / 2 - 1), size = textureSize(picture, 0).x;
+  float acc = 0., wsum = 0.;
+  for (int i = 0; i < taps; i++) {
+    float w = mitchell((float(i) - center) / inv);
+    acc += w * texelFetch(picture, ivec2(clamp(base + i, 0, size - 1), gl_FragCoord.y), 0).r;
+    wsum += w;
   }
   float y = acc / wsum, v = pow(clamp(y * .0203, 0., 1.), .1593017578125);
   float p = pow((.8359375 + 18.8515625 * v) / (1. + 18.6875 * v), 78.84375);
@@ -388,19 +413,30 @@ const PQ_MAX = 16383;
 // contraste infere 1000:1 donne un noir a 0.075 nit.
 const TARGET_NITS = 75, TARGET_CONTRAST = 1000;
 const TARGET_BLACK = TARGET_NITS / TARGET_CONTRAST;
+// Agregation cote CPU calquee sur update_peak_buf : workgroups 16x16, les
+// threads hors image repetent le bord, chaque WG contribue sa moyenne entiere
+// (wg_sum/num) a part egale et retire ses pixels noirs de l'histogramme.
 class PeakTracker {
   frames = 0; max = 0; avg = 0;
-  update(data, count, paused = false) {
+  update(data, w, h, paused = false) {
     const hist = new Uint32Array(64);
-    let sum = 0, active = 0, maxY = 0;
-    for (let i = 0; i < count; i++) {
-      const y = data[i * 4] * 256 + data[i * 4 + 1];
-      hist[clamp((y >> 7) - 64, 0, 63)]++;
-      if (y) { sum += y; active++; if (y > maxY) maxY = y; }
+    let maxY = 0, wgSum = 0, wgActive = 0, wgCount = 0, blacks = 0;
+    for (let gy = 0; gy * 16 < h; gy++) for (let gx = 0; gx * 16 < w; gx++) {
+      let s = 0, black = 0;
+      for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+        const i = (Math.min(gy * 16 + y, h - 1) * w + Math.min(gx * 16 + x, w - 1)) * 4;
+        const v = data[i] * 256 + data[i + 1];
+        hist[clamp((v >> 7) - 64, 0, 63)]++;
+        s += v; if (v > maxY) maxY = v; if (!v) black++;
+      }
+      blacks += black; wgCount++;
+      const num = 256 - black;
+      if (num) { wgSum += Math.floor(s / num); wgActive++; }
     }
+    hist[0] -= blacks;
     let avg = 1e-6, max = 1e-6;
-    if (active) {
-      avg = sum / active / PQ_MAX;
+    if (wgActive) {
+      avg = wgSum / wgActive / PQ_MAX;
       const total = hist.reduce((a, b) => a + b, 0), target = Math.ceil(.99995 * total);
       max = maxY / PQ_MAX;
       if (target < total) {
@@ -416,7 +452,7 @@ class PeakTracker {
       }
     }
     if (!this.frames++) { this.max = max; this.avg = avg; return; }
-    const bias = active / count;
+    const bias = wgActive / wgCount;
     const steps = paused ? 250 : 1;
     for (let i = 0; i < steps; i++) {
       const eps = 1 / PQ_MAX;
@@ -430,6 +466,10 @@ class PeakTracker {
     }
   }
 }
+
+// Briques pures du pipeline, réutilisées par le modèle de référence de
+// scripts/check-colors.js (le décodage y reste remodélisé indépendamment).
+export const pipeline = { splineLut, gamutLut, rgb2ipt, ipt2rgb, iptRgb2lms, invert3, nitsToPq, PRIMARIES, TARGET_NITS, TARGET_BLACK };
 
 export function colorParameters(color) {
   const matrix = { bt709: 1, bt2020nc: 1, smpte170m: 1, bt470bg: 1 }[color.matrix];
@@ -489,7 +529,7 @@ export class ColorRenderer {
       };
       const hdr = parameters.transfer === 1 || parameters.transfer === 2;
       this.programs = { copy: build(copyFragment) };
-      if (hdr) Object.assign(this.programs, { stats: build(statsFragment), feature: build(featureFragment), main: build(mainFragment) });
+      if (hdr) Object.assign(this.programs, { statsV: build(statsVertFragment), statsH: build(statsHorizFragment), feature: build(featureFragment), main: build(mainFragment) });
       this.u = {};
       this.buffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
@@ -515,6 +555,10 @@ export class ColorRenderer {
         }
         this.ditherTex = texture(5);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 64, 64, 0, gl.RED, gl.UNSIGNED_BYTE, blueNoise(64));
+        this.lumaTex = texture(14);
+        this.lumaFbo = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.lumaFbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.lumaTex, 0);
         this.statsTex = texture(15);
         this.statsFbo = gl.createFramebuffer();
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.statsFbo);
@@ -522,13 +566,17 @@ export class ColorRenderer {
         this.featureFbo = gl.createFramebuffer(); this.featureLowFbo = gl.createFramebuffer();
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         // EXT_color_buffer_float est quasi universel en WebGL2 ; sans lui le
-        // contrast recovery est simplement saute (feature map absente).
-        this.recovery = gl.getExtension('EXT_color_buffer_float') ? .3 : 0;
+        // contrast recovery est saute et la mesure de pic reste figee (la LUT
+        // garde ses bornes nominales).
+        this.floatExt = !!gl.getExtension('EXT_color_buffer_float');
+        this.recovery = this.floatExt ? .3 : 0;
         const u = this.u;
-        gl.useProgram(this.programs.stats);
-        gl.uniform1i(u.stats.picture, 0);
-        gl.uniform1i(u.stats.transfer, parameters.transfer);
-        gl.uniform3fv(u.stats.luma, parameters.luma);
+        gl.useProgram(this.programs.statsV);
+        gl.uniform1i(u.statsV.picture, 0);
+        gl.uniform1i(u.statsV.transfer, parameters.transfer);
+        gl.uniform3fv(u.statsV.luma, parameters.luma);
+        gl.useProgram(this.programs.statsH);
+        gl.uniform1i(u.statsH.picture, 0);
         gl.useProgram(this.programs.feature);
         gl.uniform1i(u.feature.transfer, parameters.transfer);
         gl.uniformMatrix3fv(u.feature.rgb2lms, false, colMajor(parameters.rgb2lms));
@@ -597,22 +645,37 @@ export class ColorRenderer {
   // sortie plafonnee a l'entree, pas d'inverse tone mapping chez mpv).
   updatePeak(width, height) {
     const { gl, u, video } = this;
-    if (this.statsW !== width || this.statsH !== height) {
-      this.statsW = width; this.statsH = height;
+    const sw = video.videoWidth, sh = video.videoHeight;
+    if (this.floatExt && (this.statsW !== width || this.statsH !== height || this.statsSW !== sw)) {
+      this.statsW = width; this.statsH = height; this.statsSW = sw;
       this.statsPixels = new Uint8Array(width * height * 4);
       gl.activeTexture(gl.TEXTURE15); gl.bindTexture(gl.TEXTURE_2D, this.statsTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.activeTexture(gl.TEXTURE14); gl.bindTexture(gl.TEXTURE_2D, this.lumaTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, sw, height, 0, gl.RED, gl.HALF_FLOAT, null);
     }
-    gl.useProgram(this.programs.stats);
-    gl.uniform2f(u.stats.stride, video.videoWidth / width, video.videoHeight / height);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.statsFbo);
-    gl.viewport(0, 0, width, height);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, this.statsPixels);
-    // En pause la frame est statique et mpv converge vers ses stats mesurees a
-    // chaque vsync ; on rejoue les pas de lissage pour le meme etat converge.
-    this.peak.update(this.statsPixels, this.statsW * this.statsH, this.video.paused);
+    if (this.floatExt) {
+      // Comme mpv : passe verticale a pleine largeur source, puis horizontale.
+      gl.useProgram(this.programs.statsV);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.uniform1f(u.statsV.inv, sh / height);
+      gl.uniform1i(u.statsV.taps, 2 * Math.ceil(2 * Math.max(1, sh / height)));
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.lumaFbo);
+      gl.viewport(0, 0, sw, height);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.useProgram(this.programs.statsH);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.lumaTex);
+      gl.uniform1f(u.statsH.inv, sw / width);
+      gl.uniform1i(u.statsH.taps, 2 * Math.ceil(2 * Math.max(1, sw / width)));
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.statsFbo);
+      gl.viewport(0, 0, width, height);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, this.statsPixels);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      // En pause la frame est statique et mpv converge vers ses stats mesurees a
+      // chaque vsync ; on rejoue les pas de lissage pour le meme etat converge.
+      this.peak.update(this.statsPixels, width, height, this.video.paused);
+    }
     const inMin = nitsToPq(1e-6);
     let outMin = nitsToPq(TARGET_BLACK), outMax = nitsToPq(TARGET_NITS);
     const inMax = Math.max(this.peak.max, Math.min(outMax, nitsToPq(100)));
@@ -728,9 +791,9 @@ export class ColorRenderer {
     this.resizeObserver?.disconnect();
     if (this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.callback); else cancelAnimationFrame(this.callback);
     if (this.gl) {
-      for (const tex of [this.texture, this.toneTex, this.featureTex, this.featureLowTex, this.gamutTex, this.ditherTex, this.statsTex])
+      for (const tex of [this.texture, this.toneTex, this.featureTex, this.featureLowTex, this.gamutTex, this.ditherTex, this.statsTex, this.lumaTex])
         if (tex) this.gl.deleteTexture(tex);
-      for (const fbo of [this.statsFbo, this.featureFbo, this.featureLowFbo]) if (fbo) this.gl.deleteFramebuffer(fbo);
+      for (const fbo of [this.statsFbo, this.lumaFbo, this.featureFbo, this.featureLowFbo]) if (fbo) this.gl.deleteFramebuffer(fbo);
       for (const program of Object.values(this.programs ?? {})) this.gl.deleteProgram(program);
       this.gl.deleteBuffer(this.buffer);
       this.gl.getExtension('WEBGL_lose_context')?.loseContext();
