@@ -28,7 +28,10 @@ conversion supplémentaire vers l'espace de travail.
    reste lisible nativement, mais le rendu de référence reste celui du lecteur
    de l'application.
 3. Pour une source HDR, l'élément vidéo décode et synchronise normalement, avec
-   la matrice de la source. WebGL importe les images avec la conversion
+   la matrice de la source. Sur un écran HDR (`dynamic-range: high`, confirmé
+   par les champs HDR de MediaCapabilities), la lecture native présente déjà le
+   PQ/HLG : l'équivalent du passthrough de mpv, sans coût GPU, et le shader ne
+   se crée pas. Ailleurs, WebGL importe les images avec la conversion
    automatique désactivée, applique PQ ou HLG et transforme les primaires en
    Rec.709. Une source SDR garde la lecture native : tous les navigateurs y
    appliquent déjà la même conversion, le shader ne ferait que coûter du GPU.
@@ -42,6 +45,8 @@ conversion supplémentaire vers l'espace de travail.
 
 Il n'y a aucun réglage par nom de navigateur, filtre CSS de luminosité, encodeur
 WebCodecs ni nouvelle dépendance. `requestVideoFrameCallback` cadence le rendu.
+Le choix natif/shader se rejoue quand la fenêtre change d'écran, et le paramètre
+d'URL `#hdr=shader` force le shader si une présentation HDR native décevait.
 Une défaillance WebGL interrompt la lecture et affiche une erreur au lieu de
 montrer silencieusement le transport avec de mauvaises couleurs.
 
