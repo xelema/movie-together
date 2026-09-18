@@ -649,12 +649,26 @@ export class ColorRenderer {
     if (this.floatExt && (this.statsW !== width || this.statsH !== height || this.statsSW !== sw)) {
       this.statsW = width; this.statsH = height; this.statsSW = sw;
       this.statsPixels = new Uint8Array(width * height * 4);
+      this.statsPbo ??= gl.createBuffer();
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.statsPbo);
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, this.statsPixels.byteLength, gl.STREAM_READ);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      if (this.statsSync) { gl.deleteSync(this.statsSync); this.statsSync = null; }
       gl.activeTexture(gl.TEXTURE15); gl.bindTexture(gl.TEXTURE_2D, this.statsTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
       gl.activeTexture(gl.TEXTURE14); gl.bindTexture(gl.TEXTURE_2D, this.lumaTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, sw, height, 0, gl.RED, gl.HALF_FLOAT, null);
     }
     if (this.floatExt) {
+      // Le readPixels synchrone fige le CPU ~40 ms en 4K : en lecture on passe
+      // par un PBO + fence et on recolte la frame precedente une fois signalée.
+      if (this.statsSync && gl.clientWaitSync(this.statsSync, 0, 0) === gl.ALREADY_SIGNALED) {
+        gl.deleteSync(this.statsSync); this.statsSync = null;
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.statsPbo);
+        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.statsPixels);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+        this.peak.update(this.statsPixels, width, height, false);
+      }
       // Comme mpv : passe verticale a pleine largeur source, puis horizontale.
       gl.useProgram(this.programs.statsV);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
@@ -670,11 +684,19 @@ export class ColorRenderer {
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.statsFbo);
       gl.viewport(0, 0, width, height);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, this.statsPixels);
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
       // En pause la frame est statique et mpv converge vers ses stats mesurees a
-      // chaque vsync ; on rejoue les pas de lissage pour le meme etat converge.
-      this.peak.update(this.statsPixels, width, height, this.video.paused);
+      // chaque vsync ; la lecture synchrone y est donc exacte et sans cout.
+      if (video.paused) {
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, this.statsPixels);
+        this.peak.update(this.statsPixels, width, height, true);
+      } else {
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.statsPbo);
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+        if (this.statsSync) gl.deleteSync(this.statsSync);
+        this.statsSync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      }
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
     }
     const inMin = nitsToPq(1e-6);
     let outMin = nitsToPq(TARGET_BLACK), outMax = nitsToPq(TARGET_NITS);
@@ -795,6 +817,8 @@ export class ColorRenderer {
         if (tex) this.gl.deleteTexture(tex);
       for (const fbo of [this.statsFbo, this.lumaFbo, this.featureFbo, this.featureLowFbo]) if (fbo) this.gl.deleteFramebuffer(fbo);
       for (const program of Object.values(this.programs ?? {})) this.gl.deleteProgram(program);
+      if (this.statsPbo) this.gl.deleteBuffer(this.statsPbo);
+      if (this.statsSync) this.gl.deleteSync(this.statsSync);
       this.gl.deleteBuffer(this.buffer);
       this.gl.getExtension('WEBGL_lose_context')?.loseContext();
     }
