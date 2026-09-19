@@ -5,6 +5,8 @@
 // transformée d'écran mesurée, en SDR ils fausseraient le passthrough).
 // Usage : node --env-file-if-exists=.env scripts/mpv-compare.js [--times 8,20,35] [--size 1600x670] [--film hdr|sdr]
 // --perf : pas de mpv, mesure la lecture réelle (dropped frames, temps de draw CPU/GPU) à la définition source.
+// --session : vraie app + vraie room (src/server.js sur DATA_DIR) ; la capture lit le canvas que
+// l'app produit, mpv est capturé à la taille réelle de ce canvas. Corpus par défaut : 8,20,65,100,120.
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { copyFile, link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -16,16 +18,24 @@ import express from 'express';
 import { chromium } from '@playwright/test';
 import { createStore } from '../src/storage.js';
 import { prepareMovie, probeFile, run } from '../src/media.js';
+import { colorNeedsRenderer } from '../public/color-renderer.js';
 
 const { values: args } = parseArgs({ options: {
   times: { type: 'string' }, size: { type: 'string', default: '1600x670' },
   film: { type: 'string', default: 'both' }, out: { type: 'string', default: 'test-results/mpv-compare' },
   perf: { type: 'boolean' }, seconds: { type: 'string', default: '12' },
-  gate: { type: 'boolean' },
+  gate: { type: 'boolean' }, session: { type: 'boolean' },
 }});
 // Gate « pareil que mpv » (#13) : barre uniforme par plan, diff max-3-canaux
 // en LSB 8 bits. `max` reste informatif (bruit de décodage, hors gate).
 const GATE_MEAN = 3, GATE_P99 = 10, GATE_REGION_MEAN = 6;
+const gateCheck = (film, t, diff, failures) => {
+  const badRegion = diff.regions.filter(r => r.mean > GATE_REGION_MEAN).map(r => `${r.region}=${r.mean.toFixed(1)}`);
+  const ok = diff.mean <= GATE_MEAN && diff.p99 <= GATE_P99 && !badRegion.length;
+  console.log(`   gate: ${ok ? 'PASS' : 'FAIL'} (mean ${diff.mean.toFixed(2)}/${GATE_MEAN}, p99 ${diff.p99}/${GATE_P99}` +
+    (badRegion.length ? `, régions ${badRegion.join(' ')}>${GATE_REGION_MEAN}` : '') + ')');
+  if (!ok) failures.push(`${film} t=${t}`);
+};
 const [W, H] = args.size.split('x').map(Number);
 const FILMS = {
   hdr: process.env.MPV_HDR || 'C:/Users/xelem/Videos/ia-spiderman/trailer_demo_HDR.mkv',
@@ -87,15 +97,17 @@ async function mpvShot(ipc, t, png) {
   if (!existsSync(png)) throw new Error(`mpv: capture absente ${png}`);
   return { timePos, frame, mpq, apq };
 }
-async function mpvCapture(film, file, times, outDir) {
+async function mpvCapture(film, file, times, outDir, w = W, h = H, tag = '') {
   const pipe = `mpvcap-${process.pid}`;
   const flags = ['--force-window=yes', '--idle=yes', '--pause=yes', '--osd-level=0',
-    `--input-ipc-server=${pipe}`, `--autofit=${W}x${H}`,
+    `--input-ipc-server=${pipe}`, `--autofit=${w}x${h}`,
     '--screenshot-format=png', '--screenshot-high-bit-depth=yes', '--screenshot-tag-colorspace=yes',
     `--log-file=${path.join(outDir, 'mpv.log')}`];
   // La cible calibrée reproduit l'écran SDR de référence ; en SDR mpv ne convertit
   // déjà rien, une cible explicite activerait au contraire une conversion BT.1886->G22.
-  if (film === 'hdr') flags.push('--target-trc=gamma2.2', '--target-peak=75');
+  // hdr-compute-peak=no : le renderer a abandonne la detection dynamique (sauts
+  // de luminosite en lecture), la reference mpv doit suivre le meme pic statique.
+  if (film === 'hdr') flags.push('--target-trc=gamma2.2', '--target-peak=75', '--hdr-compute-peak=no');
   flags.push(file);
   const proc = spawn(MPV, flags, { stdio: 'ignore', windowsHide: true }); children.add(proc);
   const socket = await mpvConnect(pipe); const ipc = mpvIpc(socket);
@@ -103,10 +115,10 @@ async function mpvCapture(film, file, times, outDir) {
   while (!(await ipc.get('duration')) && Date.now() < deadline) await sleep(250);
   const shots = [];
   for (const t of times) {
-    const png = path.join(outDir, `t${t}-mpv.png`);
+    const png = path.join(outDir, `t${t}-${tag}mpv.png`);
     shots.push({ t, png, ...await mpvShot(ipc, t, png) });
     console.log(`mpv ${film} t=${t}s : frame ${shots.at(-1).frame} @ ${shots.at(-1).timePos}s` +
-      `, max-pq-y ${shots.at(-1).mpq} avg-pq-y ${shots.at(-1).apq}`);
+      (shots.at(-1).mpq != null ? `, max-pq-y ${shots.at(-1).mpq} avg-pq-y ${shots.at(-1).apq}` : ''));
   }
   await ipc.send('quit'); socket.end();
   await Promise.race([new Promise(resolve => proc.once('exit', resolve)), sleep(10_000).then(() => proc.kill())]);
@@ -191,11 +203,10 @@ async function browserShots(page, film, rendition, shots, w, h) {
         const buf = new Uint8Array(pw * ph * 4);
         gl.readPixels(0, 0, pw, ph, gl.RGBA, gl.UNSIGNED_BYTE, buf);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(fbo); gl.deleteTexture(tex);
-        probe = { w: pw, h: ph, pixels: b64(buf), stats: b64(renderer.statsPixels), statsW: renderer.statsW, statsH: renderer.statsH };
+        probe = { w: pw, h: ph, pixels: b64(buf) };
       }
       results.push({ t, currentTime: video.currentTime, pixels: b64(pixels),
-        peak: renderer ? { max: renderer.peak.max, avg: renderer.peak.avg, frames: renderer.peak.frames, tone: renderer.tone } : null,
-        probe });
+        tone: renderer?.tone ?? null, probe });
     }
     window.hls = hls; window.renderer = renderer;
     return results;
@@ -240,16 +251,6 @@ async function perfRun(page, film, rendition, seconds) {
         active.draws++; active.submit.push(submit);
         if (timed) { const t1 = performance.now(); renderer.gl.finish(); active.finish.push(performance.now() - t1); }
       };
-      const update = renderer.peak.update.bind(renderer.peak);
-      renderer.peak.update = (...updateArgs) => {
-        const t0 = performance.now(); const out = update(...updateArgs);
-        active?.updates.push(performance.now() - t0);
-        return out;
-      };
-      for (const fn of ['getBufferSubData', 'readPixels']) {
-        const orig = renderer.gl[fn].bind(renderer.gl);
-        renderer.gl[fn] = (...a) => { const t0 = performance.now(); const r = orig(...a); active?.[fn]?.push(performance.now() - t0); return r; };
-      }
     }
     const stats = values => values.length ? {
       mean: values.reduce((sum, v) => sum + v, 0) / values.length,
@@ -258,7 +259,7 @@ async function perfRun(page, film, rendition, seconds) {
     const pass = async (withFinish) => {
       const quality = video.getVideoPlaybackQuality?.() ?? {};
       const presented0 = presented, t0 = performance.now();
-      const samples = { draws: 0, submit: [], finish: [], updates: [], getBufferSubData: [], readPixels: [] };
+      const samples = { draws: 0, submit: [], finish: [] };
       video.currentTime = 20;
       await new Promise(resolve => video.addEventListener('seeked', resolve, { once: true }));
       active = samples; timed = withFinish;
@@ -269,8 +270,7 @@ async function perfRun(page, film, rendition, seconds) {
         frames: (after.totalVideoFrames ?? 0) - (quality.totalVideoFrames ?? 0),
         dropped: (after.droppedVideoFrames ?? 0) - (quality.droppedVideoFrames ?? 0),
         presented: presented - presented0, draws: samples.draws,
-        submit: stats(samples.submit), finish: stats(samples.finish), updates: stats(samples.updates),
-        getBufferSubData: stats(samples.getBufferSubData), readPixels: stats(samples.readPixels) };
+        submit: stats(samples.submit), finish: stats(samples.finish) };
     };
     const clean = await pass(false);
     const timedPass = renderer ? await pass(true) : null;
@@ -296,7 +296,6 @@ async function perfRun(page, film, rendition, seconds) {
       canvas: renderer ? [renderer.canvas.width, renderer.canvas.height] : null,
       gpu: debug ? renderer.gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : null,
       floatExt: renderer ? !!renderer.floatExt : null,
-      peak: renderer ? { frames: renderer.peak.frames, max: renderer.peak.max, avg: renderer.peak.avg } : null,
       fenceProbe, clean, timed: timedPass };
   }, { film, rendition, seconds });
 }
@@ -346,12 +345,210 @@ async function diffShot(mpv, browser, w, h, base, outDir) {
   return { mean, p99: sorted[Math.floor(n * .99)], max: sorted[n - 1], regions };
 }
 
+// --session : la vraie app (src/server.js sur DATA_DIR), une vraie room et le
+// canvas que le renderer de l'app dessine lui-meme. Les films sont re-prepares
+// pour que la generation servie vienne du code teste ; mpv est capture a la
+// taille reelle du canvas. Le corpus reste celui du gate (#13).
+// Le seek passe par la room (commande 'seek' du player) : une position posée
+// directement sur la video serait recalée par reconcile au bout de 200 ms.
+// La commande porte l'epoch du dernier etat recu ; si la room l'a deja avance
+// (transition post-pause en vol) elle ignore le seek en silence, donc on
+// renvoie jusqu'a ce que la video atteigne la cible.
+async function roomSeek(page, t) {
+  const send = () => page.evaluate(t => { const p = window.player; p.command('seek', t); return t + p.offset; }, t);
+  const target = await send();
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      await page.waitForFunction(target => { const v = document.querySelector('video');
+        return !v.seeking && Math.abs(v.currentTime - target) < 0.1; }, target, { timeout: 3_000 });
+      return;
+    } catch { await send(); }
+  }
+  throw new Error(`seek navigateur trop long @${t}`);
+}
+// La capture relance un draw dans la meme tache que le readPixels : sans
+// preserveDrawingBuffer la frame deja compositee n'est plus lisible.
+async function sessionShot(page, t) {
+  await roomSeek(page, t);
+  return page.evaluate(async () => {
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const video = document.querySelector('video');
+    await sleep(600);
+    video.dispatchEvent(new Event('seeked'));
+    const b64 = buffer => { let s = ''; for (let i = 0; i < buffer.length; i += 32768) s += String.fromCharCode(...buffer.subarray(i, i + 32768)); return btoa(s); };
+    const canvas = document.querySelector('.color-canvas');
+    let w, h, pixels;
+    if (canvas) {
+      w = canvas.width; h = canvas.height;
+      const gl = canvas.getContext('webgl2'), raw = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, raw);
+      pixels = new Uint8Array(w * h * 4);
+      for (let y = 0; y < h; y++) pixels.set(raw.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
+    } else {
+      const rect = video.getBoundingClientRect(), ratio = devicePixelRatio || 1;
+      const s = Math.min(1, rect.width * ratio / video.videoWidth, rect.height * ratio / video.videoHeight);
+      w = Math.round(video.videoWidth * s); h = Math.round(video.videoHeight * s);
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const context = c.getContext('2d'); context.drawImage(video, 0, 0, w, h);
+      pixels = context.getImageData(0, 0, w, h).data;
+    }
+    return { w, h, pixels: b64(pixels), currentTime: video.currentTime };
+  });
+}
+// Un vrai clic de lecture : la room part et se synchronise par le protocole
+// normal (rapports -> playing -> begin), puis pause par le meme bouton.
+async function sessionPlayback(page, seconds) {
+  const toggle = async () => {
+    await page.locator('#screen').hover();
+    await page.locator('.plyr__controls [data-plyr="play"]').first().click({ timeout: 10_000 });
+  };
+  const sample = () => page.evaluate(() => {
+    const v = document.querySelector('video'), q = v.getVideoPlaybackQuality?.() ?? {};
+    return { t: v.currentTime, frames: q.totalVideoFrames ?? 0, dropped: q.droppedVideoFrames ?? 0 };
+  });
+  await toggle();
+  await page.waitForFunction(() => !document.querySelector('video').paused, null, { timeout: 90_000 });
+  await sleep(1500);
+  const a = await sample();
+  await page.waitForTimeout(seconds * 1000);
+  const b = await sample();
+  await toggle();
+  await page.waitForFunction(() => document.querySelector('video').paused, null, { timeout: 15_000 });
+  return { seconds: b.t - a.t, frames: b.frames - a.frames, dropped: b.dropped - a.dropped };
+}
+async function sessionRun(films, times, report, failures) {
+  const port = Number(process.env.SESSION_PORT || 3939), origin = `http://localhost:${port}`;
+  if (!process.env.ADMIN_PASSWORD) throw new Error('ADMIN_PASSWORD manquant (lancer via npm run compare:mpv)');
+  const server = spawn(process.execPath, ['--env-file-if-exists=.env', 'src/server.js'],
+    { env: { ...process.env, PORT: String(port), APP_ORIGIN: origin }, stdio: ['ignore', 'inherit', 'inherit'] });
+  children.add(server);
+  const browser = await chromium.launch({ headless: process.platform !== 'win32',
+    ...(process.platform === 'win32' ? { channel: 'chrome' } : {}),
+    args: ['--autoplay-policy=no-user-gesture-required'] });
+  try {
+    for (const deadline = Date.now() + 30_000;;) {
+      try { if ((await (await fetch(`${origin}/healthz`)).json()).ok) break; } catch { }
+      if (Date.now() > deadline) throw new Error('app : démarrage trop long');
+      await sleep(250);
+    }
+    const jar = { cookie: '' };
+    const api = async (route, options = {}) => {
+      const res = await fetch(`${origin}${route}`, { method: options.method ?? 'GET',
+        headers: { 'content-type': 'application/json', origin, cookie: jar.cookie },
+        body: options.body === undefined ? undefined : JSON.stringify(options.body) });
+      const setCookie = res.headers.get('set-cookie'); if (setCookie) jar.cookie = setCookie.split(';')[0];
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(`${route} : ${data.error ?? res.status}`);
+      return data;
+    };
+    await api('/api/login', { method: 'POST', body: { password: process.env.ADMIN_PASSWORD } });
+    const picked = {};
+    for (const film of films) {
+      const id = process.env[`SESSION_FILM_${film.toUpperCase()}`];
+      const movie = (await api('/api/movies')).find(m => id ? m.id === id : new RegExp(film, 'i').test(m.title));
+      if (!movie) throw new Error(`${film} : aucun film de ce nom dans la bibliothèque`);
+      if (movie.status === 'ready') await api(`/api/movies/${movie.id}/prepare`, { method: 'POST', body: {} });
+      for (const deadline = Date.now() + 300_000;;) {
+        const refreshed = (await api('/api/movies')).find(m => m.id === movie.id);
+        if (refreshed.status === 'ready') { picked[film] = refreshed; break; }
+        if (refreshed.status === 'failed' || Date.now() > deadline) {
+          throw new Error(`${film} : préparation échouée (${refreshed.error ?? refreshed.status})`);
+        }
+        await sleep(2000);
+      }
+      console.log(`${film} : « ${picked[film].title} » prêt (${picked[film].generation.slice(0, 8)})`);
+    }
+    const room = await api('/api/rooms', { method: 'POST', body: { movieId: picked[films[0]].id } });
+    const page = await browser.newPage({ viewport: { width: 1720, height: 1000 } });
+    await page.goto(`${origin}/#invite=${room.code}`);
+    await page.waitForFunction(() => document.querySelector('#join-form input[name=code]')?.value);
+    await page.locator('#join-form button').click();
+    await page.locator('#room-name').fill('Agent');
+    await page.locator('#name-dialog button').click();
+    for (const film of films) {
+      const movie = picked[film];
+      if (film !== films[0]) await api(`/api/rooms/${room.id}/movie`, { method: 'POST', body: { movieId: movie.id } });
+      await page.waitForFunction(title => document.querySelector('#movie-title')?.textContent === title,
+        movie.title, { timeout: 60_000 });
+      await page.waitForFunction(() => { const v = document.querySelector('video'); return v?.readyState >= 2 && v.videoWidth > 0; },
+        null, { timeout: 90_000 });
+      if (colorNeedsRenderer(movie.renditions[0].color))
+        await page.waitForSelector('.color-canvas[data-ready="true"]', { timeout: 45_000 });
+      else await page.waitForSelector('.color-canvas', { state: 'detached', timeout: 15_000 }).catch(() => {});
+      const session = (report.films[film] = { ...report.films[film],
+        session: { size: null, mode: null, shots: [] } }).session;
+      session.playback = await sessionPlayback(page, Number(args.seconds));
+      console.log(`${film} session lecture : ${session.playback.seconds.toFixed(1)}s, ` +
+        `${session.playback.frames} frames, ${session.playback.dropped} dropped`);
+      const outDir = path.join(out, film); await mkdir(outDir, { recursive: true });
+      // Le dpr peut dériver en début de séance (fenêtre replacée sur un autre
+      // écran virtuel) : on mesure la taille réelle après la lecture et on
+      // recale mpv une fois si elle bouge encore.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await roomSeek(page, times[0]);
+        const dims = await page.evaluate(async () => {
+          const video = document.querySelector('video');
+          await new Promise(resolve => setTimeout(resolve, 600));
+          video.dispatchEvent(new Event('seeked'));
+          const canvas = document.querySelector('.color-canvas');
+          if (canvas) return { w: canvas.width, h: canvas.height, mode: 'shader' };
+          const rect = video.getBoundingClientRect(), ratio = devicePixelRatio || 1;
+          const s = Math.min(1, rect.width * ratio / video.videoWidth, rect.height * ratio / video.videoHeight);
+          return { w: Math.round(video.videoWidth * s), h: Math.round(video.videoHeight * s), mode: 'natif' };
+        });
+        const [w, h] = [dims.w, dims.h];
+        console.log(`${film} : sortie app ${dims.mode} ${w}x${h}`);
+        session.size = [w, h]; session.mode = dims.mode; session.shots = [];
+        // autofit arrondit la fenetre : recalibrer la boite jusqu'a la taille exacte.
+        let shots, first;
+        for (const [dw, dh] of [[0, 0], [1, 0], [0, 1], [1, 1], [0, -1], [1, -1], [-1, 1]]) {
+          shots = await mpvCapture(film, FILMS[film], times, outDir, w + dw, h + dh, 'session-');
+          first = await pngToRaw(shots[0].png);
+          if (first.width === w && first.height === h) break;
+        }
+        if (first.width !== w || first.height !== h)
+          throw new Error(`${film} : captures mpv ${first.width}x${first.height} != app ${w}x${h}`);
+        let drift = false;
+        for (const [index, shot] of shots.entries()) {
+          const cap = await sessionShot(page, shot.timePos ?? shot.t);
+          if (cap.w !== w || cap.h !== h) {
+            console.log(`${film} : taille app ${cap.w}x${cap.h} != ${w}x${h}, recalage`);
+            drift = true; session.shots = []; break;
+          }
+          const browserPixels = Buffer.from(cap.pixels, 'base64');
+          if (browserPixels.length !== w * h * 4)
+            throw new Error(`${film} t=${shot.t} : buffer app inattendu`);
+          await rawToPng(browserPixels, w, h, path.join(outDir, `t${shot.t}-session-browser.png`));
+          const raw = index === 0 ? first : await pngToRaw(shot.png);
+          const diff = await diffShot(raw.buffer, browserPixels, w, h, `t${shot.t}-session`, outDir);
+          session.shots.push({ t: shot.t, mpvTime: shot.timePos, mpvFrame: shot.frame,
+            videoTime: cap.currentTime, mean: diff.mean, p99: diff.p99, max: diff.max, regions: diff.regions });
+          console.log(`${film} session t=${shot.t}s (mpv ${shot.timePos}s f${shot.frame} / video ${cap.currentTime}s) : ` +
+            `mean ${diff.mean.toFixed(2)} p99 ${diff.p99} max ${diff.max}`);
+          if (args.gate) gateCheck(film, shot.t, diff, failures);
+        }
+        if (!drift) break;
+        if (attempt === 1) throw new Error(`${film} : taille de sortie instable`);
+      }
+    }
+    await api(`/api/rooms/${room.id}`, { method: 'DELETE' }).catch(() => {});
+  } finally {
+    await writeFile(reportPath, JSON.stringify(report, null, 2));
+    await browser.close();
+    server.kill();
+  }
+}
+
 const films = (args.film === 'both' ? Object.keys(FILMS) : [args.film]).filter(name => FILMS[name]);
 await mkdir(out, { recursive: true });
 // Un run --perf et un run de diff accumulent dans le meme rapport.
 const reportPath = path.join(out, 'report.json');
 const prepared = {}, report = { size: [W, H], date: new Date().toISOString(), films: {} }, failures = [];
 if (existsSync(reportPath)) Object.assign(report.films, JSON.parse(await readFile(reportPath, 'utf8')).films);
+if (args.session) {
+  await sessionRun(films, args.times?.split(',').map(Number) ?? [8, 20, 65, 100, 120], report, failures);
+  process.exit(failures.length ? 1 : 0);
+}
 for (const film of films) prepared[film] = await prepare(film, FILMS[film]);
 const requested = args.times?.split(',').map(Number);
 const app = express();
@@ -374,9 +571,6 @@ try {
         `${clean.frames} frames, ${clean.dropped} dropped, ${clean.draws} draws en ${clean.seconds.toFixed(1)}s` +
         (timed ? ` ; submit moy ${timed.submit?.mean.toFixed(2)}ms p95 ${timed.submit?.p95.toFixed(2)}ms, ` +
         `gpu moy ${timed.finish?.mean.toFixed(2)}ms p95 ${timed.finish?.p95.toFixed(2)}ms max ${timed.finish?.max.toFixed(1)}ms` : '') +
-        (perf.peak ? ` ; peak updates ${perf.peak.frames} (moy ${clean.updates?.mean.toFixed(1) ?? '?'}ms), ` +
-          `gbsd moy ${timed?.getBufferSubData?.mean.toFixed(1) ?? clean.getBufferSubData?.mean.toFixed(1) ?? '?'}ms p95 ${timed?.getBufferSubData?.p95.toFixed(1) ?? clean.getBufferSubData?.p95.toFixed(1) ?? '?'}ms, ` +
-          `readPixels p95 ${timed?.readPixels?.p95.toFixed(1) ?? clean.readPixels?.p95.toFixed(1) ?? '?'}ms` : '') +
         (perf.fenceProbe ? ` ; fence signal après ${perf.fenceProbe.signaledAfterDraws ?? '>' + String(perf.fenceProbe.draws)} draws` : ''));
       continue;
     }
@@ -394,19 +588,12 @@ try {
       if (browserPixels.length !== w * h * 4) throw new Error(`${film} t=${shot.t} : buffer navigateur inattendu`);
       await rawToPng(browserPixels, w, h, path.join(outDir, `t${shot.t}-browser.png`));
       const diff = await diffShot(raw.buffer, browserPixels, w, h, `t${shot.t}`, outDir);
-      const entry = { t: shot.t, mpvTime: shot.timePos, mpvFrame: shot.frame, mpvPeak: { max: shot.mpq, avg: shot.apq }, videoTime: browsers[index].currentTime,
-        mean: diff.mean, p99: diff.p99, max: diff.max, regions: diff.regions, peak: browsers[index].peak };
+      const entry = { t: shot.t, mpvTime: shot.timePos, mpvFrame: shot.frame, videoTime: browsers[index].currentTime,
+        mean: diff.mean, p99: diff.p99, max: diff.max, regions: diff.regions, tone: browsers[index].tone };
       if (browsers[index].probe) await writeFile(path.join(outDir, `t${shot.t}-probe.b64`), JSON.stringify(browsers[index].probe));
       report.films[film].shots.push(entry);
-      if (browsers[index].peak) console.log(`   peak: max ${browsers[index].peak.max.toFixed(4)} avg ${browsers[index].peak.avg.toFixed(4)} frames ${browsers[index].peak.frames}`);
       console.log(`${film} t=${shot.t}s (mpv ${shot.timePos}s f${shot.frame} / video ${browsers[index].currentTime}s) : mean ${diff.mean.toFixed(2)} p99 ${diff.p99} max ${diff.max}`);
-      if (args.gate) {
-        const badRegion = diff.regions.filter(r => r.mean > GATE_REGION_MEAN).map(r => `${r.region}=${r.mean.toFixed(1)}`);
-        const ok = diff.mean <= GATE_MEAN && diff.p99 <= GATE_P99 && !badRegion.length;
-        console.log(`   gate: ${ok ? 'PASS' : 'FAIL'} (mean ${diff.mean.toFixed(2)}/${GATE_MEAN}, p99 ${diff.p99}/${GATE_P99}` +
-          (badRegion.length ? `, régions ${badRegion.join(' ')}/${GATE_REGION_MEAN}` : '') + ')');
-        if (!ok) failures.push(`${film} t=${shot.t}`);
-      }
+      if (args.gate) gateCheck(film, shot.t, diff, failures);
     }
   }
 } finally {

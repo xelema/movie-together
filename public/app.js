@@ -8,7 +8,7 @@ const $ = id => document.getElementById(id);
 const t = (fr, ko) => sessionStorage.getItem('language') === 'ko' ? ko : fr;
 const adminPage = location.pathname === '/admin';
 let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null, diskInfo = null, telemetry = null;
-function disposePlayer() { telemetry?.dispose(); telemetry = null; player?.dispose(); player = null; refreshBandwidth(); }
+function disposePlayer() { telemetry?.dispose(); telemetry = null; player?.dispose(); player = null; window.player = null; refreshBandwidth(); }
 const movieCards = new Map(), openPanels = new Set(), closedPanels = new Set();
 const playbackUI = new window.Plyr($('video'), {
   controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'fullscreen'],
@@ -420,7 +420,7 @@ async function enterRoom(id, name, context = {}) {
   disposePlayer(); activeRoom = id; roomMessage = null;
   $('entry').hidden = true; $('library').hidden = true; $('watch').hidden = false; $('choose-film').hidden = !session.admin;
   history.replaceState(null, '', `${adminPage ? '/admin' : '/'}#room=${id}`);
-  player = new SyncPlayer({ video: $('video'), roomId: id, name,
+  player = window.player = new SyncPlayer({ video: $('video'), roomId: id, name,
     forceShader: sessionStorage.getItem('hdr') === 'shader',
     onStatus: message => { telemetry?.event('status', { msg: message }); $('playback-status').textContent = label(message); updatePlayback(player); },
     onActivation: () => updatePlayback(player),
