@@ -163,6 +163,20 @@ de texture WebGL : remettre le shader ne la corrigerait sans doute pas. La
 courbe exacte peut dépendre de la machine, pilote GPU et profil d'écran ; elle
 reste à vérifier sur un autre poste.
 
+## Plein écran : la transition de luminosité de Chromium
+
+À l'entrée du plein écran, Chromium présente la vidéo plus claire pendant
+environ une seconde avant de retrouver le rendu normal. Sur la machine de
+référence, une capture directe de l'écran montre la luminance moyenne doubler à
+la transition puis décroître sur ~1,3 s. Le défaut se reproduit sur un élément
+`<video>` nu servi par hls.js, sans aucun code de l'application, avec la même
+signature. La vidéo bascule alors entre chemins de présentation (plan composité
+et overlay) dont les conversions couleur diffèrent, une transition connue côté
+Chromium. mpv ne la montre pas, sa surface de rendu ne change pas de chemin.
+Aucun levier n'existe côté application : la page ne contrôle pas la
+présentation plein écran du navigateur. La mesure venant de l'écran virtuel de
+la session distante, elle reste à confirmer sur un écran physique.
+
 ## Son et préparation
 
 AAC-LC intégré mono/stéréo 44,1/48 kHz est copié. Le reste de l'audio est converti
