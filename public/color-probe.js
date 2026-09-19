@@ -13,7 +13,7 @@ const MATRICES = { bt709: [.2126, .0722], bt601: [.299, .114], bt2020nc: [.2627,
 const RENDITION = {
   'A-h264-vui-absente': { version: 1, transfer: 'bt709', primaries: 'bt709', matrix: 'bt709', fullRange: false, bitDepth: 8, peakNits: 1000 },
   'B-h264-vui-709': { version: 1, transfer: 'bt709', primaries: 'bt709', matrix: 'bt709', fullRange: false, bitDepth: 8, peakNits: 1000 },
-  'C-hevc-vui-2020pq': { version: 1, transfer: 'smpte2084', primaries: 'bt2020', matrix: 'bt2020nc', fullRange: false, bitDepth: 10, peakNits: 1000 },
+  'C-hevc-vui-2020pq': { version: 1, transfer: 'smpte2084', primaries: 'bt2020', matrix: 'bt2020nc', fullRange: false, bitDepth: 10, peakNits: 10000 },
 };
 
 // Décodage YCbCr -> RGB attendu pour un modèle donné (matrice, plage, inversion Cb/Cr).
