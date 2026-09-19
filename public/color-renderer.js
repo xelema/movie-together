@@ -3,11 +3,12 @@
 // https://registry.khronos.org/webgl/specs/latest/1.0/#PIXEL_STORAGE_PARAMETERS
 //
 // Pipeline reproduisant mpv vo=gpu-next (profil high-quality) pour HDR -> SDR :
-// linearisation, IPT, tone map spline a pivot dynamique (percentile 99.995 sur
-// histogramme PQ, IIR, hysteresis de scene), contrast recovery 0.30, gamut map
-// perceptual via LUT 3D ICh, sortie gamma 2.2 apres remap du point noir, dither
-// blue noise 64x64. Reference : docs/research/mpv-pipeline.md, portee depuis
-// libplacebo (tone_mapping.c, gamut_mapping.c, shaders/colorspace.c).
+// linearisation, IPT, tone map spline a pivot statique (pic de la source,
+// comme mpv --hdr-compute-peak=no : la detection dynamique en lecture
+// clignotait, la mesure arrivant une frame trop tard), contrast recovery 0.30,
+// gamut map perceptual via LUT 3D ICh, sortie gamma 2.2 apres remap du point
+// noir, dither blue noise 64x64. Reference : docs/research/mpv-pipeline.md,
+// portee depuis libplacebo (tone_mapping.c, gamut_mapping.c, shaders/colorspace.c).
 
 const vertex = `#version 300 es
 in vec2 position;
@@ -25,72 +26,6 @@ vec3 linearize(vec3 v, int transfer) {
   if (transfer == 1) return vec3(pqEotf(v.r), pqEotf(v.g), pqEotf(v.b)) * (10000. / 203.);
   v = vec3(hlgOetfInv(v.r), hlgOetfInv(v.g), hlgOetfInv(v.b));
   return v * (1000. / 203.) * pow(max(dot(v, vec3(.2627, .678, .0593)), 0.), .2);
-}
-`;
-
-// Mesure par frame : mpv histogramme la luminance PQ de l'image affichee,
-// reduite a la taille fenetre par SON scaler en lumiere lineaire (passe de
-// merge linearise, puis ortho separable : vertical pleine largeur puis
-// horizontal, dscale=mitchell elargi par le ratio). Le percentile 99.995 tient
-// en quelques dizaines de pixels : le moindre noyau plus brillant (catmull-rom
-// mesurait ~0.031 PQ de trop) gonfle la queue. On reproduit les deux passes
-// ortho sur la luma lineaire (le dot commute avec le filtrage), puis PQ +
-// black_cutoff comme pl_shader_detect_peak.
-const mitchellKernel = `
-float mitchell(float x) {
-  x = abs(x);
-  if (x > 2.) return 0.;
-  return x < 1. ? ((21. * x - 36.) * x * x + 16.) / 16. : (((-7. * x + 36.) * x - 60.) * x + 32.) / 16.;
-}
-`;
-const statsVertFragment = `#version 300 es
-precision highp float;
-uniform sampler2D picture;
-uniform int transfer;
-uniform vec3 luma;
-uniform float inv;
-uniform int taps;
-out float frag;
-${pq}
-${mitchellKernel}
-void main() {
-  float srcPos = gl_FragCoord.y * inv - .5;
-  float fcoord = fract(srcPos);
-  float center = float(taps) * .5 - 1. + fcoord;
-  int base = int(floor(srcPos)) - (taps / 2 - 1), size = textureSize(picture, 0).y;
-  float acc = 0., wsum = 0.;
-  for (int i = 0; i < taps; i++) {
-    float w = mitchell((float(i) - center) / inv);
-    vec3 rgb = linearize(max(texelFetch(picture, ivec2(gl_FragCoord.x, clamp(base + i, 0, size - 1)), 0).rgb, vec3(0.)), transfer);
-    acc += w * dot(rgb, luma);
-    wsum += w;
-  }
-  frag = acc / wsum;
-}
-`;
-const statsHorizFragment = `#version 300 es
-precision highp float;
-uniform sampler2D picture;
-uniform float inv;
-uniform int taps;
-out vec4 frag;
-${mitchellKernel}
-void main() {
-  float srcPos = gl_FragCoord.x * inv - .5;
-  float fcoord = fract(srcPos);
-  float center = float(taps) * .5 - 1. + fcoord;
-  int base = int(floor(srcPos)) - (taps / 2 - 1), size = textureSize(picture, 0).x;
-  float acc = 0., wsum = 0.;
-  for (int i = 0; i < taps; i++) {
-    float w = mitchell((float(i) - center) / inv);
-    acc += w * texelFetch(picture, ivec2(clamp(base + i, 0, size - 1), gl_FragCoord.y), 0).r;
-    wsum += w;
-  }
-  float y = acc / wsum, v = pow(clamp(y * .0203, 0., 1.), .1593017578125);
-  float p = pow((.8359375 + 18.8515625 * v) / (1. + 18.6875 * v), 78.84375);
-  p *= smoothstep(0., .01, p);
-  float q = floor(p * 16383.);
-  frag = vec4(floor(q / 256.) / 255., mod(q, 256.) / 255., 0., 1.);
 }
 `;
 
@@ -403,80 +338,11 @@ function blueNoise(size) {
   return lut;
 }
 
-// Agregation brute d'une frame de stats : histogramme PQ 14 bits biaise
-// (64 bins au dessus du milieu de gamme), percentile 99.995 + moyenne hors
-// noirs des moyennes de workgroups 16x16 (hors image = bord repete). Calque
-// update_peak_buf. Fonction pure pour tourner dans un worker.
-const PQ_MAX = 16383;
-function peakMeasure(data, w, h) {
-  const hist = new Uint32Array(64);
-  let maxY = 0, wgSum = 0, wgActive = 0, wgCount = 0, blacks = 0;
-  for (let gy = 0; gy * 16 < h; gy++) for (let gx = 0; gx * 16 < w; gx++) {
-    let s = 0, black = 0;
-    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
-      const i = (Math.min(gy * 16 + y, h - 1) * w + Math.min(gx * 16 + x, w - 1)) * 2;
-      const v = data[i] * 256 + data[i + 1];
-      hist[clamp((v >> 7) - 64, 0, 63)]++;
-      s += v; if (v > maxY) maxY = v; if (!v) black++;
-    }
-    blacks += black; wgCount++;
-    const num = 256 - black;
-    if (num) { wgSum += Math.floor(s / num); wgActive++; }
-  }
-  hist[0] -= blacks;
-  let avg = 1e-6, max = 1e-6;
-  if (wgActive) {
-    avg = wgSum / wgActive / PQ_MAX;
-    const total = hist.reduce((a, b) => a + b, 0), target = Math.ceil(.99995 * total);
-    max = maxY / PQ_MAX;
-    if (target < total) {
-      let low = 0;
-      for (let i = 0; i < 64; i++) {
-        const next = low + hist[i];
-        if (next < target) { low = next; continue; }
-        const lo = ((i + 64) << 7) / PQ_MAX;
-        const hi = next + 1 > total ? maxY / PQ_MAX : ((i + 65) << 7) / PQ_MAX;
-        max = lo + (hi - lo) * (target - low) / (next + 1 - low);
-        break;
-      }
-    }
-  }
-  return { max, avg, bias: wgActive / wgCount };
-}
-
-// L'agregation coute ~75 ms de CPU par frame 4K : elle tourne dans un worker
-// blob (CSP worker-src blob:) qui rend le buffer pour reutilisation.
-const peakWorkerSource = `const PQ_MAX=${PQ_MAX},clamp=${clamp},peakMeasure=${peakMeasure};
-onmessage=({data})=>{postMessage({...peakMeasure(data.pixels,data.w,data.h),pixels:data.pixels},[data.pixels.buffer])}`;
-
 // Cible SDR calibree sur le poste de reference : le gate mpv tourne avec
 // --target-peak=75 (blanc SDR Windows mesure, cf. docs de capture #9) et le
 // contraste infere 1000:1 donne un noir a 0.075 nit.
 const TARGET_NITS = 75, TARGET_CONTRAST = 1000;
 const TARGET_BLACK = TARGET_NITS / TARGET_CONTRAST;
-// IIR 20 frames + hysteresis de changement de scene sur les pics mesures
-// (update_peak_buf cote CPU). L'agregation est dans peakMeasure, ici l'etat.
-class PeakTracker {
-  frames = 0; max = 0; avg = 0;
-  update({ max, avg, bias }, paused = false, gap = 1) {
-    if (!this.frames++) { this.max = max; this.avg = avg; return; }
-    // gap = frames de rendu ecoulees depuis la mesure appliquee : l'IIR
-    // avance du nombre de frames couvertes, cadence mpv quelle que soit
-    // la frequence des recoltes.
-    const steps = paused ? 250 : gap;
-    for (let i = 0; i < steps; i++) {
-      const eps = 1 / PQ_MAX;
-      if (Math.abs(avg - this.avg) < eps) avg = this.avg;
-      if (Math.abs(max - this.max) < eps) max = this.max;
-      const coeff = 1 - Math.exp(-1 / 20);
-      this.avg += coeff * (avg - this.avg); this.max += coeff * (max - this.max);
-      const k = sstep(.01, .03, bias * Math.abs(avg - this.avg));
-      this.avg = mix(this.avg, avg, k); this.max = mix(this.max, max, k);
-      if (steps > 1 && Math.abs(avg - this.avg) < 1e-7 && Math.abs(max - this.max) < 1e-7) break;
-    }
-  }
-}
-
 // Briques pures du pipeline, réutilisées par le modèle de référence de
 // scripts/check-colors.js (le décodage y reste remodélisé indépendamment).
 export const pipeline = { splineLut, gamutLut, rgb2ipt, ipt2rgb, iptRgb2lms, invert3, nitsToPq, PRIMARIES, TARGET_NITS, TARGET_BLACK };
@@ -490,7 +356,7 @@ export function colorParameters(color) {
   const dstRgb2lms = iptRgb2lms(PRIMARIES.bt709), dstLms2rgb = invert3(dstRgb2lms);
   return {
     transfer,
-    luma: [rgb2xyz(primaries)[3], rgb2xyz(primaries)[4], rgb2xyz(primaries)[5]],
+    peakNits: color.peakNits || (transfer === 1 ? 10000 : 1000),
     rgb2lms, lms2rgb, dstRgb2lms, dstLms2rgb,
     sameGamut: color.primaries === 'bt709',
   };
@@ -562,7 +428,7 @@ export class ColorRenderer {
       };
       const hdr = parameters.transfer === 1 || parameters.transfer === 2;
       this.programs = { copy: build(copyFragment) };
-      if (hdr) Object.assign(this.programs, { statsV: build(statsVertFragment), statsH: build(statsHorizFragment), feature: build(featureFragment), main: build(mainFragment) });
+      if (hdr) Object.assign(this.programs, { feature: build(featureFragment), main: build(mainFragment) });
       this.u = {};
       this.buffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
@@ -572,11 +438,20 @@ export class ColorRenderer {
         gl.enableVertexAttribArray(attribute); gl.vertexAttribPointer(attribute, 2, gl.FLOAT, false, 0, 0);
         this.u[name] = new Proxy({}, { get: (cache, key) => cache[key] ??= gl.getUniformLocation(program, key) });
       }
-      this.peak = new PeakTracker();
       this.texture = texture(0, gl.LINEAR);
       if (hdr) {
+        // Pic statique tire des metadonnees de la source (MaxCLL, mastering,
+        // 1000 nits sinon), comme mpv --hdr-compute-peak=no ; la LUT de ton est
+        // donc fixe. inMax >= min(cible, 100 nits) comme pl_tone_map_params_infer.
+        const inMin = nitsToPq(1e-6);
+        let outMin = nitsToPq(TARGET_BLACK), outMax = nitsToPq(TARGET_NITS);
+        const inMax = Math.max(nitsToPq(parameters.peakNits), Math.min(outMax, nitsToPq(100)));
+        if (Math.abs(inMin - outMin) < 1e-6) outMin = inMin;
+        if (Math.abs(inMax - outMax) < 1e-6) outMax = inMax;
+        outMax = Math.min(outMax, inMax);
+        this.tone = { inMin, inRange: inMax - inMin, outMin, outMax };
         this.toneTex = texture(1);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 256, 1, 0, gl.RED, gl.FLOAT, new Float32Array(256));
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 256, 1, 0, gl.RED, gl.FLOAT, splineLut(inMin, inMax, 0, outMin, outMax));
         this.featureTex = texture(2, gl.LINEAR);
         this.featureLowTex = texture(3, gl.LINEAR);
         if (!parameters.sameGamut) {
@@ -588,28 +463,13 @@ export class ColorRenderer {
         }
         this.ditherTex = texture(5);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 64, 64, 0, gl.RED, gl.UNSIGNED_BYTE, blueNoise(64));
-        this.lumaTex = texture(14);
-        this.lumaFbo = gl.createFramebuffer();
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.lumaFbo);
-        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.lumaTex, 0);
-        this.statsTex = texture(15);
-        this.statsFbo = gl.createFramebuffer();
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.statsFbo);
-        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.statsTex, 0);
         this.featureFbo = gl.createFramebuffer(); this.featureLowFbo = gl.createFramebuffer();
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         // EXT_color_buffer_float est quasi universel en WebGL2 ; sans lui le
-        // contrast recovery est saute et la mesure de pic reste figee (la LUT
-        // garde ses bornes nominales).
+        // contrast recovery est saute.
         this.floatExt = !!gl.getExtension('EXT_color_buffer_float');
         this.recovery = this.floatExt ? .3 : 0;
         const u = this.u;
-        gl.useProgram(this.programs.statsV);
-        gl.uniform1i(u.statsV.picture, 0);
-        gl.uniform1i(u.statsV.transfer, parameters.transfer);
-        gl.uniform3fv(u.statsV.luma, parameters.luma);
-        gl.useProgram(this.programs.statsH);
-        gl.uniform1i(u.statsH.picture, 0);
         gl.useProgram(this.programs.feature);
         gl.uniform1i(u.feature.transfer, parameters.transfer);
         gl.uniformMatrix3fv(u.feature.rgb2lms, false, colMajor(parameters.rgb2lms));
@@ -627,16 +487,6 @@ export class ColorRenderer {
         // delinearize の黒点スケール: csp_min/csp_max は黒と白を 1/203 nit で表した値
         gl.uniform1f(u.main.dstScale, 203 / (TARGET_NITS - TARGET_BLACK));
         gl.uniform1f(u.main.dstOffset, -TARGET_BLACK / (TARGET_NITS - TARGET_BLACK));
-        this.measureBusy = false;
-        try {
-          this.peakWorker = new Worker(URL.createObjectURL(new Blob([peakWorkerSource], { type: 'text/javascript' })));
-          this.peakWorker.onmessage = ({ data }) => {
-            this.measureBusy = false;
-            this.statsPixels ??= data.pixels;
-            if (!this.disposed) { this.peak.update(data, false, this.peakGap ?? 1); this.peakGap = 0; }
-          };
-          this.peakWorker.onerror = () => { this.peakWorker = null; this.measureBusy = false; };
-        } catch { this.peakWorker = null; }
       }
       gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
       gl.disable(gl.DITHER);
@@ -683,101 +533,9 @@ export class ColorRenderer {
     const line = cues[0]?.line;
     this.captions.style.bottom = `${typeof line === 'number' && !cues[0].snapToLines ? 100 - line : 16}%`;
   }
-  // Mesure la frame affichee puis regenere la LUT de ton si les pics ont bouge
-  // (pl_tone_map_params_infer : pic d'entree >= min(sortie, 100 nits), puis
-  // sortie plafonnee a l'entree, pas d'inverse tone mapping chez mpv).
-  updatePeak(width, height) {
-    const { gl, u, video } = this;
-    const sw = video.videoWidth, sh = video.videoHeight;
-    if (this.floatExt && (this.statsW !== width || this.statsH !== height || this.statsSW !== sw)) {
-      this.statsW = width; this.statsH = height; this.statsSW = sw;
-      this.statsPixels = new Uint8Array(width * height * 2);
-      this.statsPbo ??= gl.createBuffer();
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.statsPbo);
-      gl.bufferData(gl.PIXEL_PACK_BUFFER, this.statsPixels.byteLength, gl.STREAM_READ);
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-      if (this.statsSync) { gl.deleteSync(this.statsSync); this.statsSync = null; }
-      gl.activeTexture(gl.TEXTURE15); gl.bindTexture(gl.TEXTURE_2D, this.statsTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, width, height, 0, gl.RG, gl.UNSIGNED_BYTE, null);
-      gl.activeTexture(gl.TEXTURE14); gl.bindTexture(gl.TEXTURE_2D, this.lumaTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, sw, height, 0, gl.RED, gl.HALF_FLOAT, null);
-    }
-    if (this.floatExt) {
-      // Le fence met ~2 frames a remonter signale : un seul readback en vol,
-      // relance apres recolte (un readPixels + fence frais par frame ne
-      // laissait jamais le precedent se signaler : pic fige, 25 Mo perdus).
-      this.peakGap = (this.peakGap ?? 0) + 1;
-      if (this.statsSync && gl.clientWaitSync(this.statsSync, 0, 0) === gl.ALREADY_SIGNALED) {
-        gl.deleteSync(this.statsSync); this.statsSync = null;
-        if (this.statsPixels && !this.measureBusy) {
-          gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.statsPbo);
-          gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.statsPixels);
-          gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-          if (this.peakWorker) {
-            this.measureBusy = true;
-            this.peakWorker.postMessage({ pixels: this.statsPixels, w: width, h: height }, [this.statsPixels.buffer]);
-            this.statsPixels = null;
-          } else if ((this.peakMisses = ((this.peakMisses ?? 0) + 1) % 4) === 0) {
-            // Sans worker l'agregation reste ici : 1 recolte sur 4 borne ses ~75 ms.
-            this.peak.update(peakMeasure(this.statsPixels, width, height), false, this.peakGap);
-            this.peakGap = 0;
-          }
-        }
-      }
-      // Comme mpv : passe verticale a pleine largeur source, puis horizontale.
-      gl.useProgram(this.programs.statsV);
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
-      gl.uniform1f(u.statsV.inv, sh / height);
-      gl.uniform1i(u.statsV.taps, 2 * Math.ceil(2 * Math.max(1, sh / height)));
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.lumaFbo);
-      gl.viewport(0, 0, sw, height);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      gl.useProgram(this.programs.statsH);
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.lumaTex);
-      gl.uniform1f(u.statsH.inv, sw / width);
-      gl.uniform1i(u.statsH.taps, 2 * Math.ceil(2 * Math.max(1, sw / width)));
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.statsFbo);
-      gl.viewport(0, 0, width, height);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      // En pause la frame est statique et mpv converge vers ses stats mesurees a
-      // chaque vsync ; la lecture synchrone y est donc exacte et sans cout.
-      if (video.paused) {
-        this.statsPixels ??= new Uint8Array(width * height * 2);
-        gl.readPixels(0, 0, width, height, gl.RG, gl.UNSIGNED_BYTE, this.statsPixels);
-        this.peak.update(peakMeasure(this.statsPixels, width, height), true);
-        this.peakGap = 0;
-      } else {
-        // ~1 readback pour 6 frames : la copie PBO->CPU coute ~23 ms en 4K,
-        // l'IIR compense l'ecart (gap) pour garder la cadence de mpv.
-        this.statsGap = (this.statsGap ?? 0) + 1;
-        if (!this.statsSync && !this.measureBusy && this.statsGap > 6) {
-          this.statsGap = 0;
-          gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.statsPbo);
-          gl.readPixels(0, 0, width, height, gl.RG, gl.UNSIGNED_BYTE, 0);
-          this.statsSync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
-          gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-        }
-      }
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    }
-    const inMin = nitsToPq(1e-6);
-    let outMin = nitsToPq(TARGET_BLACK), outMax = nitsToPq(TARGET_NITS);
-    const inMax = Math.max(this.peak.max, Math.min(outMax, nitsToPq(100)));
-    if (Math.abs(inMin - outMin) < 1e-6) outMin = inMin;
-    if (Math.abs(inMax - outMax) < 1e-6) outMax = inMax;
-    outMax = Math.min(outMax, inMax);
-    const key = `${inMax.toFixed(6)}/${this.peak.avg.toFixed(6)}/${outMax.toFixed(6)}`;
-    if (key !== this.toneKey) {
-      this.toneKey = key;
-      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.toneTex);
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RED, gl.FLOAT, splineLut(inMin, inMax, this.peak.avg, outMin, outMax));
-    }
-    this.tone = { inMin, inRange: inMax - inMin, outMin, outMax };
-  }
   render(width, height) {
-    const { gl, u, parameters } = this;
+    const { gl, u } = this;
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    this.updatePeak(width, height);
     if (this.recovery > 0) {
       const lw = Math.max(1, Math.floor(width / 3.5)), lh = Math.max(1, Math.floor(height / 3.5));
       if (this.featureSize?.[0] !== width || this.featureSize?.[1] !== height) {
@@ -871,16 +629,14 @@ export class ColorRenderer {
     return true;
   }
   dispose() {
-    this.disposed = true; clearTimeout(this.retryTimer); this.peakWorker?.terminate(); this.listeners.forEach(remove => remove());
+    this.disposed = true; clearTimeout(this.retryTimer); this.listeners.forEach(remove => remove());
     this.resizeObserver?.disconnect();
     if (this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.callback); else cancelAnimationFrame(this.callback);
     if (this.gl) {
-      for (const tex of [this.texture, this.toneTex, this.featureTex, this.featureLowTex, this.gamutTex, this.ditherTex, this.statsTex, this.lumaTex])
+      for (const tex of [this.texture, this.toneTex, this.featureTex, this.featureLowTex, this.gamutTex, this.ditherTex])
         if (tex) this.gl.deleteTexture(tex);
-      for (const fbo of [this.statsFbo, this.lumaFbo, this.featureFbo, this.featureLowFbo]) if (fbo) this.gl.deleteFramebuffer(fbo);
+      for (const fbo of [this.featureFbo, this.featureLowFbo]) if (fbo) this.gl.deleteFramebuffer(fbo);
       for (const program of Object.values(this.programs ?? {})) this.gl.deleteProgram(program);
-      if (this.statsPbo) this.gl.deleteBuffer(this.statsPbo);
-      if (this.statsSync) this.gl.deleteSync(this.statsSync);
       this.gl.deleteBuffer(this.buffer);
       this.gl.getExtension('WEBGL_lose_context')?.loseContext();
     }

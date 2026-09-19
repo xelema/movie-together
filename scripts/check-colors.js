@@ -14,7 +14,7 @@ const { splineLut, gamutLut, rgb2ipt, ipt2rgb, iptRgb2lms, invert3, PRIMARIES, T
 
 // Independent model of the intended render for the known patches: limited-range decode
 // with the source matrix, transfer to linear. HDR then replays the renderer's own
-// chain (dynamic spline, perceptual gamut, gamma 2.2) fed by its measured peaks;
+// chain (spline on the source peak, perceptual gamut, gamma 2.2);
 // SDR keeps the simple gamut matrix and sRGB out. Comparing the render to this
 // model catches a decoder path that no browser flags.
 const pqToNits = v => { const p = Math.max(v, 0) ** (1 / 78.84375);
@@ -29,7 +29,7 @@ const GAMUT = { bt709: [1, 0, 0, 0, 1, 0, 0, 0, 1],
   bt470bg: [1.044044, 0, 0, -.044044, 1, .011793, 0, 0, .988207],
   smpte432: [1.224940, -.042057, -.019638, -.224940, 1.042057, -.078636, 0, 0, 1.098274] };
 
-function expectedPatch(color, { code, chroma }, measured) {
+function expectedPatch(color, { code, chroma }) {
   const s = color.bitDepth === 10 ? 4 : 1;
   const y = (code - 16 * s) / (219 * s), cb = chroma / (224 * s), cr = -chroma / (224 * s);
   const [kr, kb] = KRKB[color.matrix];
@@ -50,18 +50,17 @@ function expectedPatch(color, { code, chroma }, measured) {
   }
   let luminance = Math.max(rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722, 0);
   if (hdr) {
-    // Chaîne HDR du shader : spline dynamique sur I (IPT), rescale chroma hull,
-    // LUT gamut perceptuelle, sortie gamma 2.2 après remap du noir. Les bornes
-    // reproduisent updatePeak (peak = mesures réelles du renderer sur la frame) ;
-    // le contrast recovery est sans effet sur des aplats.
-    const { peak } = measured;
+    // Chaîne HDR du shader : spline statique sur I (IPT, pic de la source),
+    // rescale chroma hull, LUT gamut perceptuelle, sortie gamma 2.2 après remap
+    // du noir ; le contrast recovery est sans effet sur des aplats.
     const inMin = nitsToPq(1e-6);
     let outMin = nitsToPq(TARGET_BLACK), outMax = nitsToPq(TARGET_NITS);
-    const inMax = Math.max(peak.max, Math.min(outMax, nitsToPq(100)));
+    const inMax = Math.max(nitsToPq(color.peakNits || (color.transfer === 'smpte2084' ? 10000 : 1000)),
+      Math.min(outMax, nitsToPq(100)));
     if (Math.abs(inMin - outMin) < 1e-6) outMin = inMin;
     if (Math.abs(inMax - outMax) < 1e-6) outMax = inMax;
     outMax = Math.min(outMax, inMax);
-    const lut = splineLut(inMin, inMax, peak.avg, outMin, outMax);
+    const lut = splineLut(inMin, inMax, 0, outMin, outMax);
     const inRange = inMax - inMin;
     const rgb2lms = iptRgb2lms(PRIMARIES[color.primaries]);
     const dstLms2rgb = invert3(iptRgb2lms(PRIMARIES.bt709));
@@ -192,15 +191,14 @@ try {
           gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
           const snapshot = document.createElement('canvas'); snapshot.width = canvas.width; snapshot.height = canvas.height;
           snapshot.getContext('2d').drawImage(canvas, 0, 0);
-          return { pixels: Array.from(pixels), width: canvas.width, height: canvas.height, png: snapshot.toDataURL(), ready: renderer.ready,
-            peak: renderer.peak ? { max: renderer.peak.max, avg: renderer.peak.avg } : { max: 0, avg: 0 } };
+          return { pixels: Array.from(pixels), width: canvas.width, height: canvas.height, png: snapshot.toDataURL(), ready: renderer.ready };
         }, fixture);
         assert.ok(result.ready, `${name}/${fixture.name}: no rendered frame`);
         assert.ok(result.pixels.some((value, i) => i % 4 !== 3 && value > 100), `${name}/${fixture.name}: black output`);
         images[`${name}/${fixture.name}`] = result.pixels;
         // Ground truth: the patch codes are known, so the render must match an independent
         // model of the intended conversion, not only the other browser.
-        const expected = fixture.patches.map(patch => expectedPatch(fixture.rendition.color, patch, { peak: result.peak }));
+        const expected = fixture.patches.map(patch => expectedPatch(fixture.rendition.color, patch));
         const measured = fixture.patches.map(patch => {
           const at = ((result.height - 1 - patch.y) * result.width + patch.x) * 4;
           return [result.pixels[at], result.pixels[at + 1], result.pixels[at + 2]];
@@ -231,8 +229,7 @@ try {
     report.comparisons[name] = { mean, p99, max };
     console.log(`${name}: mean ${mean.toFixed(3)}/255, p99 ${p99}, maximum ${max}`);
     // Meme marge que la verite : le bruit de decodage est amplifie par les
-    // courbes de transfert, et chaque navigateur mesure son propre pic, ce qui
-    // decale le genou haut de quelques LSB au voisinage du clip.
+    // courbes de transfert au voisinage du clip.
     assert.ok(mean <= 5 && p99 <= 14, `${name}: visible browser colour mismatch`);
   }
 } finally {

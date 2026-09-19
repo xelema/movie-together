@@ -149,7 +149,8 @@ test('serves PQ and HLG with the source colour in the container tags', async t =
     assert.deepEqual(await colourBox(path.dirname(prepared)),
       { primaries: 9, transfer: transfer === 'smpte2084' ? 16 : 18, matrix: 9, fullRange: false });
     assert.deepEqual(result.renditions[0].color, { version: 1, transfer, primaries: 'bt2020',
-      matrix: 'bt2020nc', fullRange: false, bitDepth: 10, peakNits: 1000 });
+      matrix: 'bt2020nc', fullRange: false, bitDepth: 10,
+      peakNits: transfer === 'smpte2084' ? 10000 : 1000 });
     const master = await readFile(path.join(store.directory(movie.id), result.generation, 'master.m3u8'), 'utf8');
     assert.match(master, new RegExp(`VIDEO-RANGE=${transfer === 'smpte2084' ? 'PQ' : 'HLG'}`));
   }
@@ -170,7 +171,7 @@ test('tags the container with the source colour and reports the source peak', as
   const result = await prepareMovie(store, movie, [], []);
   const prepared = path.join(store.directory(movie.id), result.generation, 'stream_0.m3u8');
   assert.equal(await decodedVideo(source), await decodedVideo(prepared));
-  assert.equal(result.renditions[0].color.peakNits, 1033);
+  assert.equal(result.renditions[0].color.peakNits, 4000);
   assert.equal(result.renditions[0].color.transfer, 'smpte2084');
   assert.deepEqual(await colourBox(path.dirname(prepared)),
     { primaries: 9, transfer: 16, matrix: 9, fullRange: false });
