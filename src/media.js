@@ -102,7 +102,7 @@ export function inspectProbe(probe) {
     rotation: Number(sideData.find(data => data.rotation !== undefined)?.rotation ?? video.tags?.rotate) || 0,
     colorPrimaries: color('color_primaries'), colorTransfer: transfer,
     colorSpace: color('color_space'), colorRange: color('color_range'),
-    peakNits: Number(light?.max_content) || (() => { const [n, d = 1] = String(mastering?.max_luminance ?? '').split('/').map(Number); return n / d || undefined; })(),
+    peakNits: (() => { const [n, d = 1] = String(mastering?.max_luminance ?? '').split('/').map(Number); return n / d || undefined; })() || Number(light?.max_content) || undefined,
     hdr, dolbyVision: dovi ? { profile: dovi.dv_profile, level: dovi.dv_level,
       compatibilityId: dovi.dv_bl_signal_compatibility_id } : null,
   } : null,
@@ -149,10 +149,13 @@ export function transportMetadata(video) {
   // Dolby Vision without a standard base layer is not decodable as HDR10, HLG or SDR: leave it native.
   if (video.dolbyVision && !doviBase) return { args, color: undefined,
     videoRange: video.colorTransfer === 'smpte2084' ? 'PQ' : video.colorTransfer === 'arib-std-b67' ? 'HLG' : undefined };
-  const color = { version: 1, transfer: video.colorTransfer || doviBase || 'bt709',
+  const transfer = video.colorTransfer || doviBase || 'bt709';
+  const color = { version: 1, transfer,
     primaries: video.colorPrimaries || 'bt709', matrix: video.colorSpace || (video.height < 720 ? 'smpte170m' : 'bt709'),
     fullRange: video.colorRange === 'pc', bitDepth: Number(video.pixelFormat?.match(/(10|12)(?:le|be)?$/)?.[1]) || 8,
-    peakNits: video.peakNits || 1000 };
+    // Nominal peak like libplacebo: max_lum, then MaxCLL, then the transfer's
+    // own maximum (PQ 10000 nits, HLG 1000) when the stream says nothing.
+    peakNits: video.peakNits || (transfer === 'smpte2084' ? 10000 : 1000) };
   args.push('-color_primaries', color.primaries, '-color_trc', color.transfer, '-colorspace', color.matrix,
     '-color_range', color.fullRange ? 'pc' : 'tv');
   return { args, videoRange: { smpte2084: 'PQ', 'arib-std-b67': 'HLG' }[color.transfer] ?? 'SDR', color };

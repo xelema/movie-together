@@ -35,10 +35,12 @@ conversion supplémentaire vers l'espace de travail.
    automatique désactivée, applique PQ ou HLG et transforme les primaires en
    Rec.709. Une source SDR garde la lecture native : tous les navigateurs y
    appliquent déjà la même conversion, le shader ne ferait que coûter du GPU.
-4. Une courbe BT.2390 commune ramène le HDR à un blanc SDR de référence de 203 nits.
-   HLG utilise le moniteur de référence de 1 000 nits et le gamma système 1,2. Les
-   couleurs hors gamut sont rapprochées de leur luminance. Les sources SDR
-   utilisent BT.1886, ou sRGB lorsque déclaré.
+4. Le shader HDR reproduit le pipeline de mpv `vo=gpu-next` : linéarisation,
+   spline de tone mapping, mappage perceptuel du gamut, sortie gamma 2,2 vers
+   la cible calibrée sur l'écran de référence (75 nits) avec dither. Le pic
+   d'entrée est statique, pris sur la source comme mpv `--hdr-compute-peak=no` :
+   luminance de mastering, MaxCLL à défaut, sinon le maximum du transfert
+   (10 000 nits en PQ, 1 000 en HLG).
 5. Le résultat sRGB est affiché dans un canvas. Les commandes Plyr, l'audio et
    l'horloge utilisent toujours la vidéo. Les sous-titres textuels sont placés
    au-dessus du canvas à partir des cues du lecteur.
