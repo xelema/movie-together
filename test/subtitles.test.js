@@ -112,15 +112,25 @@ test('webkit video fullscreen events refresh subtitle layout', () => {
     const player = new SyncPlayer({ video, roomId: 'room', onStatus() {}, onState() {}, onTracks() {}, onActivation() {} });
     assert.equal(video.events['webkitbeginfullscreen']?.length, 1);
     assert.equal(video.events['webkitendfullscreen']?.length, 1);
+    assert.equal(video.events['webkitpresentationmodechanged']?.length, 1);
     assert.equal(doc.events['fullscreenchange']?.length, 1);
     assert.equal(doc.events['webkitfullscreenchange']?.length, 1);
+    // Rotation inside native fullscreen only reaches the window.
+    assert.equal(win.events['resize']?.length, 1);
     // Each lifecycle event repositions now and again once layout settles.
     let calls = 0;
     player.positionSubtitles = () => calls++;
     video.events['webkitbeginfullscreen'][0]();
     video.events['webkitendfullscreen'][0]();
-    assert.equal(calls, 2);
-    assert.equal(frames, 2);
+    video.events['webkitpresentationmodechanged'][0]();
+    // A window resize outside native fullscreen is already covered by the
+    // element observer; the window listener only matters in the system layer.
+    win.events['resize'][0]();
+    assert.equal(calls, 3);
+    video.webkitDisplayingFullscreen = true;
+    win.events['resize'][0]();
+    assert.equal(calls, 4);
+    assert.equal(frames, 4);
     player.disposed = true;
     clearInterval(player.interval); clearInterval(player.pinger); clearInterval(player.initialPings);
   } finally {

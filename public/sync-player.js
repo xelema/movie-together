@@ -58,7 +58,11 @@ export class SyncPlayer {
     // does not change and document fullscreenchange never fires, so its own
     // events drive the refresh, with a second pass once the layout settles.
     const refreshSubtitles = () => { this.positionSubtitles(); requestAnimationFrame(() => this.positionSubtitles()); };
-    for (const event of ['webkitbeginfullscreen', 'webkitendfullscreen']) this.listen(video, event, refreshSubtitles);
+    for (const event of ['webkitbeginfullscreen', 'webkitendfullscreen', 'webkitpresentationmodechanged']) this.listen(video, event, refreshSubtitles);
+    // Rotation inside iOS native fullscreen changes the screen but never the
+    // element box, so neither the observer nor the events above can see it.
+    // Other resizes already reach the observer.
+    this.listen(window, 'resize', () => { if (this.video.webkitDisplayingFullscreen) refreshSubtitles(); });
     this.listen(video, 'error', () => { if (!this.backend?.recoversErrors) this.failPlayback('Lecture impossible sur cet appareil.'); });
     this.listen(video, 'play', () => {
       // Browsers can dispatch a queued play event after activate() already paused: the
