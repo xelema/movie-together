@@ -77,3 +77,36 @@ export const memberReady = observables => readyBlockers(observables).length === 
 export function canBegin({ state, scheduled, activated, failure, hidden, silent }) {
   return state?.phase === 'playing' && state.startsAt === scheduled && activated && !failure && !hidden && !silent;
 }
+
+// Subtitle glyphs scale with the rendered picture, not the window: the old
+// 2.4vw rule produced 30.72 px on a 720 px tall picture, which stays the
+// reference ratio. The floor keeps a tiny render readable.
+export const subtitleFontSize = pictureHeight => Math.max(18, pictureHeight * (30.72 / 720));
+
+// Only one text track may paint at once; WebKit can expose the same HLS
+// subtitle as duplicate TextTracks all in showing mode. The viewer's pick
+// (index among subtitle/caption tracks) survives while it is showing, so a
+// duplicate with earlier cues cannot demote it; otherwise keep the showing
+// track with live cues, else the first showing one. The caller demotes the rest.
+export function shownSubtitleTrack(tracks, selected = -1) {
+  const subtitles = tracks.filter(track => ['subtitles', 'captions'].includes(track.kind));
+  const showing = subtitles.filter(track => track.mode === 'showing');
+  if (showing.includes(subtitles[selected])) return subtitles[selected];
+  return showing.find(track => track.activeCues?.length) ?? showing[0] ?? null;
+}
+
+// Blink unschedules a track's cues when its mode passes through 'disabled' and
+// never revives them on 'showing': a re-selected track can stay visible with
+// cues that never enter activeCues. The transition strands the whole list, so
+// re-register every cue once per stranding. The flag clears as soon as the
+// track reads healthy again, and the snapshot keeps the live cue list stable
+// while it is rebuilt.
+export function reviveSubtitleCues(track, time) {
+  const cues = Array.from(track.cues ?? []);
+  const active = new Set(track.activeCues ?? []);
+  const stale = cues.some(cue => cue.startTime <= time && cue.endTime > time && !active.has(cue));
+  if (!stale) { track.revived = false; return; }
+  if (track.revived) return;
+  track.revived = true;
+  for (const cue of cues) { track.removeCue(cue); track.addCue(cue); }
+}

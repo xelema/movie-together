@@ -133,8 +133,50 @@ test('admin manages a film and two named viewers join in their language with one
     expect(await guest.evaluate(() => window.testParticipant === document.querySelector('#participants li'))).toBe(true);
     await clickControl(guest, '.plyr__controls [data-plyr=play]');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
+    // Hold the first subtitle segment in flight: a fragment that finishes
+    // parsing while its track is parked gets its cues dropped and is never
+    // refetched, so the round trip below must still bring the cues back.
+    let releaseSubtitle = () => {}, held = false;
+    const subtitleGate = new Promise(resolve => { releaseSubtitle = resolve; });
+    await guest.route('**/sub_*.vtt', async route => {
+      if (!held) { held = true; await subtitleGate; }
+      await route.continue();
+    });
     await guest.locator('#open-settings').click(); await guest.locator('#audio').selectOption('1'); await guest.locator('#subtitles').selectOption('0');
     await expect(guest.locator('#audio')).toBeInViewport(); await expect(guest.locator('#subtitles')).toBeInViewport();
+    // Only one text track may render at once, whatever the engine exposes, and
+    // glyph size follows the painted picture rather than the window.
+    const showingTracks = page => page.locator('video').evaluate(video =>
+      Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind) && track.mode === 'showing').length);
+    await expect.poll(() => showingTracks(guest)).toBe(1);
+    // Simulate a WebKit-style duplicate: a second track forced to showing is
+    // demoted again, and the selected track keeps its cues.
+    await guest.locator('video').evaluate(video => { video.textTracks[1].mode = 'showing'; });
+    await expect.poll(() => showingTracks(guest)).toBe(1);
+    await expect.poll(() => guest.locator('video').evaluate(video => video.textTracks[0].mode)).toBe('showing');
+    const subtitleModes = page => page.locator('video').evaluate(video =>
+      Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind)).map(track => track.mode));
+    // Switch away while the first track's segment is still parsing. Once
+    // released, the fragment finishes in the parked state: its cues must still
+    // land there, before the track is ever re-selected.
+    await expect.poll(() => held).toBe(true);
+    await guest.locator('#subtitles').selectOption('1');
+    await expect.poll(async () => (await subtitleModes(guest))[1]).toBe('showing');
+    releaseSubtitle();
+    await expect.poll(() => guest.locator('video').evaluate(video => video.textTracks[0].cues?.length ?? 0)).toBeGreaterThan(0);
+    await guest.locator('#subtitles').selectOption('0');
+    await expect.poll(() => guest.locator('video').evaluate(video => video.textTracks[0].mode)).toBe('showing');
+    // The reported failure was a showing track whose cues never activated.
+    await expect.poll(() => guest.locator('video').evaluate(video => video.textTracks[0].activeCues?.length ?? 0)).toBeGreaterThan(0);
+    const expectSubtitleSize = page => expect.poll(async () => page.locator('video').evaluate(video => {
+      const rect = video.getBoundingClientRect(), aspect = video.videoWidth / video.videoHeight || 16 / 9;
+      const picture = Math.min(rect.height, rect.width / aspect);
+      const css = parseFloat(getComputedStyle(video.parentElement).getPropertyValue('--subtitle-size'));
+      const captions = document.querySelector('.color-captions');
+      const overlay = captions ? parseFloat(getComputedStyle(captions).fontSize) : css;
+      return picture > 0 && Math.abs(css - Math.max(18, picture * 30.72 / 720)) < 1 && Math.abs(overlay - css) < 1;
+    })).toBe(true);
+    await expectSubtitleSize(guest);
     // Opening the overlay must never apply an image filter to video or an ancestor.
     for (const page of [host, guest]) expect(await page.locator('video').evaluate(video => {
       for (let node = video; node; node = node.parentElement) {
@@ -169,13 +211,20 @@ test('admin manages a film and two named viewers join in their language with one
       await guest.setViewportSize({ width, height });
       expect(await guest.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await controls(guest);
+      await expectSubtitleSize(guest);
       if (width === 390) await expect.poll(() => guest.locator('video').evaluate(video =>
         Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.line < 80)))).toBe(true);
       await guest.screenshot({ path: `test-results/watch-${name}.png`, fullPage: true });
     }
     // A track switch is local to the viewer: it must not pause the room.
     await clickControl(guest, '#open-settings');
+    // The visible survivor follows the selector: another language takes the
+    // single showing slot, then none keeps every track off the screen.
+    await guest.locator('#subtitles').selectOption('1');
+    await expect.poll(() => showingTracks(guest)).toBe(1);
+    await expect.poll(async () => (await subtitleModes(guest))[1]).toBe('showing');
     await guest.locator('#subtitles').selectOption('-1'); await guest.locator('#close-settings').click();
+    await expect.poll(() => showingTracks(guest)).toBe(0);
     await guest.waitForTimeout(1200);
     expect(latest.get(host)?.state.phase).toBe('playing');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(false);
@@ -185,6 +234,7 @@ test('admin manages a film and two named viewers join in their language with one
       if (await host.evaluate(() => document.fullscreenElement?.id) !== 'screen') await clickControl(host, '[data-plyr=fullscreen]');
       await expect.poll(() => host.evaluate(() => document.fullscreenElement?.id), { timeout: 3000 }).toBe('screen');
     }).toPass({ timeout: 20_000 });
+    await expectSubtitleSize(host);
     await expect(host.locator('#player-settings')).toBeHidden();
     await expect.poll(() => host.locator('.color-canvas').evaluate(canvas => canvas.width === document.querySelector('video').videoWidth)).toBe(true);
     await host.mouse.move(0,0); await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 5000 });
@@ -192,8 +242,9 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(host.locator('video')).toHaveCSS('cursor', 'none');
     await controls(host);
     await expect(host.locator('video')).not.toHaveCSS('cursor', 'none');
-    await host.mouse.move(0,0); await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/);
+    await host.mouse.move(0,0); await expect(host.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
     await host.screenshot({ path: 'test-results/watch-fullscreen.png' }); await host.evaluate(() => document.exitFullscreen());
+    await expectSubtitleSize(host);
     await b.setOffline(true); await expect.poll(() => host.locator('video').evaluate(video => video.paused), { timeout: 6000 }).toBe(true);
     await host.locator('.color-canvas').evaluate(canvas => canvas.getContext('webgl2').getExtension('WEBGL_lose_context').loseContext());
     await expect(host.locator('#buffering-label')).toContainText('rendu des couleurs');
@@ -205,7 +256,9 @@ test('admin manages a film and two named viewers join in their language with one
       media: await page.locator('video').evaluate(video => ({ ready: video.readyState, error: video.error?.message,
         paused: video.paused, seeking: video.seeking, time: video.currentTime, width: video.videoWidth,
         source: video.currentSrc, buffered: video.buffered.length, nativeHls: video.canPlayType('application/vnd.apple.mpegurl'),
-        mse: window.Hls.isSupported(), vendor: navigator.vendor })).catch(() => null),
+        mse: window.Hls.isSupported(), vendor: navigator.vendor,
+        tracks: Array.from(video.textTracks).map(track => ({ kind: track.kind, mode: track.mode,
+          label: track.label, cues: track.cues?.length ?? 0, active: track.activeCues?.length ?? 0 })) })).catch(() => null),
       canvas: await page.locator('.color-canvas').evaluate(canvas => ({ ...canvas.dataset })).catch(() => null),
       label: await page.locator('#buffering-label').textContent().catch(() => null),
     });

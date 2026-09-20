@@ -1,6 +1,6 @@
 import { ColorRenderer, colorNeedsRenderer, nativeHdrPipeline } from './color-renderer.js';
 import { codecPlayable, createBackend } from './backends.js';
-import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, readyBlockers, canBegin } from './sync-core.js';
+import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, readyBlockers, canBegin, subtitleFontSize, shownSubtitleTrack, reviveSubtitleCues } from './sync-core.js';
 
 export class Clock {
   constructor() { this.samples = []; }
@@ -39,15 +39,30 @@ export class SyncPlayer {
         this.autoActivationTried = true; this.activate();
       }
     });
-    this.listen(video, 'loadedmetadata', () => { this.applyTrackChoices(); this.tracks(); });
+    this.listen(video, 'loadedmetadata', () => { this.applyTrackChoices(); this.tracks(); this.positionSubtitles(); });
     this.listen(video, 'loadeddata', () => { this.decoded = true; });
     this.listen(video, 'emptied', () => { this.decoded = false; });
     this.listen(video.textTracks, 'addtrack', event => {
       const raise = () => this.positionSubtitles();
       this.listen(event.track, 'cuechange', raise); raise();
     });
+    this.listen(video.textTracks, 'change', () => this.positionSubtitles());
     for (const event of ['controlsshown', 'controlshidden']) this.listen(video, event, () => this.positionSubtitles());
-    this.listen(window, 'resize', () => this.positionSubtitles());
+    // The element box tracks window resizes, fullscreen and orientation changes:
+    // observing it keeps the glyph size glued to the picture with no skipped frame.
+    this.subtitleObserver = new ResizeObserver(() => this.positionSubtitles());
+    this.subtitleObserver.observe(video);
+    this.listen(document, 'fullscreenchange', () => this.positionSubtitles());
+    this.listen(document, 'webkitfullscreenchange', () => this.positionSubtitles());
+    // iOS native fullscreen moves the video into a system layer: the layout box
+    // does not change and document fullscreenchange never fires, so its own
+    // events drive the refresh, with a second pass once the layout settles.
+    const refreshSubtitles = () => { this.positionSubtitles(); requestAnimationFrame(() => this.positionSubtitles()); };
+    for (const event of ['webkitbeginfullscreen', 'webkitendfullscreen', 'webkitpresentationmodechanged']) this.listen(video, event, refreshSubtitles);
+    // Rotation inside iOS native fullscreen changes the screen but never the
+    // element box, so neither the observer nor the events above can see it.
+    // Other resizes already reach the observer.
+    this.listen(window, 'resize', () => { if (this.video.webkitDisplayingFullscreen) refreshSubtitles(); });
     this.listen(video, 'error', () => { if (!this.backend?.recoversErrors) this.failPlayback('Lecture impossible sur cet appareil.'); });
     this.listen(video, 'play', () => {
       // Browsers can dispatch a queued play event after activate() already paused: the
@@ -78,11 +93,25 @@ export class SyncPlayer {
   listen(target, event, handler) { target.addEventListener(event, handler); this.listeners.push(() => target.removeEventListener(event, handler)); }
   positionSubtitles() {
     const container = this.video.closest('.plyr'), controls = container?.querySelector('.plyr__controls');
-    const visible = !container?.classList.contains('plyr--hide-controls') || this.video.closest('#screen')?.classList.contains('settings-open');
-    const height = this.video.getBoundingClientRect().height;
+    // iOS native fullscreen paints through a system layer where the element box
+    // does not change and plyr controls do not apply: measure the screen itself.
+    const fullscreen = this.video.webkitDisplayingFullscreen === true;
+    const rect = fullscreen ? { width: screen.width, height: screen.height } : this.video.getBoundingClientRect(), height = rect.height;
+    const visible = !fullscreen && (!container?.classList.contains('plyr--hide-controls') || this.video.closest('#screen')?.classList.contains('settings-open'));
+    // object-fit: contain letterboxes inside the element; the glyph size follows
+    // the painted picture, which a --subtitle-size custom property carries to
+    // both native ::cue rendering and the colour renderer's caption overlay.
+    const aspect = this.video.videoWidth / this.video.videoHeight || 16 / 9;
+    const pictureHeight = Math.min(rect.height, rect.width / aspect);
+    if (pictureHeight > 0) this.video.parentElement?.style.setProperty('--subtitle-size', `${subtitleFontSize(pictureHeight)}px`);
     const line = visible && height ? Math.max(35, Math.min(84, 100 - ((controls?.getBoundingClientRect().height || 64) + 12) / height * 100)) : 84;
-    for (const track of this.video.textTracks) for (const cue of track.activeCues ?? []) {
-      cue.snapToLines = false; cue.line = line; cue.lineAlign = 'end';
+    const keep = this.subtitleChoice < 0 ? null : shownSubtitleTrack(Array.from(this.video.textTracks), this.subtitleChoice);
+    for (const track of this.video.textTracks) {
+      if (track !== keep && track.mode === 'showing' && ['subtitles', 'captions'].includes(track.kind)) track.mode = 'hidden';
+      if (track === keep) reviveSubtitleCues(track, this.video.currentTime);
+      for (const cue of track.activeCues ?? []) {
+        cue.snapToLines = false; cue.line = line; cue.lineAlign = 'end';
+      }
     }
     this.colorRenderer?.updateCaptions();
   }
@@ -280,6 +309,10 @@ export class SyncPlayer {
     if (action.reportUnready) this.report(false);
     const rate = action.rate ?? (action.normalizeRate ? 1 : undefined);
     if (rate !== undefined && this.video.playbackRate !== rate) this.video.playbackRate = rate;
+    // A track whose cues were unscheduled stays silent forever without a
+    // periodic poke: cuechange cannot fire on cues that never activate.
+    const keep = this.subtitleChoice < 0 ? null : shownSubtitleTrack(Array.from(this.video.textTracks), this.subtitleChoice);
+    if (keep) reviveSubtitleCues(keep, this.video.currentTime);
   }
   async begin() {
     this.startTimer = null;
@@ -314,7 +347,7 @@ export class SyncPlayer {
   }
   dispose() {
     this.disposed = true; clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings);
-    clearTimeout(this.startTimer); clearTimeout(this.retry); this.listeners.forEach(remove => remove());
+    clearTimeout(this.startTimer); clearTimeout(this.retry); this.subtitleObserver?.disconnect(); this.listeners.forEach(remove => remove());
     this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load();
     this.releaseWakeLock();
   }
