@@ -251,3 +251,9 @@ WSL, et les quatre mires Chrome/Firefox ont réussi. Le scénario Linux a utilis
 Node 22, FFmpeg système et la commande Playwright `test --project=webkit`.
 Ils ne mesurent pas le gain de FPS sur le Xiaomi 15T Pro. Android réel et Safari
 sur appareils Apple restent à valider.
+
+Le plein écran natif iOS n'est couvert que par les tests unitaires : ils rejouent
+sa séquence d'événements (`webkitbeginfullscreen`, `webkitpresentationmodechanged`,
+`resize` de la fenêtre pour la rotation) et vérifient que la taille des
+sous-titres se recalcule depuis `screen`. Aucun iPhone ni iPad réel n'a confirmé
+ce comportement.

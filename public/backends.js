@@ -30,6 +30,22 @@ export function createBackend(video, url, options, handlers) {
 const bufferBytes = (minBuffer, bitrate) =>
   Math.max(60 * 1024 ** 2, Math.ceil(minBuffer * (bitrate ?? 20_000_000) / 8));
 
+// hls.js parks unselected subtitle tracks in 'disabled', and a WebVTT fragment
+// that finishes parsing there loses its cues for good: _appendCues bails on
+// 'disabled' and the cached fragment is never fetched again, so a fast
+// re-selection can leave the track showing with an empty cue list. Same dance
+// as the stock toggleTrackModes, but 'hidden' is the floor: it renders
+// identically and late cues still land.
+export function pinSubtitleModes(controller) {
+  if (!controller.media || !controller.hls.config.renderTextTracksNatively) return;
+  const current = controller.currentTrack;
+  for (const track of controller.tracksInGroup) {
+    const textTrack = track.trackNode?.track;
+    const mode = track === current && controller.subtitleDisplay ? 'showing' : 'hidden';
+    if (textTrack && textTrack.mode !== mode) textTrack.mode = mode;
+  }
+}
+
 export class HlsJsBackend {
   // Bounded recovery happens inside the adapter; the media element's own error
   // event must not short-circuit it.
@@ -41,6 +57,9 @@ export class HlsJsBackend {
     this.mediaRecoveries = 0; this.networkRecoveries = 0;
     this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
       maxBufferSize: bufferBytes(minBuffer, bitrate), backBufferLength: 10, enableWorker: true });
+
+    const trackController = this.hls.subtitleTrackController;
+    if (trackController) trackController.toggleTrackModes = () => pinSubtitleModes(trackController);
     this.hls.loadSource(url); this.hls.attachMedia(video);
     this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => onBuffered?.());
     for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) {
@@ -100,7 +119,8 @@ export class NativeHlsBackend {
   }
   applyChoices(audio, subtitles) {
     Array.from(this.video.audioTracks ?? []).forEach((track, i) => { track.enabled = i === audio; });
-    subtitleTracks(this.video).forEach((track, i) => { track.mode = i === subtitles ? 'showing' : 'disabled'; });
+    // 'hidden' rather than 'disabled': WebKit can shed a disabled track's cues.
+    subtitleTracks(this.video).forEach((track, i) => { track.mode = i === subtitles ? 'showing' : 'hidden'; });
   }
   destroy() { this.abort.abort(); }
 }
