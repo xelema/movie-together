@@ -266,6 +266,10 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   args.push('-map', `0:${video.index}`);
   for (const track of audio) args.push('-map', `0:${track.index}`);
   args.push('-c', 'copy', ...transport.args);
+  // ffmpeg < 7 drops EXT-X-STREAM-INF entries whose bandwidth is unknown on
+  // stream copies; the hint seeds codecpar bit_rate. Newer ffmpeg measures the
+  // muxed bytes and ignores it, so the written BANDWIDTH stays accurate there.
+  args.push('-b:v', String(Math.round(movie.probe.bitrate || 20_000_000)));
   for (const [index, track] of audio.entries()) {
     if (!track.copy) {
       args.push(`-filter:a:${index}`, 'aresample=48000:ochl=stereo:rematrix_maxval=1', `-c:a:${index}`, 'aac', `-profile:a:${index}`, 'aac_low',
