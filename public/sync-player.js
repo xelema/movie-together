@@ -1,6 +1,6 @@
 import { ColorRenderer, colorNeedsRenderer, nativeHdrPipeline } from './color-renderer.js';
 import { codecPlayable, createBackend } from './backends.js';
-import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, readyBlockers, canBegin, subtitleFontSize, shownSubtitleTrack } from './sync-core.js';
+import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, readyBlockers, canBegin, subtitleFontSize, shownSubtitleTrack, reviveSubtitleCues } from './sync-core.js';
 
 export class Clock {
   constructor() { this.samples = []; }
@@ -104,6 +104,7 @@ export class SyncPlayer {
     const keep = this.subtitleChoice < 0 ? null : shownSubtitleTrack(Array.from(this.video.textTracks), this.subtitleChoice);
     for (const track of this.video.textTracks) {
       if (track !== keep && track.mode === 'showing' && ['subtitles', 'captions'].includes(track.kind)) track.mode = 'hidden';
+      if (track === keep) reviveSubtitleCues(track, this.video.currentTime);
       for (const cue of track.activeCues ?? []) {
         cue.snapToLines = false; cue.line = line; cue.lineAlign = 'end';
       }
@@ -304,6 +305,10 @@ export class SyncPlayer {
     if (action.reportUnready) this.report(false);
     const rate = action.rate ?? (action.normalizeRate ? 1 : undefined);
     if (rate !== undefined && this.video.playbackRate !== rate) this.video.playbackRate = rate;
+    // A track whose cues were unscheduled stays silent forever without a
+    // periodic poke: cuechange cannot fire on cues that never activate.
+    const keep = this.subtitleChoice < 0 ? null : shownSubtitleTrack(Array.from(this.video.textTracks), this.subtitleChoice);
+    if (keep) reviveSubtitleCues(keep, this.video.currentTime);
   }
   async begin() {
     this.startTimer = null;

@@ -94,3 +94,19 @@ export function shownSubtitleTrack(tracks, selected = -1) {
   if (showing.includes(subtitles[selected])) return subtitles[selected];
   return showing.find(track => track.activeCues?.length) ?? showing[0] ?? null;
 }
+
+// Blink unschedules a track's cues when its mode passes through 'disabled' and
+// never revives them on 'showing': a re-selected track can stay visible with
+// cues that never enter activeCues. The transition strands the whole list, so
+// re-register every cue once per stranding. The flag clears as soon as the
+// track reads healthy again, and the snapshot keeps the live cue list stable
+// while it is rebuilt.
+export function reviveSubtitleCues(track, time) {
+  const cues = Array.from(track.cues ?? []);
+  const active = new Set(track.activeCues ?? []);
+  const stale = cues.some(cue => cue.startTime <= time && cue.endTime > time && !active.has(cue));
+  if (!stale) { track.revived = false; return; }
+  if (track.revived) return;
+  track.revived = true;
+  for (const cue of cues) { track.removeCue(cue); track.addCue(cue); }
+}

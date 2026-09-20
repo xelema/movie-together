@@ -133,6 +133,15 @@ test('admin manages a film and two named viewers join in their language with one
     expect(await guest.evaluate(() => window.testParticipant === document.querySelector('#participants li'))).toBe(true);
     await clickControl(guest, '.plyr__controls [data-plyr=play]');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
+    // Hold the first subtitle segment in flight: a fragment that finishes
+    // parsing while its track is parked gets its cues dropped and is never
+    // refetched, so the round trip below must still bring the cues back.
+    let releaseSubtitle = () => {}, held = false;
+    const subtitleGate = new Promise(resolve => { releaseSubtitle = resolve; });
+    await guest.route('**/sub_*.vtt', async route => {
+      if (!held) { held = true; await subtitleGate; }
+      await route.continue();
+    });
     await guest.locator('#open-settings').click(); await guest.locator('#audio').selectOption('1'); await guest.locator('#subtitles').selectOption('0');
     await expect(guest.locator('#audio')).toBeInViewport(); await expect(guest.locator('#subtitles')).toBeInViewport();
     // Only one text track may render at once, whatever the engine exposes, and
@@ -147,6 +156,18 @@ test('admin manages a film and two named viewers join in their language with one
     await expect.poll(() => guest.locator('video').evaluate(video => video.textTracks[0].mode)).toBe('showing');
     const subtitleModes = page => page.locator('video').evaluate(video =>
       Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind)).map(track => track.mode));
+    // Switch away while the first track's segment is still parsing. Once
+    // released, the fragment finishes in the parked state: its cues must still
+    // land there, before the track is ever re-selected.
+    await expect.poll(() => held).toBe(true);
+    await guest.locator('#subtitles').selectOption('1');
+    await expect.poll(async () => (await subtitleModes(guest))[1]).toBe('showing');
+    releaseSubtitle();
+    await expect.poll(() => guest.locator('video').evaluate(video => video.textTracks[0].cues?.length ?? 0)).toBeGreaterThan(0);
+    await guest.locator('#subtitles').selectOption('0');
+    await expect.poll(() => guest.locator('video').evaluate(video => video.textTracks[0].mode)).toBe('showing');
+    // The reported failure was a showing track whose cues never activated.
+    await expect.poll(() => guest.locator('video').evaluate(video => video.textTracks[0].activeCues?.length ?? 0)).toBeGreaterThan(0);
     const expectSubtitleSize = page => expect.poll(async () => page.locator('video').evaluate(video => {
       const rect = video.getBoundingClientRect(), aspect = video.videoWidth / video.videoHeight || 16 / 9;
       const picture = Math.min(rect.height, rect.width / aspect);

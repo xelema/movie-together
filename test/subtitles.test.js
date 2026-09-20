@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { subtitleFontSize, shownSubtitleTrack } from '../public/sync-core.js';
+import { subtitleFontSize, shownSubtitleTrack, reviveSubtitleCues } from '../public/sync-core.js';
 import { SyncPlayer } from '../public/sync-player.js';
 
 const track = (mode, { kind = 'subtitles', cues = 0 } = {}) =>
@@ -50,7 +50,7 @@ const fakePlayer = (tracks, subtitleChoice, video = {}) => {
       textTracks: tracks,
       closest: () => null,
       getBoundingClientRect: () => ({ width: 1920, height: 1080 }),
-      videoWidth: 1920, videoHeight: 1080,
+      videoWidth: 1920, videoHeight: 1080, currentTime: 0,
       webkitDisplayingFullscreen: false,
       parentElement: { style: { setProperty: (name, value) => { styles[name] = value; } } },
       ...video,
@@ -126,4 +126,53 @@ test('webkit video fullscreen events refresh subtitle layout', () => {
   } finally {
     for (const key of globals) saved[key] === undefined ? delete globalThis[key] : globalThis[key] = saved[key];
   }
+});
+
+test('a track whose cues went stale is re-registered once, whole list', () => {
+  // Model the browser stranding a whole cue list: present in cues, absent from
+  // activeCues even inside the cue window.
+  const cue = { startTime: 0, endTime: 10 }, other = { startTime: 20, endTime: 30 };
+  const track = {
+    cues: [cue, other], activeCues: [], readded: [],
+    removeCue() {}, addCue(item) { this.readded.push(item); },
+  };
+  reviveSubtitleCues(track, 5);
+  assert.deepEqual(track.readded, [cue, other]);
+  track.readded = [];
+  reviveSubtitleCues(track, 6);
+  assert.deepEqual(track.readded, []);
+});
+
+test('no cues to revive while the active cue is tracked', () => {
+  const cue = { startTime: 0, endTime: 10 };
+  const track = { cues: [cue], activeCues: [cue], addCue() { throw new Error('unexpected'); }, removeCue() {} };
+  reviveSubtitleCues(track, 5);
+  assert.equal(track.revived, false);
+});
+
+test('a healed track can be revived again after a new stranding', () => {
+  const cue = { startTime: 0, endTime: 10 };
+  const track = {
+    cues: [cue], activeCues: [], readded: [],
+    removeCue() {}, addCue(item) { this.readded.push(item); },
+  };
+  reviveSubtitleCues(track, 5);
+  assert.equal(track.readded.length, 1);
+  // The browser rescheduled the cue: the flag clears on the next healthy read.
+  track.activeCues = [cue]; track.readded = [];
+  reviveSubtitleCues(track, 6);
+  assert.equal(track.revived, false);
+  track.activeCues = [];
+  reviveSubtitleCues(track, 7);
+  assert.equal(track.readded.length, 1);
+});
+
+test('positionSubtitles revives the kept track when its cues went stale', () => {
+  const cue = { startTime: 0, endTime: 50 };
+  const kept = {
+    kind: 'subtitles', mode: 'showing', cues: [cue], activeCues: [],
+    removeCue() {}, addCue(item) { (this.added ??= []).push(item); },
+  };
+  positionSubtitles(fakePlayer([kept, track('disabled')], 0, { currentTime: 10 }));
+  assert.deepEqual(kept.added, [cue]);
 });
