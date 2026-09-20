@@ -59,7 +59,7 @@ Single Node process, no build step, no framework.
 - `npm run test:e2e` for `public/` or API changes. WebKit is skipped on Windows
   (no HLS/MSE there), so run it on macOS/Linux when touching playback.
 - `npm run test:colors` when touching the colour pipeline or shaders. Missing
-  codec/WebGL2 coverage is an explicit skip, not a pass; `COLOR_TEST_STRICT=1`
+  codec/WebGL2 coverage is an explicit skip, not a pass. `COLOR_TEST_STRICT=1`
   makes it a failure.
 - FFmpeg and FFprobe must be installed. `npm run setup` finds them, also via
   Chocolatey on Windows.

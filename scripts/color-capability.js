@@ -36,6 +36,13 @@ export function codecStatus(probe) {
     detail: `no MSE decoder for ${probe?.mime ?? 'unknown codec'} (canPlayType ${JSON.stringify(probe?.canPlayType ?? '')})` };
 }
 
+// The comparison needs both renders: name each browser that produced no
+// image, so a double outage never blames Chrome alone.
+export function missingImageDetail(images) {
+  const missing = Object.keys(images).filter(name => !images[name]);
+  return `${missing.join(' and ')} produced no image`;
+}
+
 // checks: { browser, fixture, status: 'pass' | 'skip' | 'fail', ...context }.
 // Default mode fails only on real failures; strict mode (COLOR_TEST_STRICT=1,
 // for CI runners with codec coverage) fails on any skip, so missing HDR

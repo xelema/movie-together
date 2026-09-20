@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { codecStatus, summarizeChecks } from '../scripts/color-capability.js';
+import { codecStatus, missingImageDetail, summarizeChecks } from '../scripts/color-capability.js';
 
 test('a fixture runs only on a positive MSE answer', () => {
   const mime = 'video/mp4; codecs="hvc1.2.4.L93.B0"';
@@ -42,4 +42,10 @@ test('a suite where nothing ran is not a pass', () => {
   assert.equal(onlySkips.ok, false);
   assert.equal(summarizeChecks([]).ok, false);
   assert.equal(summarizeChecks([{ browser: 'Chrome', fixture: 'HDR10', status: 'pass' }], { strict: true }).ok, true);
+});
+
+test('the comparison skip names every browser that produced no image', () => {
+  assert.equal(missingImageDetail({ Chrome: null, Firefox: [1] }), 'Chrome produced no image');
+  assert.equal(missingImageDetail({ Chrome: [1], Firefox: null }), 'Firefox produced no image');
+  assert.equal(missingImageDetail({ Chrome: null, Firefox: null }), 'Chrome and Firefox produced no image');
 });

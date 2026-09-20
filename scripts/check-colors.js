@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { createStore } from '../src/storage.js';
 import { prepareMovie, run } from '../src/media.js';
 import { pipeline } from '../public/color-renderer.js';
-import { codecProbe, codecStatus, webglProbe, summarizeChecks } from './color-capability.js';
+import { codecProbe, codecStatus, webglProbe, summarizeChecks, missingImageDetail } from './color-capability.js';
 
 const { splineLut, gamutLut, rgb2ipt, ipt2rgb, iptRgb2lms, invert3, PRIMARIES, TARGET_NITS, TARGET_BLACK } = pipeline;
 
@@ -190,7 +190,7 @@ try {
       report.browsers[name] = { version: browser.version(), webgl2, codecs };
       for (const fixture of fixtures) {
         // Chaque mire exige un decodeur MSE pour son codec et le WebGL2 du
-        // shader ; a defaut c'est un skip explicite, jamais un faux succes ni
+        // shader. A defaut c'est un skip explicite, jamais un faux succes ni
         // un timeout de decodeur deguise.
         const capability = webgl2 ? codecStatus(codecs[fixture.name])
           : { status: 'skip', reason: 'webgl-unavailable', detail: 'no WebGL2 context with high-float fragment precision' };
@@ -257,7 +257,7 @@ try {
     const a = images[`Chrome/${name}`], b = images[`Firefox/${name}`];
     if (!a || !b) {
       checks.push({ browser: 'Chrome+Firefox', fixture: name, status: 'skip',
-        reason: 'coverage-incomplete', detail: `${a ? 'Firefox' : 'Chrome'} produced no image` });
+        reason: 'coverage-incomplete', detail: missingImageDetail({ Chrome: a, Firefox: b }) });
       continue;
     }
     try {
@@ -282,7 +282,7 @@ try {
   console.log(`checks: ${summary.passed} passed, ${summary.skipped} skipped, ${summary.failed} failed${strict ? ' (strict)' : ''}`);
   for (const name of summary.missingCoverage) console.log(`  skipped: ${name}`);
   for (const name of summary.failures) console.log(`  failed: ${name}`);
-  if (summary.skipped && !strict) console.log('partial result: missing codec/WebGL2 coverage above; COLOR_TEST_STRICT=1 turns it into a failure');
+  if (summary.skipped && !strict) console.log('partial result: missing codec/WebGL2 coverage above. COLOR_TEST_STRICT=1 turns it into a failure');
   if (!summary.ok) process.exitCode = 1;
 } finally {
   await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
