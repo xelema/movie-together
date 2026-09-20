@@ -1,6 +1,6 @@
 import { ColorRenderer, colorNeedsRenderer, nativeHdrPipeline } from './color-renderer.js';
 import { codecPlayable, createBackend } from './backends.js';
-import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, readyBlockers, canBegin } from './sync-core.js';
+import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, readyBlockers, canBegin, subtitleFontSize, shownSubtitleTrack } from './sync-core.js';
 
 export class Clock {
   constructor() { this.samples = []; }
@@ -39,15 +39,20 @@ export class SyncPlayer {
         this.autoActivationTried = true; this.activate();
       }
     });
-    this.listen(video, 'loadedmetadata', () => { this.applyTrackChoices(); this.tracks(); });
+    this.listen(video, 'loadedmetadata', () => { this.applyTrackChoices(); this.tracks(); this.positionSubtitles(); });
     this.listen(video, 'loadeddata', () => { this.decoded = true; });
     this.listen(video, 'emptied', () => { this.decoded = false; });
     this.listen(video.textTracks, 'addtrack', event => {
       const raise = () => this.positionSubtitles();
       this.listen(event.track, 'cuechange', raise); raise();
     });
+    this.listen(video.textTracks, 'change', () => this.positionSubtitles());
     for (const event of ['controlsshown', 'controlshidden']) this.listen(video, event, () => this.positionSubtitles());
-    this.listen(window, 'resize', () => this.positionSubtitles());
+    // The element box tracks window resizes, fullscreen and orientation changes:
+    // observing it keeps the glyph size glued to the picture with no skipped frame.
+    this.subtitleObserver = new ResizeObserver(() => this.positionSubtitles());
+    this.subtitleObserver.observe(video);
+    this.listen(document, 'fullscreenchange', () => this.positionSubtitles());
     this.listen(video, 'error', () => { if (!this.backend?.recoversErrors) this.failPlayback('Lecture impossible sur cet appareil.'); });
     this.listen(video, 'play', () => {
       // Browsers can dispatch a queued play event after activate() already paused: the
@@ -79,10 +84,20 @@ export class SyncPlayer {
   positionSubtitles() {
     const container = this.video.closest('.plyr'), controls = container?.querySelector('.plyr__controls');
     const visible = !container?.classList.contains('plyr--hide-controls') || this.video.closest('#screen')?.classList.contains('settings-open');
-    const height = this.video.getBoundingClientRect().height;
+    const rect = this.video.getBoundingClientRect(), height = rect.height;
+    // object-fit: contain letterboxes inside the element; the glyph size follows
+    // the painted picture, which a --subtitle-size custom property carries to
+    // both native ::cue rendering and the colour renderer's caption overlay.
+    const aspect = this.video.videoWidth / this.video.videoHeight || 16 / 9;
+    const pictureHeight = Math.min(rect.height, rect.width / aspect);
+    if (pictureHeight > 0) this.video.parentElement?.style.setProperty('--subtitle-size', `${subtitleFontSize(pictureHeight)}px`);
     const line = visible && height ? Math.max(35, Math.min(84, 100 - ((controls?.getBoundingClientRect().height || 64) + 12) / height * 100)) : 84;
-    for (const track of this.video.textTracks) for (const cue of track.activeCues ?? []) {
-      cue.snapToLines = false; cue.line = line; cue.lineAlign = 'end';
+    const keep = this.subtitleChoice < 0 ? null : shownSubtitleTrack(Array.from(this.video.textTracks));
+    for (const track of this.video.textTracks) {
+      if (track !== keep && track.mode === 'showing' && ['subtitles', 'captions'].includes(track.kind)) track.mode = 'hidden';
+      for (const cue of track.activeCues ?? []) {
+        cue.snapToLines = false; cue.line = line; cue.lineAlign = 'end';
+      }
     }
     this.colorRenderer?.updateCaptions();
   }
@@ -314,7 +329,7 @@ export class SyncPlayer {
   }
   dispose() {
     this.disposed = true; clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings);
-    clearTimeout(this.startTimer); clearTimeout(this.retry); this.listeners.forEach(remove => remove());
+    clearTimeout(this.startTimer); clearTimeout(this.retry); this.subtitleObserver?.disconnect(); this.listeners.forEach(remove => remove());
     this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load();
     this.releaseWakeLock();
   }

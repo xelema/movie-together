@@ -77,3 +77,16 @@ export const memberReady = observables => readyBlockers(observables).length === 
 export function canBegin({ state, scheduled, activated, failure, hidden, silent }) {
   return state?.phase === 'playing' && state.startsAt === scheduled && activated && !failure && !hidden && !silent;
 }
+
+// Subtitle glyphs scale with the rendered picture, not the window: the old
+// 2.4vw rule produced 30.72 px on a 720 px tall picture, which stays the
+// reference ratio. The floor keeps a tiny render readable.
+export const subtitleFontSize = pictureHeight => Math.max(18, pictureHeight * (30.72 / 720));
+
+// Only one text track may paint at once; WebKit can expose the same HLS
+// subtitle as duplicate TextTracks all in showing mode. Keep the showing track
+// with live cues, else the first showing one; the caller demotes the rest.
+export function shownSubtitleTrack(tracks) {
+  const showing = tracks.filter(track => track.mode === 'showing' && ['subtitles', 'captions'].includes(track.kind));
+  return showing.find(track => track.activeCues?.length) ?? showing[0] ?? null;
+}
