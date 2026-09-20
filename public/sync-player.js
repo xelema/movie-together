@@ -53,6 +53,12 @@ export class SyncPlayer {
     this.subtitleObserver = new ResizeObserver(() => this.positionSubtitles());
     this.subtitleObserver.observe(video);
     this.listen(document, 'fullscreenchange', () => this.positionSubtitles());
+    this.listen(document, 'webkitfullscreenchange', () => this.positionSubtitles());
+    // iOS native fullscreen moves the video into a system layer: the layout box
+    // does not change and document fullscreenchange never fires, so its own
+    // events drive the refresh, with a second pass once the layout settles.
+    const refreshSubtitles = () => { this.positionSubtitles(); requestAnimationFrame(() => this.positionSubtitles()); };
+    for (const event of ['webkitbeginfullscreen', 'webkitendfullscreen']) this.listen(video, event, refreshSubtitles);
     this.listen(video, 'error', () => { if (!this.backend?.recoversErrors) this.failPlayback('Lecture impossible sur cet appareil.'); });
     this.listen(video, 'play', () => {
       // Browsers can dispatch a queued play event after activate() already paused: the
@@ -83,8 +89,11 @@ export class SyncPlayer {
   listen(target, event, handler) { target.addEventListener(event, handler); this.listeners.push(() => target.removeEventListener(event, handler)); }
   positionSubtitles() {
     const container = this.video.closest('.plyr'), controls = container?.querySelector('.plyr__controls');
-    const visible = !container?.classList.contains('plyr--hide-controls') || this.video.closest('#screen')?.classList.contains('settings-open');
-    const rect = this.video.getBoundingClientRect(), height = rect.height;
+    // iOS native fullscreen paints through a system layer where the element box
+    // does not change and plyr controls do not apply: measure the screen itself.
+    const fullscreen = this.video.webkitDisplayingFullscreen === true;
+    const rect = fullscreen ? { width: screen.width, height: screen.height } : this.video.getBoundingClientRect(), height = rect.height;
+    const visible = !fullscreen && (!container?.classList.contains('plyr--hide-controls') || this.video.closest('#screen')?.classList.contains('settings-open'));
     // object-fit: contain letterboxes inside the element; the glyph size follows
     // the painted picture, which a --subtitle-size custom property carries to
     // both native ::cue rendering and the colour renderer's caption overlay.
@@ -92,7 +101,7 @@ export class SyncPlayer {
     const pictureHeight = Math.min(rect.height, rect.width / aspect);
     if (pictureHeight > 0) this.video.parentElement?.style.setProperty('--subtitle-size', `${subtitleFontSize(pictureHeight)}px`);
     const line = visible && height ? Math.max(35, Math.min(84, 100 - ((controls?.getBoundingClientRect().height || 64) + 12) / height * 100)) : 84;
-    const keep = this.subtitleChoice < 0 ? null : shownSubtitleTrack(Array.from(this.video.textTracks));
+    const keep = this.subtitleChoice < 0 ? null : shownSubtitleTrack(Array.from(this.video.textTracks), this.subtitleChoice);
     for (const track of this.video.textTracks) {
       if (track !== keep && track.mode === 'showing' && ['subtitles', 'captions'].includes(track.kind)) track.mode = 'hidden';
       for (const cue of track.activeCues ?? []) {

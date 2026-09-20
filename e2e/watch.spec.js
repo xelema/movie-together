@@ -145,6 +145,8 @@ test('admin manages a film and two named viewers join in their language with one
     await guest.locator('video').evaluate(video => { video.textTracks[1].mode = 'showing'; });
     await expect.poll(() => showingTracks(guest)).toBe(1);
     await expect.poll(() => guest.locator('video').evaluate(video => video.textTracks[0].mode)).toBe('showing');
+    const subtitleModes = page => page.locator('video').evaluate(video =>
+      Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind)).map(track => track.mode));
     const expectSubtitleSize = page => expect.poll(async () => page.locator('video').evaluate(video => {
       const rect = video.getBoundingClientRect(), aspect = video.videoWidth / video.videoHeight || 16 / 9;
       const picture = Math.min(rect.height, rect.width / aspect);
@@ -195,7 +197,13 @@ test('admin manages a film and two named viewers join in their language with one
     }
     // A track switch is local to the viewer: it must not pause the room.
     await clickControl(guest, '#open-settings');
+    // The visible survivor follows the selector: another language takes the
+    // single showing slot, then none keeps every track off the screen.
+    await guest.locator('#subtitles').selectOption('1');
+    await expect.poll(() => showingTracks(guest)).toBe(1);
+    await expect.poll(async () => (await subtitleModes(guest))[1]).toBe('showing');
     await guest.locator('#subtitles').selectOption('-1'); await guest.locator('#close-settings').click();
+    await expect.poll(() => showingTracks(guest)).toBe(0);
     await guest.waitForTimeout(1200);
     expect(latest.get(host)?.state.phase).toBe('playing');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(false);

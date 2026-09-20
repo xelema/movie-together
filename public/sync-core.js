@@ -84,9 +84,13 @@ export function canBegin({ state, scheduled, activated, failure, hidden, silent 
 export const subtitleFontSize = pictureHeight => Math.max(18, pictureHeight * (30.72 / 720));
 
 // Only one text track may paint at once; WebKit can expose the same HLS
-// subtitle as duplicate TextTracks all in showing mode. Keep the showing track
-// with live cues, else the first showing one; the caller demotes the rest.
-export function shownSubtitleTrack(tracks) {
-  const showing = tracks.filter(track => track.mode === 'showing' && ['subtitles', 'captions'].includes(track.kind));
+// subtitle as duplicate TextTracks all in showing mode. The viewer's pick
+// (index among subtitle/caption tracks) survives while it is showing, so a
+// duplicate with earlier cues cannot demote it; otherwise keep the showing
+// track with live cues, else the first showing one. The caller demotes the rest.
+export function shownSubtitleTrack(tracks, selected = -1) {
+  const subtitles = tracks.filter(track => ['subtitles', 'captions'].includes(track.kind));
+  const showing = subtitles.filter(track => track.mode === 'showing');
+  if (showing.includes(subtitles[selected])) return subtitles[selected];
   return showing.find(track => track.activeCues?.length) ?? showing[0] ?? null;
 }
