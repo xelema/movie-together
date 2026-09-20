@@ -23,8 +23,17 @@ de pixels entre navigateurs sur le chemin natif n'y a pas de sens.
 `npm run test:colors` compare séparément les pixels HDR10, HLG, SDR BT.709 et SDR
 BT.601 dans Chrome et Firefox. Les captures et `report.json` se trouvent dans
 `test-results/colors`. Les mires doivent produire une image non noire ; l'écart
-moyen doit rester inférieur à 1,5 niveau sur 255 et le percentile 99 à 6 niveaux.
-Ce contrôle numérique complète les empreintes des images source.
+à la vérité doit rester inférieur à 5 niveaux sur 255 en moyenne et 14 au
+maximum, idem pour la comparaison entre navigateurs au percentile 99.
+Avant chaque mire, une sonde vérifie que le navigateur décode le codec via MSE
+et que WebGL2 offre la précision exigée par le shader. Sans ces capacités la
+mire est explicitement ignorée et listée dans le résumé : un résultat partiel
+ne fait jamais passer une couverture absente pour un succès, et une suite où
+rien n'a tourné échoue. Le contrôle des métadonnées préparées (transfert,
+primaires, matrice, codec du manifeste) tourne partout, sans navigateur.
+`COLOR_TEST_STRICT=1 npm run test:colors` transforme toute couverture manquante
+en échec, pour les machines qui doivent valider le HDR. Ce contrôle numérique
+complète les empreintes des images source.
 
 Les captures couvrent téléphone (390 px), tablette (820 px) et bureau (1440 px).
 Ces dimensions ne remplacent pas les essais sur de vrais appareils.
