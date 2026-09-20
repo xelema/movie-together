@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { createStore } from '../src/storage.js';
 import { prepareMovie, run } from '../src/media.js';
 import { pipeline } from '../public/color-renderer.js';
+import { codecProbe, codecStatus, webglProbe, summarizeChecks, missingImageDetail } from './color-capability.js';
 
 const { splineLut, gamutLut, rgb2ipt, ipt2rgb, iptRgb2lms, invert3, PRIMARIES, TARGET_NITS, TARGET_BLACK } = pipeline;
 
@@ -115,7 +116,8 @@ function gamutSample(lut3d, idx) {
 }
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'movie-colors-'));
-const store = createStore(root), fixtures = [], report = { browsers: {}, comparisons: {}, truth: {} };
+const store = createStore(root), fixtures = [], checks = [];
+const report = { browsers: {}, comparisons: {}, truth: {}, checks };
 const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
 const output = path.resolve('test-results/colors'); await mkdir(output, { recursive: true });
 let server;
@@ -157,8 +159,17 @@ try {
     args.push('-color_primaries', primaries, '-color_trc', transfer, '-colorspace', matrix, '-color_range', 'tv', '-f', 'matroska', path.join(store.directory(movie.id), 'source'));
     await run(ffmpeg, args);
     const prepared = await prepareMovie(store, movie, [], []);
-    fixtures.push({ name, root: path.join(store.directory(movie.id), prepared.generation),
-      rendition: prepared.renditions[0], patches });
+    const rendition = prepared.renditions[0];
+    fixtures.push({ name, root: path.join(store.directory(movie.id), prepared.generation), rendition, patches });
+    // Controle pur ffmpeg/metadonnees, sans navigateur : le flux prepare doit
+    // porter le marquage voulu. Sans lui le modele ci-dessous suivrait les tags
+    // reels et un decodeur aveugle aux couleurs "reussirait" une image fausse.
+    const codecOk = (codec === 'libx265' ? /^(hvc1|hev1)/ : /^avc1/).test(rendition.codecs ?? '');
+    const tagged = codecOk && rendition.color?.transfer === transfer
+      && rendition.color?.primaries === primaries && rendition.color?.matrix === matrix;
+    if (tagged) checks.push({ browser: 'ffmpeg', fixture: name, status: 'pass' });
+    else checks.push({ browser: 'ffmpeg', fixture: name, status: 'fail',
+      error: `prepared metadata ${JSON.stringify({ color: rendition.color, codecs: rendition.codecs })}, expected ${transfer}/${primaries}/${matrix}` });
   }
   const app = express();
   app.get('/', (_, res) => res.send('<!doctype html><style>body{margin:0;background:black}main{position:relative;width:512px}video{width:100%}canvas{position:absolute;inset:0;width:100%;height:100%}</style><main><video muted playsinline></video></main><script src="/hls.js"></script>'));
@@ -167,71 +178,112 @@ try {
   for (const fixture of fixtures) app.use(`/${fixture.name}`, express.static(fixture.root));
   server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`, images = {};
-  for (const [name, type, options] of [['Chrome', chromium, process.platform === 'win32' ? { channel: 'chrome' } : {}], ['Firefox', firefox, {}]]) {
+  const mimes = Object.fromEntries(fixtures.map(fixture => [fixture.name, `video/mp4; codecs="${fixture.rendition.codecs}"`]));
+  // CI runs Firefox on mesa: software WebGL exists but must be allowed.
+  for (const [name, type, options] of [['Chrome', chromium, process.platform === 'win32' ? { channel: 'chrome' } : {}],
+    ['Firefox', firefox, { firefoxUserPrefs: { 'webgl.forbid-software': false } }]]) {
     const browser = await type.launch({ headless: process.platform !== 'win32', ...options });
     try {
-      report.browsers[name] = { version: browser.version() };
       const page = await browser.newPage({ viewport: { width: 512, height: 256 } }); await page.goto(base);
+      const codecs = await page.evaluate(codecProbe, mimes);
+      const { webgl2 } = await page.evaluate(webglProbe);
+      report.browsers[name] = { version: browser.version(), webgl2, codecs };
       for (const fixture of fixtures) {
-        const result = await page.evaluate(async ({ name, rendition }) => {
-          const { ColorRenderer } = await import('/public/color-renderer.js');
-          window.renderer?.dispose(); window.hls?.destroy();
-          const video = document.querySelector('video');
-          let failure;
-          window.renderer = new ColorRenderer(video, rendition.color, message => { failure = message; });
-          window.hls = new Hls({ enableWorker: false });
-          let fatal;
-          hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) fatal = `${data.type}/${data.details}: ${data.error?.message ?? ''}`; });
-          hls.loadSource(`/${name}/${rendition.manifest}`); hls.attachMedia(video);
-          await Promise.race([video.play(), new Promise((_, reject) => setTimeout(() =>
-            reject(Error(fatal || video.error?.message || `Decoder timeout (readyState ${video.readyState}, support ${MediaSource.isTypeSupported(`video/mp4; codecs="${rendition.codecs}"`)})`)), 15000))]);
-          video.pause(); await new Promise(resolve => setTimeout(resolve, 100)); renderer.draw();
-          if (failure) throw Error(failure);
-          const { gl, canvas } = renderer, pixels = new Uint8Array(canvas.width * canvas.height * 4);
-          gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-          const snapshot = document.createElement('canvas'); snapshot.width = canvas.width; snapshot.height = canvas.height;
-          snapshot.getContext('2d').drawImage(canvas, 0, 0);
-          return { pixels: Array.from(pixels), width: canvas.width, height: canvas.height, png: snapshot.toDataURL(), ready: renderer.ready };
-        }, fixture);
-        assert.ok(result.ready, `${name}/${fixture.name}: no rendered frame`);
-        assert.ok(result.pixels.some((value, i) => i % 4 !== 3 && value > 100), `${name}/${fixture.name}: black output`);
-        images[`${name}/${fixture.name}`] = result.pixels;
-        // Ground truth: the patch codes are known, so the render must match an independent
-        // model of the intended conversion, not only the other browser.
-        const expected = fixture.patches.map(patch => expectedPatch(fixture.rendition.color, patch));
-        const measured = fixture.patches.map(patch => {
-          const at = ((result.height - 1 - patch.y) * result.width + patch.x) * 4;
-          return [result.pixels[at], result.pixels[at + 1], result.pixels[at + 2]];
-        });
-        const errors = measured.map((m, i) => Math.max(...m.map((v, c) => Math.abs(v - expected[i][c]))));
-        const mean = errors.reduce((sum, value) => sum + value, 0) / errors.length, max = Math.max(...errors);
-        report.truth[`${name}/${fixture.name}`] = { mean, max };
-        console.log(`${name} ${fixture.name}: truth mean ${mean.toFixed(2)}/255, max ${max}`);
-        // The margin covers decoder YUV->RGB rounding, amplified by the transfer curves on
-        // saturated patches at the texture clamp boundary. A wrong matrix or transfer shows
-        // up an order of magnitude above it.
-        if (!(mean <= 5 && max <= 14)) {
-          fixture.patches.forEach((patch, i) => console.log(
-            `  patch ${i} (code ${patch.code}, chroma ${patch.chroma}): expected ${expected[i]} measured ${measured[i]}`));
+        // Chaque mire exige un decodeur MSE pour son codec et le WebGL2 du
+        // shader. A defaut c'est un skip explicite, jamais un faux succes ni
+        // un timeout de decodeur deguise.
+        const capability = webgl2 ? codecStatus(codecs[fixture.name])
+          : { status: 'skip', reason: 'webgl-unavailable', detail: 'no WebGL2 context with high-float fragment precision' };
+        if (capability.status === 'skip') {
+          checks.push({ browser: name, fixture: fixture.name, ...capability });
+          console.log(`${name} ${fixture.name}: skipped (${capability.reason}: ${capability.detail})`);
+          continue;
         }
-        assert.ok(mean <= 5 && max <= 14, `${name}/${fixture.name}: render deviates from the expected colours`);
-        await writeFile(path.join(output, `${name}-${fixture.name}.png`), Buffer.from(result.png.split(',')[1], 'base64'));
-        console.log(`${name} ${fixture.name}: rendered`);
+        try {
+          const result = await page.evaluate(async ({ name, rendition }) => {
+            const { ColorRenderer } = await import('/public/color-renderer.js');
+            window.renderer?.dispose(); window.hls?.destroy();
+            const video = document.querySelector('video');
+            let failure;
+            window.renderer = new ColorRenderer(video, rendition.color, message => { failure = message; });
+            window.hls = new Hls({ enableWorker: false });
+            let fatal;
+            hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) fatal = `${data.type}/${data.details}: ${data.error?.message ?? ''}`; });
+            hls.loadSource(`/${name}/${rendition.manifest}`); hls.attachMedia(video);
+            await Promise.race([video.play(), new Promise((_, reject) => setTimeout(() =>
+              reject(Error(fatal || video.error?.message || `Decoder timeout (readyState ${video.readyState}, support ${MediaSource.isTypeSupported(`video/mp4; codecs="${rendition.codecs}"`)})`)), 15000))]);
+            video.pause(); await new Promise(resolve => setTimeout(resolve, 100)); renderer.draw();
+            if (failure) throw Error(failure);
+            const { gl, canvas } = renderer, pixels = new Uint8Array(canvas.width * canvas.height * 4);
+            gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+            const snapshot = document.createElement('canvas'); snapshot.width = canvas.width; snapshot.height = canvas.height;
+            snapshot.getContext('2d').drawImage(canvas, 0, 0);
+            return { pixels: Array.from(pixels), width: canvas.width, height: canvas.height, png: snapshot.toDataURL(), ready: renderer.ready };
+          }, fixture);
+          assert.ok(result.ready, `${name}/${fixture.name}: no rendered frame`);
+          assert.ok(result.pixels.some((value, i) => i % 4 !== 3 && value > 100), `${name}/${fixture.name}: black output`);
+          // Ground truth: the patch codes are known, so the render must match an independent
+          // model of the intended conversion, not only the other browser.
+          const expected = fixture.patches.map(patch => expectedPatch(fixture.rendition.color, patch));
+          const measured = fixture.patches.map(patch => {
+            const at = ((result.height - 1 - patch.y) * result.width + patch.x) * 4;
+            return [result.pixels[at], result.pixels[at + 1], result.pixels[at + 2]];
+          });
+          const errors = measured.map((m, i) => Math.max(...m.map((v, c) => Math.abs(v - expected[i][c]))));
+          const mean = errors.reduce((sum, value) => sum + value, 0) / errors.length, max = Math.max(...errors);
+          report.truth[`${name}/${fixture.name}`] = { mean, max };
+          console.log(`${name} ${fixture.name}: truth mean ${mean.toFixed(2)}/255, max ${max}`);
+          // The margin covers decoder YUV->RGB rounding, amplified by the transfer curves on
+          // saturated patches at the texture clamp boundary. A wrong matrix or transfer shows
+          // up an order of magnitude above it.
+          if (!(mean <= 5 && max <= 14)) {
+            fixture.patches.forEach((patch, i) => console.log(
+              `  patch ${i} (code ${patch.code}, chroma ${patch.chroma}): expected ${expected[i]} measured ${measured[i]}`));
+          }
+          assert.ok(mean <= 5 && max <= 14, `${name}/${fixture.name}: render deviates from the expected colours`);
+          await writeFile(path.join(output, `${name}-${fixture.name}.png`), Buffer.from(result.png.split(',')[1], 'base64'));
+          console.log(`${name} ${fixture.name}: rendered`);
+          // Only a passed render feeds the cross-browser comparison below.
+          images[`${name}/${fixture.name}`] = result.pixels;
+          checks.push({ browser: name, fixture: fixture.name, status: 'pass' });
+        } catch (error) {
+          checks.push({ browser: name, fixture: fixture.name, status: 'fail', error: error.message });
+          console.log(`${name} ${fixture.name}: failed (${error.message})`);
+        }
       }
     } finally { await browser.close(); }
   }
   for (const { name } of fixtures) {
-    const a = images[`Chrome/${name}`], b = images[`Firefox/${name}`], differences = [];
-    for (let i = 0; i < a.length; i++) if (i % 4 !== 3) differences.push(Math.abs(a[i] - b[i]));
-    differences.sort((a, b) => a - b);
-    const mean = differences.reduce((sum, value) => sum + value, 0) / differences.length;
-    const p99 = differences[Math.floor(differences.length * .99)], max = differences.at(-1);
-    report.comparisons[name] = { mean, p99, max };
-    console.log(`${name}: mean ${mean.toFixed(3)}/255, p99 ${p99}, maximum ${max}`);
-    // Meme marge que la verite : le bruit de decodage est amplifie par les
-    // courbes de transfert au voisinage du clip.
-    assert.ok(mean <= 5 && p99 <= 14, `${name}: visible browser colour mismatch`);
+    const a = images[`Chrome/${name}`], b = images[`Firefox/${name}`];
+    if (!a || !b) {
+      checks.push({ browser: 'Chrome+Firefox', fixture: name, status: 'skip',
+        reason: 'coverage-incomplete', detail: missingImageDetail({ Chrome: a, Firefox: b }) });
+      continue;
+    }
+    try {
+      const differences = [];
+      for (let i = 0; i < a.length; i++) if (i % 4 !== 3) differences.push(Math.abs(a[i] - b[i]));
+      differences.sort((a, b) => a - b);
+      const mean = differences.reduce((sum, value) => sum + value, 0) / differences.length;
+      const p99 = differences[Math.floor(differences.length * .99)], max = differences.at(-1);
+      report.comparisons[name] = { mean, p99, max };
+      console.log(`${name}: mean ${mean.toFixed(3)}/255, p99 ${p99}, maximum ${max}`);
+      // Meme marge que la verite : le bruit de decodage est amplifie par les
+      // courbes de transfert au voisinage du clip.
+      assert.ok(mean <= 5 && p99 <= 14, `${name}: visible browser colour mismatch`);
+      checks.push({ browser: 'Chrome+Firefox', fixture: name, status: 'pass' });
+    } catch (error) {
+      checks.push({ browser: 'Chrome+Firefox', fixture: name, status: 'fail', error: error.message });
+      console.log(`${name}: failed (${error.message})`);
+    }
   }
+  const strict = process.env.COLOR_TEST_STRICT === '1';
+  const summary = report.summary = summarizeChecks(checks, { strict });
+  console.log(`checks: ${summary.passed} passed, ${summary.skipped} skipped, ${summary.failed} failed${strict ? ' (strict)' : ''}`);
+  for (const name of summary.missingCoverage) console.log(`  skipped: ${name}`);
+  for (const name of summary.failures) console.log(`  failed: ${name}`);
+  if (summary.skipped && !strict) console.log('partial result: missing codec/WebGL2 coverage above. COLOR_TEST_STRICT=1 turns it into a failure');
+  if (!summary.ok) process.exitCode = 1;
 } finally {
   await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
   if (server) await new Promise(resolve => server.close(resolve));
