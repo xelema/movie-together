@@ -26,8 +26,9 @@ test('hdr content follows the screen: shader on sdr, native on hdr, force shader
   await page.locator('#upload-file').setInputFiles({ name: 'fixture.mp4', mimeType: 'video/mp4', buffer: await readFile('data/e2e/fixture.mp4') });
   await page.locator('#upload-button').click();
   await page.getByRole('button', { name: 'Préparer le film' }).first().click();
-  await expect(page.getByRole('button', { name: 'Créer une séance', exact: true })).toBeVisible({ timeout: 60_000 });
-  await page.getByRole('button', { name: 'Créer une séance', exact: true }).click();
+  const movieCard = page.locator('#movies article.card').filter({ hasText: 'fixture' }).last();
+  await expect(movieCard.getByRole('button', { name: 'Créer une séance', exact: true })).toBeVisible({ timeout: 60_000 });
+  await movieCard.getByRole('button', { name: 'Créer une séance', exact: true }).click();
   await page.getByRole('button', { name: 'Créer', exact: true }).click();
   await expect(page.locator('#name-dialog')).toBeVisible();
   await page.locator('#room-name').fill('HDR'); await page.locator('#name-dialog button').click();

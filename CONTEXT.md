@@ -68,6 +68,8 @@ vocabulaire partage.
   audio vide le buffer de la nouvelle piste : le participant peut caler
   brievement.
 - **Piste de sous-titres** : fichier texte, choisi par participant ou desactive.
-  La bascule ne touche jamais le buffer media.
+  La bascule ne touche jamais le buffer media. Une seule piste de sous-titres
+  est visible a la fois et la taille du texte suit la hauteur de l'image
+  rendue, pas la fenetre.
 - **Choix de piste** : reglage strictement local a un participant (« pour vous
   »). Il ne doit pas changer la position ni la phase de la seance.
