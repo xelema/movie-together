@@ -275,6 +275,19 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(guest.locator('.color-captions')).toHaveText('Un sous-titre lisible.');
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     await expect(guest.locator('#buffering-overlay')).toBeHidden();
+    // Clicking the picture pauses the room and drops the controls and cursor;
+    // a mouse move over the video brings them back, a second click resumes.
+    await host.locator('.plyr__video-wrapper').click({ position: { x: 10, y: 10 } });
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+    await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/);
+    await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '0');
+    await expect(host.locator('.plyr__control--overlaid')).toBeHidden();
+    await expect(host.locator('video')).toHaveCSS('cursor', 'none');
+    await showControls(host);
+    await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '1');
+    await expect(host.locator('video')).not.toHaveCSS('cursor', 'none');
+    await host.locator('.plyr__video-wrapper').click({ position: { x: 10, y: 10 } });
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     for (const [width, height, name] of [[390,844,'mobile'],[820,1180,'tablet'],[1440,1000,'desktop']]) {
       await guest.setViewportSize({ width, height });
       expect(await guest.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
