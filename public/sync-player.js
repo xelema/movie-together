@@ -81,7 +81,10 @@ export class SyncPlayer {
       if (document.hidden) { this.pauseLocal(); this.report(false); }
       else if (this.activated) this.acquireWakeLock();
     });
-    this.listen(window, 'offline', () => { this.command('pause'); this.report(false); });
+    // A dead network leaves the socket open but silent: pause locally, report
+    // once, and surface the reason now rather than waiting for a close event.
+    this.listen(window, 'offline', () => { this.command('pause'); this.report(false);
+      this.onStatus('Connexion perdue. Séance en pause. / 연결이 끊겨 일시정지되었습니다.'); });
     // dynamic-range follows the screen the window sits on: dragging between
     // monitors re-runs the native-HDR vs shader decision.
     this.hdrScreen = matchMedia('(dynamic-range: high)');
