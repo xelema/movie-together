@@ -95,6 +95,13 @@ test('admin manages a film and two named viewers join in their language with one
     // Réglages opérationnels : le formulaire groupe les paramètres, une
     // modification persiste au rechargement et le reset rend les défauts.
     await expect(host.locator('#settings-form fieldset')).toHaveCount(5);
+    // L'input compact garde ses 86 px : la règle globale input{width:100%} ne
+    // doit pas écraser le libellé de la ligne.
+    const settingRow = host.locator('.setting-row').first();
+    const inputBox = await settingRow.locator('input').boundingBox();
+    const spanBox = await settingRow.locator('label > span').boundingBox();
+    expect(inputBox.width).toBe(86);
+    expect(spanBox.width).toBeGreaterThan(inputBox.width);
     await host.locator('#set-maxRooms').fill('25');
     await host.locator('#settings-save').click();
     await expect(host.locator('#notice')).toContainText('enregistrés');
