@@ -68,11 +68,13 @@ playbackUI.elements.container.addEventListener('touchstart', () => {
   touchHidden = playbackUI.elements.container.classList.contains('plyr--hide-controls');
 }, true);
 playbackUI.elements.container.addEventListener('click', event => {
-  if (!player || !event.target.closest('.plyr__video-wrapper')) return;
+  // A real mouse click drops the snapshot an aborted touch gesture left behind.
+  if (event.pointerType === 'mouse') touchHidden = false;
   const hidden = touchHidden || playbackUI.elements.container.classList.contains('plyr--hide-controls');
   touchHidden = false;
+  if (!player || !event.target.closest('.plyr__video-wrapper')) return;
   // Paused with the controls already away, a click just brings them back.
-  if (hidden && $('video').paused) { playbackUI.toggleControls(true); return; }
+  if (hidden && $('video').paused) { clickHidden = false; playbackUI.toggleControls(true); return; }
   clickHidden = true;
   playbackUI.toggleControls(false);
   player.togglePlayback().catch(error => notice(error.message));
