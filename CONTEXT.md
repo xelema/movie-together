@@ -53,10 +53,19 @@ vocabulaire partage.
 - **Application** : seuls `minBuffer`/`lowBuffer` sont dynamiques (seances
   ouvertes comprises). Tout autre reglage ne vaut que pour les nouvelles
   operations : une seance garde ses seuils de depart et de rapport, une
-  session sa duree, un envoi ses parametres de creation.
+  session sa duree, un envoi ses parametres de creation (taille de bloc
+  comprise). Les cadences globales `tickMs`/`sweepMs` ne sont relues qu'au
+  redemarrage : les clients calent leur seuil de silence sur le `tickMs`
+  du welcome, retimer une boucle en cours les desynchroniserait.
 - **Hors perimetre** : les reglages secrets ou structurels (port, origine
   publique, mot de passe, dossier de donnees, proxy, chemins ffmpeg)
-  restent des variables d'environnement, hors de la page admin.
+  restent des variables d'environnement, hors de la page admin. Restent
+  aussi fixes en dur par choix, comme constantes de protocole ou de
+  securite : la taille maximale d'un message websocket (8 Kio), les
+  fenetres des limites de debit (15 min pour le login, 1 min pour les
+  invitations), le budget de messages par socket (40/s), le seuil de
+  bufferedAmount (64 Kio) et la marge disque exigee a la creation d'un
+  envoi (x2,2).
 
 ## Films
 

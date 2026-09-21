@@ -13,6 +13,10 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
   // Les seuils vivent ici pour les nouvelles séances comme pour tune() ; les
   // autres réglages sont relus dans settings au moment de chaque opération.
   const thresholds = { minBuffer: settings.get('minBuffer'), lowBuffer: settings.get('lowBuffer') };
+  // Les boucles globales gardent leur cadence de démarrage : un client connecté
+  // cale son seuil de silence sur le tickMs du welcome, le retimer à chaud
+  // désynchroniserait les séances ouvertes. Un nouveau tickMs vaut au relancement.
+  const cadence = { tickMs: settings.get('tickMs'), sweepMs: settings.get('sweepMs') };
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8192 });
   const rooms = new Map();
   const countSessions = room => new Set([...room.clients].map(client => client.session)).size;
@@ -111,7 +115,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       // shipping them keeps the timing contract explicit instead of hardcoded twice.
       const { minBuffer, lowBuffer, reportTimeout, startDelay } = room.engine;
       ws.send(JSON.stringify({ type: 'welcome', id, probe: !!room.probe,
-        sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs: settings.get('tickMs') } })); broadcast(room);
+        sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs: cadence.tickMs } })); broadcast(room);
       ws.on('pong', () => { ws.alive = true; });
       ws.on('error', () => {});
       ws.on('message', data => {
@@ -153,20 +157,13 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       }
     }
   };
-  let ticker = setInterval(tick, settings.get('tickMs'));
-  let sweeper = setInterval(sweep, settings.get('sweepMs'));
-  // Cadences globales : un changement admin redémarre les deux boucles.
-  const retime = () => {
-    clearInterval(ticker); clearInterval(sweeper);
-    ticker = setInterval(tick, settings.get('tickMs'));
-    sweeper = setInterval(sweep, settings.get('sweepMs'));
-  };
+  const ticker = setInterval(tick, cadence.tickMs);
+  const sweeper = setInterval(sweep, cadence.sweepMs);
 
   return {
     create,
     attach,
     tune,
-    retime,
     get: id => rooms.get(id),
     state,
     findByCode: code => typeof code === 'string'

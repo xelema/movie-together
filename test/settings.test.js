@@ -38,6 +38,10 @@ test('a saved file from the flat thresholds era still loads', () => {
 
 test('update validates strictly and rejects atomically', () => {
   const s = createSettings({ env: {} });
+  // A non-object body is a malformed patch, not a crash or a silent no-op.
+  for (const bad of [null, 'x', 5, [1]]) {
+    assert.throws(() => s.update(bad), /Réglages invalides/, JSON.stringify(bad));
+  }
   assert.throws(() => s.update({ nope: 1 }), /Réglage inconnu/);
   for (const bad of [{ minBuffer: 500 }, { minBuffer: 8.5 }, { minBuffer: 'x' },
     { startDelay: 40 }, { maxSubtitleMb: 2.3 }, { tickMs: 10 }]) {
