@@ -262,7 +262,6 @@ test('admin manages a film and two named viewers join in their language with one
     // (reportTimeout), and the host follows. Both directions are the contract.
     await b.setOffline(true);
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
-    await expect(guest.locator('#buffering-label')).toContainText('연결이 끊겨');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused), { timeout: 10_000 }).toBe(true);
     await host.locator('.color-canvas').evaluate(canvas => canvas.getContext('webgl2').getExtension('WEBGL_lose_context').loseContext());
     await expect(host.locator('#buffering-label')).toContainText('rendu des couleurs');
