@@ -58,9 +58,10 @@ function refreshBandwidth() {
 // The page chrome follows the player controls: visible in pause and on hover, gone during playback.
 playbackUI.on('controlsshown', () => { $('watch').dataset.chrome = 'true'; });
 playbackUI.on('controlshidden', () => { $('watch').dataset.chrome = 'false'; });
-// Clicking the picture pauses the séance and drops the controls and cursor.
-// Plyr pins the controls open while paused, so a flag re-hides every show it
-// triggers until a real pointer gesture asks for the controls back.
+// Clicking the picture only swaps the controls and cursor, never playback:
+// Plyr's own buttons move the room. Plyr pins the controls open while paused,
+// so a flag re-hides every show a click asks for until a real pointer gesture
+// asks for the controls back.
 let clickHidden = false, touchHidden = false;
 playbackUI.elements.container.addEventListener('mousemove', () => { clickHidden = false; }, true);
 playbackUI.elements.container.addEventListener('touchstart', () => {
@@ -68,16 +69,15 @@ playbackUI.elements.container.addEventListener('touchstart', () => {
   touchHidden = playbackUI.elements.container.classList.contains('plyr--hide-controls');
 }, true);
 playbackUI.elements.container.addEventListener('click', event => {
-  // A real mouse click drops the snapshot an aborted touch gesture left behind.
-  if (event.pointerType === 'mouse') touchHidden = false;
+  // Any non-touch click drops the snapshot an aborted touch gesture left behind.
+  if (event.pointerType !== 'touch') touchHidden = false;
   const hidden = touchHidden || playbackUI.elements.container.classList.contains('plyr--hide-controls');
   touchHidden = false;
   if (!player || !event.target.closest('.plyr__video-wrapper')) return;
-  // Paused with the controls already away, a click just brings them back.
-  if (hidden && $('video').paused) { clickHidden = false; playbackUI.toggleControls(true); return; }
-  clickHidden = true;
-  playbackUI.toggleControls(false);
-  player.togglePlayback().catch(error => notice(error.message));
+  // A hide timer armed before the click must not clip the show it asks for.
+  clearTimeout(playbackUI.timers.controls);
+  clickHidden = !hidden;
+  playbackUI.toggleControls(hidden);
 });
 playbackUI.on('controlsshown', () => { if (clickHidden) playbackUI.toggleControls(false); });
 $('video').addEventListener('play', () => { clickHidden = false; });
