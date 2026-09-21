@@ -30,7 +30,7 @@ test('strips release tags from uploaded file names without eating real titles', 
 test('authenticated upload, original video and audio, private rooms and access control', { timeout: 60_000 }, async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
   const origin = 'http://localhost:3000';
-  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin });
+  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin, env: {} });
   await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${instance.server.address().port}`;
   const sockets = [];
@@ -49,8 +49,11 @@ test('authenticated upload, original video and audio, private rooms and access c
   const cookie = login.headers.get('set-cookie').split(';')[0];
   const storage = await (await request('/api/storage', { cookie })).json();
   assert.ok(storage.free > 0 && storage.total >= storage.free);
-  // No syncOptions and no saved file: the defaults must still reach the endpoint.
-  assert.deepEqual(await (await request('/api/settings', { cookie })).json(), { minBuffer: 8, lowBuffer: 3 });
+  // No env override and no saved file: the registry defaults reach the endpoint.
+  const settings = await (await request('/api/settings', { cookie })).json();
+  const current = Object.fromEntries(settings.fields.map(field => [field.key, field.value]));
+  assert.equal(current.minBuffer, 8);
+  assert.equal(current.lowBuffer, 3);
   const file = path.join(dataDir, 'fixture.mp4');
   // Use a small synthetic source for a real preparation and access-control check.
   await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=25',
@@ -242,37 +245,125 @@ test('authenticated upload, original video and audio, private rooms and access c
   assert.equal((await request('/api/join', { method: 'POST', body: { code: room.code } })).status, 404);
 });
 
-test('admin tunes buffer thresholds at runtime and they persist', async t => {
+test('admin tunes operational settings at runtime and they persist', async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
   const origin = 'http://localhost:3000';
   t.after(async () => rm(dataDir, { recursive: true, force: true }));
+  // A ready movie seeded on disk gives the room cap something to hold.
+  const movieId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+  await mkdir(path.join(dataDir, 'movies', movieId), { recursive: true });
+  await writeFile(path.join(dataDir, 'movies', movieId, 'movie.json'),
+    JSON.stringify({ id: movieId, title: 'Cap Film', status: 'ready', duration: 60 }));
+  const valuesOf = payload => Object.fromEntries(payload.fields.map(field => [field.key, field.value]));
   const boot = async () => {
     const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin,
-      syncOptions: { minBuffer: 20, lowBuffer: 5 } });
+      env: { MIN_BUFFER_SECONDS: '20', LOW_BUFFER_SECONDS: '5' } });
     await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
     const base = `http://127.0.0.1:${instance.server.address().port}`;
     const request = (url, { cookie, method = 'GET', body } = {}) => fetch(base + url, {
       method, headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
-      body: body === undefined ? undefined : JSON.stringify(body) });
+      body: body === undefined ? undefined : Buffer.isBuffer(body) ? body : JSON.stringify(body) });
     const login = await request('/api/login', { method: 'POST', body: { password: 'test-password-long-enough' } });
     return { instance, request, cookie: login.headers.get('set-cookie').split(';')[0] };
   };
   const first = await boot();
   assert.equal((await first.request('/api/settings')).status, 401);
-  assert.deepEqual(await (await first.request('/api/settings', { cookie: first.cookie })).json(), { minBuffer: 20, lowBuffer: 5 });
-  assert.equal((await first.request('/api/settings', { cookie: first.cookie, method: 'PATCH', body: { minBuffer: 12, lowBuffer: 4 } })).status, 200);
-  assert.equal((await first.request('/api/settings', { cookie: first.cookie, method: 'PATCH', body: { minBuffer: 4, lowBuffer: 12 } })).status, 400);
-  assert.deepEqual(await (await first.request('/api/settings', { cookie: first.cookie })).json(), { minBuffer: 12, lowBuffer: 4 });
+  const initial = valuesOf(await (await first.request('/api/settings', { cookie: first.cookie })).json());
+  assert.equal(initial.minBuffer, 20);
+  assert.equal(initial.lowBuffer, 5);
+  // Env values are defaults, not overrides: nothing is written until an admin does.
+  assert.equal(await readFile(path.join(dataDir, 'settings.json'), 'utf8').catch(() => null), null);
+  const tuned = await first.request('/api/settings', { cookie: first.cookie, method: 'PATCH',
+    body: { minBuffer: 12, lowBuffer: 4, maxRooms: 1 } });
+  assert.equal(tuned.status, 200);
+  // A non-dynamic setting applies to new operations immediately.
+  assert.equal((await first.request('/api/rooms', { cookie: first.cookie, method: 'POST', body: { movieId } })).status, 201);
+  assert.equal((await first.request('/api/rooms', { cookie: first.cookie, method: 'POST', body: { movieId } })).status, 409);
+  // Invalid patches are rejected atomically: nothing above is rolled back.
+  for (const bad of [{ minBuffer: 4, lowBuffer: 12 }, { maxRooms: 'x' }, { nope: 1 }, { startDelay: 4 }]) {
+    assert.equal((await first.request('/api/settings', { cookie: first.cookie, method: 'PATCH', body: bad })).status, 400, JSON.stringify(bad));
+  }
+  // Malformed bodies are client errors too: JSON null used to crash with a 500.
+  for (const bad of ['null', '[1]', '"x"']) {
+    assert.equal((await first.request('/api/settings', { cookie: first.cookie, method: 'PATCH', body: Buffer.from(bad) })).status, 400, bad);
+  }
+  const after = valuesOf(await (await first.request('/api/settings', { cookie: first.cookie })).json());
+  assert.equal(after.minBuffer, 12);
+  assert.equal(after.lowBuffer, 4);
+  assert.equal(after.maxRooms, 1);
+  // Only admin-written keys land in the file.
+  assert.deepEqual(JSON.parse(await readFile(path.join(dataDir, 'settings.json'), 'utf8')),
+    { minBuffer: 12, lowBuffer: 4, maxRooms: 1 });
   await first.instance.close();
   const second = await boot();
   t.after(() => second.instance.close());
-  assert.deepEqual(await (await second.request('/api/settings', { cookie: second.cookie })).json(), { minBuffer: 12, lowBuffer: 4 });
+  const reloaded = valuesOf(await (await second.request('/api/settings', { cookie: second.cookie })).json());
+  assert.equal(reloaded.minBuffer, 12);
+  assert.equal(reloaded.maxRooms, 1);
+  // Restoring defaults reverts to env values and clears the saved overrides.
+  const reset = await second.request('/api/settings/reset', { cookie: second.cookie, method: 'POST', body: {} });
+  assert.equal(reset.status, 200);
+  const restored = valuesOf(await reset.json());
+  assert.equal(restored.minBuffer, 20);
+  assert.equal(restored.maxRooms, 20);
+  assert.deepEqual(JSON.parse(await readFile(path.join(dataDir, 'settings.json'), 'utf8')), {});
+});
+
+test('a tickMs patch does not retime live rooms: welcome keeps the startup cadence', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
+  const origin = 'http://localhost:3000';
+  const movieId = 'cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa';
+  await mkdir(path.join(dataDir, 'movies', movieId), { recursive: true });
+  await writeFile(path.join(dataDir, 'movies', movieId, 'movie.json'),
+    JSON.stringify({ id: movieId, title: 'Cadence Film', status: 'ready', duration: 60 }));
+  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin, env: {} });
+  await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${instance.server.address().port}`;
+  const sockets = [];
+  t.after(async () => { sockets.forEach(socket => socket.terminate()); await instance.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const request = (url, { cookie, method = 'GET', body } = {}) => fetch(base + url, {
+    method, headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body) });
+  const login = await request('/api/login', { method: 'POST', body: { password: 'test-password-long-enough' } });
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const room = await (await request('/api/rooms', { cookie, method: 'POST', body: { movieId } })).json();
+  const join = async () => (await request('/api/join', { method: 'POST', body: { code: room.code } }))
+    .headers.get('set-cookie').split(';')[0];
+  const welcome = cookieValue => new Promise(resolve => {
+    const socket = new WebSocket(`${base.replace('http', 'ws')}/ws?room=${room.id}`,
+      { headers: { Cookie: cookieValue, Origin: origin } });
+    sockets.push(socket);
+    socket.on('message', data => { const message = JSON.parse(data); if (message.type === 'welcome') resolve(message); });
+  });
+  assert.equal((await welcome(await join())).sync.tickMs, 200);
+  // tickMs applies at restart: a patch must not change the cadence a client is told.
+  assert.equal((await request('/api/settings', { cookie, method: 'PATCH', body: { tickMs: 2000 } })).status, 200);
+  assert.equal((await welcome(await join())).sync.tickMs, 200);
+});
+
+test('a pending upload reports the chunk size captured at creation', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
+  const origin = 'http://localhost:3000';
+  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin, env: {} });
+  await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${instance.server.address().port}`;
+  t.after(async () => { await instance.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const request = (url, { cookie, method = 'GET', body } = {}) => fetch(base + url, {
+    method, headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body) });
+  const login = await request('/api/login', { method: 'POST', body: { password: 'test-password-long-enough' } });
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const upload = await (await request('/api/uploads', { cookie, method: 'POST', body: { name: 'film.mkv', size: 1024 } })).json();
+  assert.equal(upload.chunkSize, 8 * 1024 ** 2);
+  assert.equal((await request('/api/settings', { cookie, method: 'PATCH', body: { chunkMb: 4 } })).status, 200);
+  assert.equal((await (await request(`/api/uploads/${upload.id}`, { cookie })).json()).chunkSize, 8 * 1024 ** 2);
+  assert.equal((await (await request('/api/uploads', { cookie })).json())[0].chunkSize, 8 * 1024 ** 2);
 });
 
 test('a rejected upload creation does not count against the pending upload cap', async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
   const origin = 'http://localhost:3000';
-  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin });
+  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin, env: {} });
   await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${instance.server.address().port}`;
   t.after(async () => { await instance.close(); await rm(dataDir, { recursive: true, force: true }); });
@@ -299,7 +390,7 @@ test('room capacity counts distinct sessions and a session holds at most two soc
   await mkdir(path.join(dataDir, 'movies', movieId), { recursive: true });
   await writeFile(path.join(dataDir, 'movies', movieId, 'movie.json'),
     JSON.stringify({ id: movieId, title: 'Cap Film', status: 'ready', duration: 120 }));
-  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin });
+  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin, env: {} });
   await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${instance.server.address().port}`;
   const sockets = [];
@@ -339,7 +430,7 @@ test('room capacity counts distinct sessions and a session holds at most two soc
 test('joining a room with a malformed code is a client error, not a crash', async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
   const origin = 'http://localhost:3000';
-  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin });
+  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin, env: {} });
   await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${instance.server.address().port}`;
   t.after(async () => { await instance.close(); await rm(dataDir, { recursive: true, force: true }); });

@@ -260,7 +260,7 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   const generation = randomUUID();
   const directory = path.join(store.directory(movie.id), generation);
   await mkdir(directory, { recursive: true });
-  const threads = Math.max(1, Math.min(8, Number(process.env.ENCODE_THREADS) || 2));
+  const threads = Math.max(1, Math.min(8, Math.round(options.threads ?? (Number(process.env.ENCODE_THREADS) || 2))));
   const args = ['-y', '-v', 'error', '-progress', 'pipe:1', '-nostats', '-filter_threads', String(threads)];
   args.push('-threads', String(threads), '-protocol_whitelist', 'file,pipe', '-i', source);
   args.push('-map', `0:${video.index}`);
@@ -276,7 +276,7 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
         `-ac:a:${index}`, '2', `-ar:a:${index}`, '48000', `-b:a:${index}`, '256k');
     }
   }
-  args.push('-f', 'hls', '-hls_time', '4', '-hls_playlist_type', 'vod',
+  args.push('-f', 'hls', '-hls_time', String(options.segmentSeconds ?? 4), '-hls_playlist_type', 'vod',
     // FFmpeg only expands %v when the stream map holds more than one variant.
     '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', audio.length ? 'init_%v.mp4' : 'init_0.mp4',
     '-hls_segment_filename', path.join(directory, 'segment_%v_%06d.m4s'),
