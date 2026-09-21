@@ -12,6 +12,8 @@ const korean = {
   'Chargement interrompu. Rechargez la page pour réessayer.': '로딩이 중단되었습니다. 페이지를 새로고침하세요.',
   'Ce film utilise un codec vidéo que cet appareil ne peut pas lire.': '이 기기에서는 이 영화의 영상 코덱을 재생할 수 없습니다.',
   'Seuils invalides : 1 ≤ réserve < démarrage ≤ 300 s.': '버퍼 값이 올바르지 않습니다: 1 ≤ 예비 < 시작 ≤ 300초.',
+  'Réglages invalides : le délai de départ doit rester sous le délai de rapport.': '설정 값이 올바르지 않습니다: 시작 지연이 보고서 만료보다 짧아야 합니다.',
+  'Réglage inconnu.': '알 수 없는 설정입니다.',
   'Ce navigateur ne permet pas la lecture HLS.': '이 브라우저는 HLS 재생을 지원하지 않습니다.',
   'Commande invalide.': '올바르지 않은 명령입니다.',
   'Analyse du fichier…': '파일 분석 중…',
@@ -74,6 +76,11 @@ export function label(french) {
   // Some player messages carry an inline 'français / 한국어' pair.
   const pair = french.split(' / ');
   if (pair.length === 2 && /[가-힣]/.test(pair[1])) return ko ? pair[1] : pair[0];
-  if (ko) return korean[french] ?? (/[가-힣]/.test(french) || !french ? french : '요청을 완료하지 못했습니다. 다시 시도하세요.');
+  if (ko) {
+    const found = korean[french];
+    if (found) return found;
+    if (french.startsWith('Valeur invalide pour ')) return `설정 값이 올바르지 않습니다: ${french.slice('Valeur invalide pour '.length)}`;
+    return /[가-힣]/.test(french) || !french ? french : '요청을 완료하지 못했습니다. 다시 시도하세요.';
+  }
   return french.replaceAll('Room', 'Séance').replaceAll('room', 'séance').replace('Ce navigateur ne permet pas la lecture HLS.', 'Ce navigateur ne peut pas lire ce film.');
 }

@@ -84,11 +84,14 @@ vérification des droits auprès du serveur ; les listes de lecture ne sont pas
 conservées. Cela évite de retransférer les mêmes données lors d'un retour en arrière.
 Chaque spectateur reçoit la même vidéo d'origine, segmentée avant la séance.
 
-Pour une installation existante, régler `MIN_BUFFER_SECONDS=20` et
-`LOW_BUFFER_SECONDS=5` dans `.env` puis redémarrer l'application hors séance.
-Le démarrage et la reprise attendent ainsi vingt secondes d'avance chez chacun
-(ou la durée restante), et la pause commune intervient sous cinq secondes.
-Le chargement initial est plus long, mais laisse une meilleure marge.
+Pour une installation existante, ces seuils se règlent depuis la page admin
+(Réglages, section Synchronisation) et s'appliquent aux séances en cours.
+Les variables `.env` (`MIN_BUFFER_SECONDS`, `LOW_BUFFER_SECONDS`,
+`ENCODE_THREADS`) restent les défauts de déploiement tant qu'aucun réglage
+n'a été sauvegardé. Le démarrage et la reprise attendent ainsi vingt secondes
+d'avance chez chacun (ou la durée restante), et la pause commune intervient
+sous cinq secondes. Le chargement initial est plus long, mais laisse une
+meilleure marge.
 
 Compose publie aussi UDP 443 : l'autoriser dans le pare-feu Linux et chez
 l'hébergeur pour [HTTP/3 de Caddy](https://caddyserver.com/docs/modules/http).
