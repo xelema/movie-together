@@ -174,7 +174,7 @@ test('admin manages a film and two named viewers join in their language with one
       const css = parseFloat(getComputedStyle(video.parentElement).getPropertyValue('--subtitle-size'));
       const captions = document.querySelector('.color-captions');
       const overlay = captions ? parseFloat(getComputedStyle(captions).fontSize) : css;
-      return picture > 0 && Math.abs(css - Math.max(18, picture * 30.72 / 720)) < 1 && Math.abs(overlay - css) < 1;
+      return picture > 0 && Math.abs(css - Math.max(18, picture * 38.4 / 720)) < 1 && Math.abs(overlay - css) < 1;
     })).toBe(true);
     await expectSubtitleSize(guest);
     // Opening the overlay must never apply an image filter to video or an ancestor.
