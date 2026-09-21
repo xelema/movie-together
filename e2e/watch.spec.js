@@ -10,7 +10,9 @@ test('admin manages a film and two named viewers join in their language with one
   const host = await a.newPage(), guest = await b.newPage(), latest = new Map(), errors = [];
   let releaseMedia = () => {};
   for (const page of [host, guest]) {
-    page.setDefaultTimeout(10_000);
+    // Loads share one CI box with ffmpeg and the previous engine's teardown:
+    // navigation gets room while action checks stay tight.
+    page.setDefaultTimeout(10_000); page.setDefaultNavigationTimeout(30_000);
     page.on('pageerror', error => errors.push(error.message));
     page.on('websocket', ws => ws.on('framereceived', event => { const message = JSON.parse(event.payload); if (message.type === 'state') latest.set(page, message); }));
   }
