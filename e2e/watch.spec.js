@@ -234,12 +234,12 @@ test('admin manages a film and two named viewers join in their language with one
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     // The 50 s fixture can end during the checks above: the room then freezes on
     // pause and Plyr pins its controls open. Rewind and replay until the film is
-    // verifiably playing early enough for the idle-hide assertions below.
+    // verifiably playing with enough left for the idle-hide assertions below.
     await expect.poll(() => host.evaluate(() => {
       const video = document.querySelector('video'), player = window.player;
-      if (video.currentTime >= 30) player.command('seek', 5);
+      if (video.currentTime >= 20) player.command('seek', 5);
       if (player.state?.phase === 'paused') player.command('play');
-      return !video.paused && video.currentTime < 30;
+      return !video.paused && video.currentTime < 20;
     }), { timeout: 15_000 }).toBe(true);
     // Controls auto-hide while playing; hover until they are shown before clicking fullscreen.
     await expect(async () => {
@@ -262,6 +262,7 @@ test('admin manages a film and two named viewers join in their language with one
     // (reportTimeout), and the host follows. Both directions are the contract.
     await b.setOffline(true);
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+    await expect(guest.locator('#buffering-label')).toContainText('연결이 끊겨');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused), { timeout: 10_000 }).toBe(true);
     await host.locator('.color-canvas').evaluate(canvas => canvas.getContext('webgl2').getExtension('WEBGL_lose_context').loseContext());
     await expect(host.locator('#buffering-label')).toContainText('rendu des couleurs');
