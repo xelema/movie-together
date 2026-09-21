@@ -9,7 +9,6 @@ const application = createApplication({
   origin,
   secure: origin.startsWith('https://'),
   trustProxy: process.env.TRUST_PROXY === '1',
-  syncOptions: { minBuffer: Number(process.env.MIN_BUFFER_SECONDS || 20), lowBuffer: Number(process.env.LOW_BUFFER_SECONDS || 5) },
 });
 await refreshStaleProbes(application.store);
 application.server.listen(port, '0.0.0.0', () => console.log(`Movie Night écoute sur le port ${port}.`));

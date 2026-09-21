@@ -27,11 +27,9 @@ vocabulaire partage.
   ne recoivent que le booleen `waiting`.
 - **Seuils de buffer** : `minBuffer` exige de chacun pour demarrer ou
   reprendre, `lowBuffer` en dessous duquel un participant fait repasser
-  la seance en `buffering`. Defauts 8 s / 3 s, surenchirissables par
-  `MIN_BUFFER_SECONDS` / `LOW_BUFFER_SECONDS` puis par la page admin
-  (`PATCH /api/settings`, persiste dans `data/settings.json`). Le serveur
-  les publie dans `welcome` et dans chaque `state`, donc un changement a
-  chaud s'applique aux seances ouvertes et aux clients connectes.
+  la seance en `buffering`. Ce sont les seuls reglages dynamiques : un
+  changement admin est repris par les seances ouvertes et publie aux
+  clients connectes dans `welcome` et chaque `state`.
 - **Freeze** : la seance fige sa position et repasse en `paused` ou `buffering`.
   Tout rapport anterieur est invalide : la preparation recommence a zero.
 - **Seance instrumentee** (probe) : une seance creee avec le drapeau `probe`.
@@ -42,6 +40,23 @@ vocabulaire partage.
   perdues, horloge, renderer couleur, segments telecharges). A la difference
   du rapport, qui alimente la machine a etats, la telemetrie est ecrite dans
   un journal et ne change rien a la seance.
+
+## Reglages
+
+- **Reglage operationnel** : parametre de fonctionnement modifiable depuis
+  la page admin (`GET`/`PATCH /api/settings`, `POST /api/settings/reset`),
+  persiste dans `data/settings.json` et recharge au demarrage. Chaque
+  reglage a une categorie, des bornes et un defaut integre ; une variable
+  d'environnement (`MIN_BUFFER_SECONDS`, `LOW_BUFFER_SECONDS`,
+  `ENCODE_THREADS`) peut remplacer le defaut sans redeployer. Une valeur
+  ecrite par l'admin l'emporte sur l'env jusqu'au reset.
+- **Application** : seuls `minBuffer`/`lowBuffer` sont dynamiques (seances
+  ouvertes comprises). Tout autre reglage ne vaut que pour les nouvelles
+  operations : une seance garde ses seuils de depart et de rapport, une
+  session sa duree, un envoi ses parametres de creation.
+- **Hors perimetre** : les reglages secrets ou structurels (port, origine
+  publique, mot de passe, dossier de donnees, proxy, chemins ffmpeg)
+  restent des variables d'environnement, hors de la page admin.
 
 ## Films
 

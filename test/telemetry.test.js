@@ -17,7 +17,7 @@ test('probe rooms persist across restarts, accept telemetry and stay open', { ti
   t.after(async () => { sockets.forEach(socket => socket.terminate()); await rm(dataDir, { recursive: true, force: true }); });
 
   const boot = async () => {
-    const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin });
+    const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin, env: {} });
     await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
     const base = `http://127.0.0.1:${instance.server.address().port}`;
     const request = (url, { cookie, method = 'GET', body } = {}) => fetch(base + url, {
