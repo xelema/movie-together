@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import { webglProbe } from '../scripts/color-capability.js';
 
 // Le chemin HDR adaptatif (#16) : shader tone-map sur ecran SDR, passthrough
 // natif quand dynamic-range dit high et que MediaCapabilities confirme. La
@@ -22,6 +23,9 @@ test('hdr content follows the screen: shader on sdr, native on hdr, force shader
     navigator.mediaCapabilities.decodingInfo = async () => ({ supported: window.__hdrSupported, smooth: true, powerEfficient: true });
   });
   await page.goto('/admin');
+  // Le shader exige WebGL2 high-float : meme sonde que check-colors, avant
+  // toute assertion (le Firefox de CI peut refuser le contexte).
+  const { webgl2 } = await page.evaluate(webglProbe);
   await page.locator('#login-form input').fill('browser-test-password'); await page.locator('#login-form button').click();
   await page.locator('#upload-file').setInputFiles({ name: 'fixture.mp4', mimeType: 'video/mp4', buffer: await readFile('data/e2e/fixture.mp4') });
   await page.locator('#upload-button').click();
@@ -41,6 +45,19 @@ test('hdr content follows the screen: shader on sdr, native on hdr, force shader
     await expect(page.locator('#name-dialog')).toBeVisible();
     await page.locator('#room-name').fill('HDR'); await page.locator('#name-dialog button').click();
   };
+
+  if (!webgl2) {
+    // Chemin degrade : sans WebGL2 le renderer jette, l'echec doit rester
+    // visible et le passthrough HDR natif ne cree aucun canvas. La suite
+    // suppose un shader : skip nomme, jamais un faux succes.
+    await expect(page.locator('#buffering-label')).toContainText('accélération graphique', { timeout: 15_000 });
+    await expect(page.locator('.color-canvas')).toHaveCount(0);
+    await page.evaluate(() => window.__hdr.set(true));
+    await page.waitForTimeout(1000);
+    await expect(page.locator('.color-canvas')).toHaveCount(0);
+    await context.close();
+    test.skip(true, 'webgl-unavailable: no WebGL2 context with high-float fragment precision');
+  }
 
   // Ecran SDR : le shader tone-map couvre la video.
   await expect(page.locator('.color-canvas')).toHaveAttribute('data-ready', 'true', { timeout: 15_000 });
