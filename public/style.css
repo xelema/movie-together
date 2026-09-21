@@ -155,7 +155,7 @@ video{display:block;width:100%;max-height:72vh;object-fit:contain}
 .plyr{width:100%}
 .color-canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;pointer-events:none}
 .color-captions{position:absolute;left:4%;right:4%;bottom:16%;pointer-events:none;text-align:center;white-space:pre-line;
-  color:#fff;font-family:Arial,"Segoe UI",sans-serif;font-size:var(--subtitle-size,clamp(18px,2.4vw,36px));font-weight:500;line-height:1.3;
+  color:#fff;font-family:Arial,"Segoe UI",sans-serif;font-size:var(--subtitle-size,clamp(18px,3vw,45px));font-weight:500;line-height:1.3;
   text-shadow:-1px -1px 2px #000,1px -1px 2px #000,-1px 1px 2px #000,1px 1px 2px #000,0 2px 4px #000}
 .color-captions:empty{display:none}
 #screen{--plyr-video-control-color:var(--white);--plyr-video-control-color-hover:#0b0b0d;--plyr-video-control-background-hover:var(--white);
@@ -181,7 +181,7 @@ video{display:block;width:100%;max-height:72vh;object-fit:contain}
 #watch[data-playing=true] #screen [data-plyr=play] .icon--pressed,#watch[data-playing=false] #screen [data-plyr=play] .icon--not-pressed{display:block}
 #watch[data-playing=true] #screen [data-plyr=play] .icon--not-pressed,#watch[data-playing=false] #screen [data-plyr=play] .icon--pressed{display:none}
 #screen[data-overlay=true] .plyr__control--overlaid,#watch[data-playing=true] .plyr__control--overlaid,#screen.settings-open .plyr__control--overlaid{opacity:0;visibility:hidden;pointer-events:none}
-video::cue{color:#fff;background:transparent;font-family:Arial,"Segoe UI",sans-serif;font-size:var(--subtitle-size,clamp(18px,2.4vw,36px));font-weight:500;
+video::cue{color:#fff;background:transparent;font-family:Arial,"Segoe UI",sans-serif;font-size:var(--subtitle-size,clamp(18px,3vw,45px));font-weight:500;
   text-shadow:-1px -1px 2px #000,1px -1px 2px #000,-1px 1px 2px #000,1px 1px 2px #000,0 2px 4px #000}
 
 #screen .track-controls{position:absolute;z-index:5;right:14px;bottom:76px;width:min(290px,calc(100% - 28px));max-height:calc(100% - 92px);
