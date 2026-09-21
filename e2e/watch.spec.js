@@ -280,6 +280,40 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(guest.locator('.color-captions')).toHaveText('Un sous-titre lisible.');
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     await expect(guest.locator('#buffering-overlay')).toBeHidden();
+    // Clicking the picture pauses the room and drops the controls and cursor.
+    await host.locator('.plyr__video-wrapper').dispatchEvent('click');
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+    await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/);
+    await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '0');
+    await expect(host.locator('.plyr__control--overlaid')).toBeHidden();
+    await expect(host.locator('video')).toHaveCSS('cursor', 'none');
+    // Paused with the controls away, a click in place only brings them back and
+    // they stay shown: the hide flag the pausing click set is already spent.
+    await host.locator('.plyr__video-wrapper').dispatchEvent('click');
+    await expect(host.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
+    await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '1');
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+    // A touch that dies before its click leaves a stale hidden snapshot: the
+    // next real mouse click must drop it and resume instead of stalling.
+    await host.locator('.plyr__video-wrapper').dispatchEvent('click');
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    await host.locator('.plyr__video-wrapper').dispatchEvent('click');
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+    await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/);
+    await host.locator('.plyr__video-wrapper').evaluate(el => el.dispatchEvent(new Event('touchstart')));
+    await host.mouse.move(10, 10);
+    await expect(host.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
+    await host.locator('.plyr__video-wrapper').evaluate(el => el.dispatchEvent(new PointerEvent('click', { bubbles: true, pointerType: 'mouse' })));
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    // A mouse move over the video brings the controls and cursor back, and the
+    // following click resumes.
+    await host.locator('.plyr__video-wrapper').click({ position: { x: 10, y: 10 } });
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+    await showControls(host);
+    await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '1');
+    await expect(host.locator('video')).not.toHaveCSS('cursor', 'none');
+    await host.locator('.plyr__video-wrapper').click({ position: { x: 10, y: 10 } });
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     for (const [width, height, name] of [[390,844,'mobile'],[820,1180,'tablet'],[1440,1000,'desktop']]) {
       await guest.setViewportSize({ width, height });
       expect(await guest.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
