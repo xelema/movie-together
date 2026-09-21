@@ -102,6 +102,11 @@ test('admin manages a film and two named viewers join in their language with one
     const spanBox = await settingRow.locator('label > span').boundingBox();
     expect(inputBox.width).toBe(86);
     expect(spanBox.width).toBeGreaterThan(inputBox.width);
+    // Chaque réglage porte une description française exposée au survol via title.
+    await expect(host.locator('.setting-row label > span[title]')).toHaveCount(19);
+    await expect(host.locator('.setting-row label > span').filter({ hasText: 'Buffer de démarrage' }))
+      .toHaveAttribute('title', /tampon à accumuler/);
+    await expect(host.locator('#set-loginLimit')).toHaveAttribute('title', /15 minutes/);
     await host.locator('#set-maxRooms').fill('25');
     await host.locator('#settings-save').click();
     await expect(host.locator('#notice')).toContainText('enregistrés');
