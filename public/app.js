@@ -69,8 +69,8 @@ playbackUI.elements.container.addEventListener('touchstart', () => {
   touchHidden = playbackUI.elements.container.classList.contains('plyr--hide-controls');
 }, true);
 playbackUI.elements.container.addEventListener('click', event => {
-  // A real mouse click drops the snapshot an aborted touch gesture left behind.
-  if (event.pointerType === 'mouse') touchHidden = false;
+  // Any non-touch click drops the snapshot an aborted touch gesture left behind.
+  if (event.pointerType !== 'touch') touchHidden = false;
   const hidden = touchHidden || playbackUI.elements.container.classList.contains('plyr--hide-controls');
   touchHidden = false;
   if (!player || !event.target.closest('.plyr__video-wrapper')) return;
