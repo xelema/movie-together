@@ -2,7 +2,8 @@
 // admin. `category` groupe l'écran, `env` fournit un défaut de déploiement,
 // `dynamic` marque les seuils repris par les séances déjà ouvertes. Tout autre
 // réglage ne vaut que pour les nouvelles opérations : une séance, une session
-// ou un envoi gardent les paramètres qui définissaient leur comportement.
+// ou un envoi gardent les paramètres qui définissaient leur comportement, et
+// les cadences globales (tickMs, sweepMs) ne sont relues qu'au démarrage.
 export const FIELDS = {
   minBuffer:            { category: 'sync',     env: 'MIN_BUFFER_SECONDS', def: 8,     min: 2,    max: 300,    unit: 's', dynamic: true },
   lowBuffer:            { category: 'sync',     env: 'LOW_BUFFER_SECONDS', def: 3,     min: 1,    max: 299,    unit: 's', dynamic: true },
@@ -75,6 +76,7 @@ export function createSettings({ env = {}, saved = {} } = {}) {
       key, ...field, def: undefined, default: defaults[key],
       overridden: key in overrides, value: overrides[key] ?? defaults[key] })),
     update(patch = {}) {
+      if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) throw fail(400, 'Réglages invalides.');
       const next = { ...overrides };
       for (const [key, value] of Object.entries(patch)) {
         const field = FIELDS[key];

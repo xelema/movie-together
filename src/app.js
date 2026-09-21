@@ -98,7 +98,6 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   const subtitleBytes = () => settings.get('maxSubtitleMb') * 1024 ** 2;
   const applySettings = () => {
     hub.tune({ minBuffer: settings.get('minBuffer'), lowBuffer: settings.get('lowBuffer') });
-    hub.retime();
   };
   const hub = createRoomHub({ origin, settings, sessionFor,
     sessionActive: session => session.expires > Date.now() && [...sessions.values()].includes(session),
@@ -217,8 +216,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     return path.join(store.root, 'uploads', id);
   };
   const uploadInfo = async id => {
-    try { return JSON.parse(await readFile(path.join(uploadPath(id), 'upload.json'), 'utf8')); }
-    catch (error) { if (error.code === 'ENOENT') throw fail(404, 'Upload introuvable.'); throw error; }
+    try {
+      const info = JSON.parse(await readFile(path.join(uploadPath(id), 'upload.json'), 'utf8'));
+      // Les envois ouverts avant le cliché de création gardent la taille courante.
+      info.chunkSize ??= chunkBytes();
+      return info;
+    } catch (error) { if (error.code === 'ENOENT') throw fail(404, 'Upload introuvable.'); throw error; }
   };
   // Only directories are pending uploads; a stray file must not count toward the cap.
   const listUploads = async () => {
@@ -241,18 +244,18 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     const disk = await statfs(store.root);
     if (disk.bavail * disk.bsize < size * 2.2) throw fail(409, 'Espace disque insuffisant pour l’original et sa préparation.');
     const id = randomUUID(); await mkdir(uploadPath(id));
-    const info = { id, name, size, fingerprint, kind, movieId, label, language, createdAt: Date.now() };
+    const info = { id, name, size, fingerprint, kind, movieId, label, language, chunkSize: chunkBytes(), createdAt: Date.now() };
     // An interrupted creation must not leave a directory the cap would count forever.
     try {
       await writeFile(path.join(uploadPath(id), 'upload.json'), JSON.stringify(info));
       await writeFile(path.join(uploadPath(id), 'source'), '');
     } catch (error) { await rm(uploadPath(id), { recursive: true, force: true }); throw error; }
-    res.status(201).json({ ...info, offset: 0, chunkSize: chunkBytes() });
+    res.status(201).json({ ...info, offset: 0 });
   });
   app.get('/api/uploads', admin, async (req, res) => {
     const result = [];
     for (const id of await listUploads()) {
-      try { result.push({ ...await uploadInfo(id), offset: (await stat(path.join(uploadPath(id), 'source'))).size, chunkSize: chunkBytes() }); }
+      try { result.push({ ...await uploadInfo(id), offset: (await stat(path.join(uploadPath(id), 'source'))).size }); }
       catch (error) {
         // An upload may have just been finalized; anything else is a real corruption.
         if (error.status !== 404 && error.code !== 'ENOENT') throw error;
@@ -261,7 +264,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     res.json(result);
   });
   app.get('/api/uploads/:id', admin, async (req, res) => res.json({ ...await uploadInfo(req.params.id),
-    offset: (await stat(path.join(uploadPath(req.params.id), 'source'))).size, chunkSize: chunkBytes() }));
+    offset: (await stat(path.join(uploadPath(req.params.id), 'source'))).size }));
   app.put('/api/uploads/:id', admin, express.raw({ type: 'application/octet-stream', limit: FIELDS.chunkMb.max * 1024 ** 2 }), async (req, res) => {
     const id = req.params.id;
     const release = jobs.claimUpload(id);
