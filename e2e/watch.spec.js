@@ -229,6 +229,15 @@ test('admin manages a film and two named viewers join in their language with one
     expect(latest.get(host)?.state.phase).toBe('playing');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(false);
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    // The 50 s fixture can end during the checks above: the room then freezes on
+    // pause and Plyr pins its controls open. Rewind and replay until the film is
+    // verifiably playing early enough for the idle-hide assertions below.
+    await expect.poll(() => host.evaluate(() => {
+      const video = document.querySelector('video'), player = window.player;
+      if (video.currentTime >= 30) player.command('seek', 5);
+      if (player.state?.phase === 'paused') player.command('play');
+      return !video.paused && video.currentTime < 30;
+    }), { timeout: 15_000 }).toBe(true);
     // Controls auto-hide while playing; hover until they are shown before clicking fullscreen.
     await expect(async () => {
       if (await host.evaluate(() => document.fullscreenElement?.id) !== 'screen') await clickControl(host, '[data-plyr=fullscreen]');
