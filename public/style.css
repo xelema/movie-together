@@ -185,7 +185,8 @@ video{display:block;width:100%;max-height:72vh;object-fit:contain}
 #screen .plyr__control--overlaid svg{margin:auto}
 #watch[data-playing=true] #screen [data-plyr=play] .icon--pressed,#watch[data-playing=false] #screen [data-plyr=play] .icon--not-pressed{display:block}
 #watch[data-playing=true] #screen [data-plyr=play] .icon--not-pressed,#watch[data-playing=false] #screen [data-plyr=play] .icon--pressed{display:none}
-#screen[data-overlay=true] .plyr__control--overlaid,#watch[data-playing=true] .plyr__control--overlaid,#screen.settings-open .plyr__control--overlaid{opacity:0;visibility:hidden;pointer-events:none}
+#screen[data-overlay=true] .plyr__control--overlaid,#watch[data-playing=true] .plyr__control--overlaid,#screen.settings-open .plyr__control--overlaid,
+#screen .plyr--hide-controls .plyr__control--overlaid{opacity:0;visibility:hidden;pointer-events:none}
 video::cue{color:#fff;background:transparent;font-family:Arial,"Segoe UI",sans-serif;font-size:var(--subtitle-size,clamp(18px,3vw,45px));font-weight:500;
   text-shadow:-1px -1px 2px #000,1px -1px 2px #000,-1px 1px 2px #000,1px 1px 2px #000,0 2px 4px #000}
 
@@ -238,9 +239,7 @@ video::cue{color:#fff;background:transparent;font-family:Arial,"Segoe UI",sans-s
 #screen:fullscreen .plyr,#screen:fullscreen .plyr__video-wrapper,#screen.plyr--fullscreen-fallback .plyr,#screen.plyr--fullscreen-fallback .plyr__video-wrapper{height:100%}
 #screen:fullscreen video,#screen.plyr--fullscreen-fallback video{height:100%;max-height:100%;object-fit:contain}
 #screen:fullscreen .plyr__controls,#screen.plyr--fullscreen-fallback .plyr__controls{padding-bottom:max(18px,env(safe-area-inset-bottom))}
-#screen:fullscreen:has(.plyr--hide-controls),#screen:fullscreen .plyr--hide-controls,#screen:fullscreen .plyr--hide-controls video,
-#screen.plyr--fullscreen-fallback:has(.plyr--hide-controls),#screen.plyr--fullscreen-fallback .plyr--hide-controls,
-#screen.plyr--fullscreen-fallback .plyr--hide-controls video{cursor:none}
+#screen .plyr--hide-controls,#screen .plyr--hide-controls video{cursor:none}
 
 dialog{color:var(--text);background:var(--raise);border:1px solid var(--line);border-radius:14px;width:380px;max-width:calc(100% - 32px);
   padding:32px 30px;text-align:center}
