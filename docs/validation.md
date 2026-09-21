@@ -17,6 +17,7 @@ y compris lorsque le menu des pistes est ouvert.
 Les tests de séance utilisent une source HDR et vérifient également le canvas,
 les sous-titres visibles au-dessus de l'image et la pause sur perte du contexte GPU.
 Une source SDR ne crée pas de canvas : elle passe par la vidéo native.
+Sur un navigateur sans WebGL2 high-float (même sonde que `test:colors`), le test HDR vérifie que l'échec reste visible puis ignore les assertions du shader : un environnement incapable n'est jamais un succès déguisé.
 Attention, Firefox Windows applique une courbe de contraste fixe à toute vidéo
 native, absente de Chromium (voir [playback.md](playback.md)) : une comparaison
 de pixels entre navigateurs sur le chemin natif n'y a pas de sens.
