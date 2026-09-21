@@ -490,6 +490,29 @@ const SETTING_LABELS = {
   loginLimit: ['Essais de connexion par 15 min', '15분당 로그인 시도 수'],
   inviteLimit: ['Essais de code par minute', '분당 코드 시도 수'],
 };
+// Aide au survol, en français seul : l'attribut title sert aussi de
+// description accessible pour le lecteur d'écran.
+const SETTING_DESCRIPTIONS = {
+  minBuffer: 'Secondes de tampon à accumuler avant de lancer ou reprendre la lecture.',
+  lowBuffer: 'En dessous de cette réserve pendant la lecture, la séance se met en pause pour recharger.',
+  reportTimeout: 'Sans rapport d’un participant pendant ce délai, son état de lecture est ignoré.',
+  startDelay: 'Compte à rebours entre le déclenchement de la lecture et le départ effectif.',
+  tickMs: 'Intervalle entre deux envois de l’état de lecture aux participants.',
+  sweepMs: 'Intervalle entre deux vérifications des connexions encore présentes.',
+  ttlHours: 'Durée de vie d’une session ou d’une séance laissée inactive.',
+  maxRooms: 'Nombre de séances pouvant être ouvertes en même temps.',
+  maxClients: 'Nombre de participants acceptés dans une même séance.',
+  maxSocketsPerSession: 'Connexions simultanées autorisées pour un même participant, par exemple plusieurs onglets.',
+  chunkMb: 'Taille de chaque morceau envoyé pendant l’envoi d’un fichier.',
+  maxPending: 'Nombre d’envois de fichiers pouvant être en cours en même temps.',
+  maxMovieGb: 'Taille maximale acceptée pour un fichier film.',
+  maxSubtitleMb: 'Taille maximale acceptée pour un fichier de sous-titres ajouté.',
+  maxExternalTracks: 'Nombre de pistes de sous-titres ajoutables à un film.',
+  encodeThreads: 'Nombre de threads ffmpeg utilisés pendant la préparation d’un film.',
+  segmentSeconds: 'Durée de chaque segment vidéo produit pour la lecture.',
+  loginLimit: 'Tentatives de connexion autorisées par tranche de 15 minutes.',
+  inviteLimit: 'Tentatives de code d’invitation autorisées par minute.',
+};
 const SETTING_CATEGORIES = { sync: ['Synchronisation', '동기화'], rooms: ['Séances', '시청방'],
   uploads: ['Envois', '업로드'], media: ['Préparation', '준비'], security: ['Sécurité', '보안'] };
 let settingsValues = {};
@@ -508,7 +531,9 @@ function renderSettings(payload) {
         input.min = field.min; input.max = field.max; input.step = field.step ?? 1;
         const hint = el('small', undefined, 'setting-hint');
         const label = el('label');
-        label.append(el('span', t(...(SETTING_LABELS[field.key] ?? [field.key, field.key]))), input);
+        const text = el('span', t(...(SETTING_LABELS[field.key] ?? [field.key, field.key])));
+        text.title = input.title = SETTING_DESCRIPTIONS[field.key];
+        label.append(text, input);
         const row = el('div', undefined, 'setting-row');
         row.append(label, hint);
         group.append(row);
