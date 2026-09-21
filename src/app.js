@@ -7,7 +7,7 @@ import { appendFile, mkdir, readFile, writeFile, stat, statfs, rename, unlink, r
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './storage.js';
-import { validThresholds } from './sync/room.js';
+import { createSettings, FIELDS } from './settings.js';
 import { reprobeMovie, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat } from './media.js';
 import { SUBTITLE_FORMATS, SUBTITLE_EXT } from '../public/subtitle-formats.js';
 import { createRoomHub } from './sync/hub.js';
@@ -15,10 +15,8 @@ import { createJobs } from './jobs.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const ID = /^[a-f0-9-]{36}$/;
-const TTL = 12 * 3600_000;
-const CHUNK = 8 * 1024 * 1024;
 const fail = (status, message) => Object.assign(new Error(message), { status });
-const SUBTITLE_EXT_MESSAGE = 'Choisir un fichier de sous-titres de moins de 2 Mo (SRT, VTT, SMI, ASS, SUB…).';
+const SUBTITLE_EXT_MESSAGE = size => `Choisir un fichier de sous-titres de moins de ${size} Mo (SRT, VTT, SMI, ASS, SUB…).`;
 // Release names carry encoding jargon that has no place in the interface.
 const FORMAT_TAG = /^(2160p|1440p|1080[pi]|720p|576p|480p|4k|4klight|uhd|hdr10?(\+|plus)?|hlg|dovi|10bits?|8bits?|bluray|blu|brrip|bdrip|bdremux|remux|webrip|webdl|web|hdtv|dvdrip|dvdscr|x26[45]|h26[45]|hevc|avc|av1|vp9|xvid|divx|aac\d?|ac3|eac3|ddp?\d?|dts|dtshd|truehd|atmos|flac|opus|mp3)$/i;
 const EDITION_TAG = /^(multi\d?|vf[fqi2]?|vo|vost|vostfr|subfrench|french|truefrench|english|repack|proper|extended|unrated|uncut|imax|limited|integrale|amzn|nf|dsnp|hmax|atvp|itunes|dv|sdr)$/i;
@@ -52,7 +50,7 @@ const publicMovie = movie => ({ id: movie.id, title: movie.title, status: movie.
   maxSegmentSeconds: movie.maxSegmentSeconds, bitrate: movie.probe?.bitrate, renditions: movie.renditions, generation: movie.generation });
 
 export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
-  origin = 'http://localhost:3000', secure = false, trustProxy = false, syncOptions = {} } = {}) {
+  origin = 'http://localhost:3000', secure = false, trustProxy = false, env = process.env } = {}) {
   if (!password || password.length < 16) throw new Error('ADMIN_PASSWORD doit contenir au moins 16 caractères.');
   if (secure && !origin.startsWith('https://')) throw new Error('APP_ORIGIN doit utiliser HTTPS en production.');
   const app = express();
@@ -92,12 +90,16 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     return movie;
   };
   const jobs = createJobs({ getMovie, movieInUse: id => hub.movieInUse(id) });
-  // Buffer thresholds: env defaults, overridden by an admin-saved settings file.
-  const saved = store.settings() ?? {};
-  const sync = { minBuffer: 8, lowBuffer: 3, ...syncOptions };
-  if (Number.isFinite(saved.minBuffer) && Number.isFinite(saved.lowBuffer) &&
-    validThresholds(saved)) Object.assign(sync, { minBuffer: saved.minBuffer, lowBuffer: saved.lowBuffer });
-  const hub = createRoomHub({ origin, ttl: TTL, syncOptions: sync, sessionFor,
+  // Réglages opérationnels : les défauts viennent du registre (ou de l'env),
+  // puis data/settings.json pose les valeurs sauvegardées par l'admin.
+  const settings = createSettings({ env, saved: store.settings() });
+  const ttlMs = () => settings.get('ttlHours') * 3600_000;
+  const chunkBytes = () => settings.get('chunkMb') * 1024 ** 2;
+  const subtitleBytes = () => settings.get('maxSubtitleMb') * 1024 ** 2;
+  const applySettings = () => {
+    hub.tune({ minBuffer: settings.get('minBuffer'), lowBuffer: settings.get('lowBuffer') });
+  };
+  const hub = createRoomHub({ origin, settings, sessionFor,
     sessionActive: session => session.expires > Date.now() && [...sessions.values()].includes(session),
     canAccess: (session, room) => access({ session }, room),
     movieFor: id => publicMovie(getMovie(id)),
@@ -120,16 +122,16 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   const cookie = (res, session) => {
     const token = randomBytes(32).toString('hex');
     sessions.set(token, session);
-    res.cookie('sid', token, { httpOnly: true, sameSite: 'strict', secure, maxAge: TTL, path: '/' });
+    res.cookie('sid', token, { httpOnly: true, sameSite: 'strict', secure, maxAge: ttlMs(), path: '/' });
   };
-  const loginLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false });
-  const inviteLimiter = rateLimit({ windowMs: 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false });
+  const loginLimiter = rateLimit({ windowMs: 15 * 60_000, limit: () => settings.get('loginLimit'), standardHeaders: 'draft-8', legacyHeaders: false });
+  const inviteLimiter = rateLimit({ windowMs: 60_000, limit: () => settings.get('inviteLimit'), standardHeaders: 'draft-8', legacyHeaders: false });
   app.get('/healthz', (req, res) => res.json({ ok: true }));
   app.get('/api/session', (req, res) => res.json({ authenticated: !!req.session, admin: !!req.session?.admin }));
   app.post('/api/login', loginLimiter, (req, res) => {
     if (typeof req.body.password !== 'string' || req.body.password.length > 512 ||
       !timingSafeEqual(hash, scryptSync(req.body.password, salt, 64))) throw fail(401, 'Mot de passe incorrect.');
-    cookie(res, { admin: true, rooms: new Set(), expires: Date.now() + TTL });
+    cookie(res, { admin: true, rooms: new Set(), expires: Date.now() + ttlMs() });
     res.json({ ok: true });
   });
   app.post('/api/logout', (req, res) => {
@@ -150,16 +152,23 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     res.status(201).json({ id: room.id, code: room.code, link: `${origin}/#invite=${room.code}` });
   });
   app.get('/api/rooms', admin, (req, res) => res.json(hub.list()));
-  app.get('/api/settings', admin, (req, res) => res.json({ minBuffer: sync.minBuffer, lowBuffer: sync.lowBuffer }));
+  app.get('/api/settings', admin, (req, res) => res.json({ fields: settings.describe() }));
   app.patch('/api/settings', admin, (req, res) => {
-    const tuned = hub.tune(req.body ?? {});
-    store.saveSettings(tuned);
-    res.json(tuned);
+    settings.update(req.body);
+    applySettings();
+    store.saveSettings(settings.overrides());
+    res.json({ fields: settings.describe() });
+  });
+  app.post('/api/settings/reset', admin, (req, res) => {
+    settings.reset();
+    applySettings();
+    store.saveSettings(settings.overrides());
+    res.json({ fields: settings.describe() });
   });
   app.post('/api/join', inviteLimiter, (req, res) => {
     const room = hub.findByCode(req.body.code);
     if (!room) throw fail(404, 'Code invalide ou expiré.');
-    const session = req.session ?? { admin: false, rooms: new Set(), expires: Date.now() + TTL };
+    const session = req.session ?? { admin: false, rooms: new Set(), expires: Date.now() + ttlMs() };
     session.rooms.add(room.id);
     if (!req.session) cookie(res, session);
     res.json({ id: room.id });
@@ -207,8 +216,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     return path.join(store.root, 'uploads', id);
   };
   const uploadInfo = async id => {
-    try { return JSON.parse(await readFile(path.join(uploadPath(id), 'upload.json'), 'utf8')); }
-    catch (error) { if (error.code === 'ENOENT') throw fail(404, 'Upload introuvable.'); throw error; }
+    try {
+      const info = JSON.parse(await readFile(path.join(uploadPath(id), 'upload.json'), 'utf8'));
+      // Les envois ouverts avant le cliché de création gardent la taille courante.
+      info.chunkSize ??= chunkBytes();
+      return info;
+    } catch (error) { if (error.code === 'ENOENT') throw fail(404, 'Upload introuvable.'); throw error; }
   };
   // Only directories are pending uploads; a stray file must not count toward the cap.
   const listUploads = async () => {
@@ -221,28 +234,28 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     if (!['movie', 'subtitle'].includes(kind)) throw fail(400, 'Fichier invalide.');
     if (kind !== 'movie') {
       const movie = jobs.idle(movieId);
-      if ((movie.externalTracks?.length ?? 0) >= 24) throw fail(400, 'Trop de fichiers ajoutés.');
+      if ((movie.externalTracks?.length ?? 0) >= settings.get('maxExternalTracks')) throw fail(400, 'Trop de fichiers ajoutés.');
       if (typeof label !== 'string' || !label.trim() || label.length > 100 || !/^[a-z]{2,3}$/.test(language)) throw fail(400, 'Nom ou langue invalide.');
-      if (!SUBTITLE_EXT.test(name) || size > 2 * 1024 ** 2) throw fail(400, SUBTITLE_EXT_MESSAGE);
+      if (!SUBTITLE_EXT.test(name) || size > subtitleBytes()) throw fail(400, SUBTITLE_EXT_MESSAGE(settings.get('maxSubtitleMb')));
     }
-    if (!Number.isSafeInteger(size) || size <= 0 || size > 20 * 1024 ** 3 || typeof name !== 'string' || name.length > 250) throw fail(400, 'Fichier invalide (maximum 20 Go).');
+    if (!Number.isSafeInteger(size) || size <= 0 || size > settings.get('maxMovieGb') * 1024 ** 3 || typeof name !== 'string' || name.length > 250) throw fail(400, `Fichier invalide (maximum ${settings.get('maxMovieGb')} Go).`);
     if (fingerprint !== undefined && (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint))) throw fail(400, 'Empreinte invalide.');
-    if ((await listUploads()).length >= 2) throw fail(409, 'Terminer ou supprimer les uploads précédents.');
+    if ((await listUploads()).length >= settings.get('maxPending')) throw fail(409, 'Terminer ou supprimer les uploads précédents.');
     const disk = await statfs(store.root);
     if (disk.bavail * disk.bsize < size * 2.2) throw fail(409, 'Espace disque insuffisant pour l’original et sa préparation.');
     const id = randomUUID(); await mkdir(uploadPath(id));
-    const info = { id, name, size, fingerprint, kind, movieId, label, language, createdAt: Date.now() };
+    const info = { id, name, size, fingerprint, kind, movieId, label, language, chunkSize: chunkBytes(), createdAt: Date.now() };
     // An interrupted creation must not leave a directory the cap would count forever.
     try {
       await writeFile(path.join(uploadPath(id), 'upload.json'), JSON.stringify(info));
       await writeFile(path.join(uploadPath(id), 'source'), '');
     } catch (error) { await rm(uploadPath(id), { recursive: true, force: true }); throw error; }
-    res.status(201).json({ ...info, offset: 0, chunkSize: CHUNK });
+    res.status(201).json({ ...info, offset: 0 });
   });
   app.get('/api/uploads', admin, async (req, res) => {
     const result = [];
     for (const id of await listUploads()) {
-      try { result.push({ ...await uploadInfo(id), offset: (await stat(path.join(uploadPath(id), 'source'))).size, chunkSize: CHUNK }); }
+      try { result.push({ ...await uploadInfo(id), offset: (await stat(path.join(uploadPath(id), 'source'))).size }); }
       catch (error) {
         // An upload may have just been finalized; anything else is a real corruption.
         if (error.status !== 404 && error.code !== 'ENOENT') throw error;
@@ -251,8 +264,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     res.json(result);
   });
   app.get('/api/uploads/:id', admin, async (req, res) => res.json({ ...await uploadInfo(req.params.id),
-    offset: (await stat(path.join(uploadPath(req.params.id), 'source'))).size, chunkSize: CHUNK }));
-  app.put('/api/uploads/:id', admin, express.raw({ type: 'application/octet-stream', limit: CHUNK }), async (req, res) => {
+    offset: (await stat(path.join(uploadPath(req.params.id), 'source'))).size }));
+  app.put('/api/uploads/:id', admin, express.raw({ type: 'application/octet-stream', limit: FIELDS.chunkMb.max * 1024 ** 2 }), async (req, res) => {
     const id = req.params.id;
     const release = jobs.claimUpload(id);
     try {
@@ -325,6 +338,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       const audio = req.body.audio ?? (movie.audio ?? []).map(track => track.index);
       const subtitles = req.body.subtitles ?? previousSubtitles(movie);
       Object.assign(movie, await prepareMovie(store, movie, audio, subtitles, {
+        threads: settings.get('encodeThreads'), segmentSeconds: settings.get('segmentSeconds'),
         onProgress(progress) {
           movie.progress = progress;
           if (Date.now() - lastProgress > 1000) { store.save(movie); lastProgress = Date.now(); }
@@ -356,11 +370,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     try { await rm(store.directory(movie.id), { recursive: true, force: true }); store.movies.delete(movie.id); res.json({ ok: true }); }
     finally { release(); }
   });
-  app.post('/api/movies/:id/subtitles', admin, express.raw({ type: 'text/plain', limit: 2 * 1024 ** 2 }), async (req, res) => {
+  app.post('/api/movies/:id/subtitles', admin, express.raw({ type: 'text/plain', limit: FIELDS.maxSubtitleMb.max * 1024 ** 2 }), async (req, res) => {
     const movie = jobs.idle(req.params.id);
     if (movie.status !== 'ready' || jobs.heavyBusy()) throw fail(409, 'Film indisponible.');
     if (!Buffer.isBuffer(req.body) || !req.body.length) throw fail(400, 'Sous-titre vide.');
-    if (req.query.name !== undefined && (typeof req.query.name !== 'string' || !SUBTITLE_EXT.test(req.query.name))) throw fail(400, SUBTITLE_EXT_MESSAGE);
+    if (req.body.length > subtitleBytes()) throw fail(400, SUBTITLE_EXT_MESSAGE(settings.get('maxSubtitleMb')));
+    if (req.query.name !== undefined && (typeof req.query.name !== 'string' || !SUBTITLE_EXT.test(req.query.name))) throw fail(400, SUBTITLE_EXT_MESSAGE(settings.get('maxSubtitleMb')));
     const release = jobs.claimEdit(movie);
     const directory = path.join(store.directory(movie.id), movie.generation);
     const input = path.join(directory, 'subtitle-input');

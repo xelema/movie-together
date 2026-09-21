@@ -119,12 +119,16 @@ progress::-moz-progress-bar{background:var(--text-3)}
 .panel-actions .danger{margin-left:auto}
 #rooms-section{margin-top:44px}
 #rooms{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),420px));justify-content:start;gap:16px}
-#sync-form{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px 14px;margin-top:36px;padding-top:16px;border-top:1px solid var(--line-soft)}
-#sync-form .eyebrow{flex-basis:100%}
-#sync-form label{display:flex;align-items:center;gap:8px;margin:0}
-#sync-form label>span{margin:0;white-space:nowrap}
-#sync-form input{width:78px;min-height:40px}
-#sync-form button{min-height:40px;padding:8px 15px;margin-left:auto}
+#settings-form{margin-top:36px;padding-top:16px;border-top:1px solid var(--line-soft)}
+#settings-form fieldset{border:0;margin:0 0 18px;padding:0;min-width:0}
+#settings-form legend{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--label);padding:0;margin-bottom:6px}
+.setting-row{display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;margin:8px 0}
+.setting-row label{display:flex;align-items:center;gap:10px;flex:1;min-width:0;margin:0}
+.setting-row label>span{flex:1;min-width:0;margin:0;font-size:14px;color:var(--text-2)}
+.setting-row input{width:86px;min-height:40px;flex-shrink:0}
+.setting-hint{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-4)}
+#settings-form .dialog-actions{max-width:560px}
+#settings-form .dialog-actions button{min-height:40px}
 details{margin-top:18px;border-top:1px solid var(--line-soft);padding-top:14px}
 summary{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--label);cursor:pointer;padding:4px 0;transition:color .2s var(--ease)}
 summary:hover{color:var(--text-2)}
@@ -276,7 +280,6 @@ dialog button{width:100%}
   .upload-row{flex-direction:column;align-items:stretch}
   .upload-row button{width:100%}
   .panel-actions .danger{margin-left:0}
-  #sync-form button{margin-left:0}
   .card,#upload-form,#choose-film{padding:18px}
   video{max-height:62vh}
   #screen{border-radius:6px}
