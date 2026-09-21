@@ -3,6 +3,9 @@ import { readFile } from 'node:fs/promises';
 
 test('admin manages a film and two named viewers join in their language with one shared play', async ({ browser }) => {
   test.skip(process.platform === 'win32' && browser.browserType().name() === 'webkit', 'Playwright WebKit on Windows has neither HLS nor MSE decoding; run this project on macOS/Linux.');
+  // One pass over the whole flow: upload, a real ffmpeg prepare (45 s budget),
+  // two synced viewers, fullscreen, disconnect. CI needs more than the shared 90 s.
+  test.setTimeout(150_000);
   const a = await browser.newContext(), b = await browser.newContext();
   const host = await a.newPage(), guest = await b.newPage(), latest = new Map(), errors = [];
   let releaseMedia = () => {};
@@ -254,7 +257,13 @@ test('admin manages a film and two named viewers join in their language with one
     await host.mouse.move(0,0); await expect(host.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
     await host.screenshot({ path: 'test-results/watch-fullscreen.png' }); await host.evaluate(() => document.exitFullscreen());
     await expectSubtitleSize(host);
-    await b.setOffline(true); await expect.poll(() => host.locator('video').evaluate(video => video.paused), { timeout: 6000 }).toBe(true);
+    // A member that loses its network pauses itself on the offline event; the room
+    // freezes as soon as its pause command lands or its report goes stale
+    // (reportTimeout), and the host follows. Both directions are the contract.
+    await b.setOffline(true);
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+    await expect(guest.locator('#buffering-label')).toContainText('연결이 끊겨');
+    await expect.poll(() => host.locator('video').evaluate(video => video.paused), { timeout: 10_000 }).toBe(true);
     await host.locator('.color-canvas').evaluate(canvas => canvas.getContext('webgl2').getExtension('WEBGL_lose_context').loseContext());
     await expect(host.locator('#buffering-label')).toContainText('rendu des couleurs');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
@@ -274,5 +283,5 @@ test('admin manages a film and two named viewers join in their language with one
     console.log('Failure:', error.message, 'Browser errors:', errors, await dump(host, 'host'), await dump(guest, 'guest'));
     throw error;
   }
-  finally { releaseMedia(); await guest.unrouteAll({ behavior: 'ignoreErrors' }); await a.close(); await b.close(); }
+  finally { releaseMedia(); await guest.unrouteAll({ behavior: 'ignoreErrors' }).catch(() => {}); await a.close(); await b.close(); }
 });
