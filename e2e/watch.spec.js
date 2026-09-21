@@ -323,6 +323,12 @@ test('admin manages a film and two named viewers join in their language with one
     await showControls(host);
     await host.locator('.plyr__video-wrapper').evaluate(el => el.dispatchEvent(new PointerEvent('click', { bubbles: true, pointerType: 'mouse' })));
     await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/);
+    // A plain MouseEvent click has no pointerType: it must drop the stale
+    // snapshot the same way and still only flip the overlay.
+    await host.locator('.plyr__video-wrapper').evaluate(el => el.dispatchEvent(new Event('touchstart')));
+    await showControls(host);
+    await host.locator('.plyr__video-wrapper').evaluate(el => el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/);
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     // A mouse move over the video brings the controls and cursor back, and the
     // following click drops them again with playback untouched.
