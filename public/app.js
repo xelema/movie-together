@@ -247,10 +247,7 @@ async function refresh() {
   $('pending-heading').hidden = !pending.length; $('ready-heading').hidden = !ready.length;
   const rooms = await api('/api/rooms');
   $('rooms-section').hidden = !rooms.length;
-  const settings = await api('/api/settings');
-  if (![$('sync-min'), $('sync-low')].includes(document.activeElement)) {
-    $('sync-min').value = settings.minBuffer; $('sync-low').value = settings.lowBuffer;
-  }
+  renderSettings(await api('/api/settings'));
   $('rooms').replaceChildren(...rooms.map(room => {
     const card = el('div', undefined, 'card');
     card.append(el('p', `${movies.find(movie => movie.id === room.movieId)?.title ?? ''} · ${room.participants} ${t('personne(s)', '명')} · ${t('jusqu’à', '까지')} ${new Date(room.expires).toTimeString().slice(0, 5)}`), el('code', room.code),
@@ -378,7 +375,8 @@ function manageDetails(movie, selection) {
   const addRow = el('div', undefined, 'add-row'); addRow.append(subLang, subName,
     button(t('Ajouter', '추가'), async () => {
       const file = subFile.files[0];
-      if (!file || !SUBTITLE_EXT.test(file.name) || file.size > 2 * 1024 ** 2) throw new Error(t('Choisir un fichier de sous-titres de moins de 2 Mo (SRT, VTT, SMI, ASS, SUB…).', '자막 파일을 선택하세요 (SRT, VTT, SMI, ASS, SUB 등, 최대 2MB).'));
+      const maxSubMb = settingsValues.maxSubtitleMb ?? 2;
+      if (!file || !SUBTITLE_EXT.test(file.name) || file.size > maxSubMb * 1024 ** 2) throw new Error(t(`Choisir un fichier de sous-titres de moins de ${maxSubMb} Mo (SRT, VTT, SMI, ASS, SUB…).`, `자막 파일을 선택하세요 (SRT, VTT, SMI, ASS, SUB 등, 최대 ${maxSubMb}MB).`));
       const trackLabel = subName.value.trim() || subLang.selectedOptions[0].textContent;
       if (movie.status === 'ready') {
         const response = await fetch(`/api/movies/${movie.id}/subtitles?label=${encodeURIComponent(trackLabel)}&language=${subLang.value}&name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: file });
@@ -388,7 +386,7 @@ function manageDetails(movie, selection) {
       } else await upload(file, { kind: 'subtitle', movieId: movie.id, label: trackLabel, language: subLang.value });
       await refresh();
     }));
-  details.append(field(t('Fichier de sous-titres (2 Mo maximum)', '자막 파일 (최대 2MB)'), subFile), addRow);
+  details.append(field(t(`Fichier de sous-titres (${settingsValues.maxSubtitleMb ?? 2} Mo maximum)`, `자막 파일 (최대 ${settingsValues.maxSubtitleMb ?? 2}MB)`), subFile), addRow);
   details.append(el('p', selection
     ? t('La préparation applique la sélection ci-dessus.', '준비하면 위에서 선택한 트랙이 적용됩니다.')
     : t('Préparer à nouveau reconduit les pistes déjà choisies.', '다시 준비하면 선택한 트랙이 그대로 적용됩니다.'), 'hint'));
@@ -471,9 +469,78 @@ $('audio').addEventListener('change', () => player?.changeTrack('audio', Number(
 $('subtitles').addEventListener('change', () => player?.changeTrack('subtitles', Number($('subtitles').value)));
 $('leave').addEventListener('click', handle(async () => { disposePlayer(); activeRoom = null; $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await refresh(); }));
 $('choose-film').addEventListener('submit', handle(() => api(`/api/rooms/${activeRoom}/movie`, { method: 'POST', body: { movieId: $('room-movie').value } })));
-$('sync-form').addEventListener('submit', handle(async () => {
-  await api('/api/settings', { method: 'PATCH', body: { minBuffer: Number($('sync-min').value), lowBuffer: Number($('sync-low').value) } });
-  notice(t('Seuils enregistrés.', '버퍼 값을 저장했습니다.'));
+const SETTING_LABELS = {
+  minBuffer: ['Buffer de démarrage (s)', '시작 버퍼 (초)'],
+  lowBuffer: ['Réserve de lecture (s)', '재생 예비 버퍼 (초)'],
+  reportTimeout: ['Expiration des rapports (s)', '보고서 만료 (초)'],
+  startDelay: ['Délai avant le départ (s)', '시작 지연 (초)'],
+  tickMs: ['Cadence des états (ms)', '상태 전송 주기 (ms)'],
+  sweepMs: ['Cadence de présence (ms)', '연결 점검 주기 (ms)'],
+  ttlHours: ['Durée des sessions et séances (h)', '세션·시청방 유지 (시간)'],
+  maxRooms: ['Séances simultanées', '동시 시청방 수'],
+  maxClients: ['Participants par séance', '시청방당 참가자 수'],
+  maxSocketsPerSession: ['Connexions par participant', '참가자당 연결 수'],
+  chunkMb: ['Taille des blocs d’envoi (Mo)', '업로드 청크 크기 (MB)'],
+  maxPending: ['Envois simultanés', '동시 업로드 수'],
+  maxMovieGb: ['Taille maximale d’un film (Go)', '영화 최대 크기 (GB)'],
+  maxSubtitleMb: ['Taille maximale d’un sous-titre (Mo)', '자막 최대 크기 (MB)'],
+  maxExternalTracks: ['Sous-titres ajoutés par film', '영화당 추가 자막 수'],
+  encodeThreads: ['Threads de préparation', '준비 스레드 수'],
+  segmentSeconds: ['Durée des segments (s)', '세그먼트 길이 (초)'],
+  loginLimit: ['Essais de connexion par 15 min', '15분당 로그인 시도 수'],
+  inviteLimit: ['Essais de code par minute', '분당 코드 시도 수'],
+};
+const SETTING_CATEGORIES = { sync: ['Synchronisation', '동기화'], rooms: ['Séances', '시청방'],
+  uploads: ['Envois', '업로드'], media: ['Préparation', '준비'], security: ['Sécurité', '보안'] };
+let settingsValues = {};
+const settingInputs = new Map();
+function renderSettings(payload) {
+  const form = $('settings-form');
+  if (!form.childElementCount) {
+    for (const [category, [fr, ko]] of Object.entries(SETTING_CATEGORIES)) {
+      const fields = payload.fields.filter(field => field.category === category);
+      if (!fields.length) continue;
+      const group = el('fieldset');
+      group.append(el('legend', t(fr, ko)));
+      for (const field of fields) {
+        const input = el('input');
+        input.type = 'number'; input.id = `set-${field.key}`; input.required = true;
+        input.min = field.min; input.max = field.max; input.step = field.step ?? 1;
+        const hint = el('small', undefined, 'setting-hint');
+        const label = el('label');
+        label.append(el('span', t(...(SETTING_LABELS[field.key] ?? [field.key, field.key]))), input);
+        const row = el('div', undefined, 'setting-row');
+        row.append(label, hint);
+        group.append(row);
+        settingInputs.set(field.key, { input, hint });
+      }
+      form.append(group);
+    }
+    const actions = el('div', undefined, 'dialog-actions');
+    const save = el('button', t('Enregistrer', '저장')); save.id = 'settings-save';
+    const reset = button(t('Valeurs par défaut', '기본값'), async () => {
+      renderSettings(await api('/api/settings/reset', { method: 'POST', body: {} }));
+      notice(t('Valeurs par défaut rétablies.', '기본값을 복원했습니다.'));
+    }, 'ghost');
+    reset.id = 'settings-reset';
+    actions.append(save, reset);
+    form.append(actions);
+  }
+  settingsValues = Object.fromEntries(payload.fields.map(field => [field.key, field.value]));
+  for (const field of payload.fields) {
+    const { input, hint } = settingInputs.get(field.key);
+    if (document.activeElement !== input) input.value = field.value;
+    hint.textContent = field.overridden ? t(`défaut : ${field.default}`, `기본값: ${field.default}`) : '';
+  }
+  const fileLabel = $('upload-file-label');
+  fileLabel.dataset.fr = `Fichier du film (${settingsValues.maxMovieGb} Go maximum)`;
+  fileLabel.dataset.ko = `영화 파일 (최대 ${settingsValues.maxMovieGb}GB)`;
+  fileLabel.textContent = t(fileLabel.dataset.fr, fileLabel.dataset.ko);
+}
+$('settings-form').addEventListener('submit', handle(async () => {
+  const body = Object.fromEntries([...settingInputs].map(([key, { input }]) => [key, Number(input.value)]));
+  renderSettings(await api('/api/settings', { method: 'PATCH', body }));
+  notice(t('Réglages enregistrés.', '설정을 저장했습니다.'));
 }));
 window.addEventListener('beforeunload', event => { if (uploadBusy) { event.preventDefault(); event.returnValue = ''; } });
 setInterval(() => { if (!player && !uploadBusy && movies.some(movie => ['processing', 'probing'].includes(movie.status))) refresh().catch(error => notice(error.message)); }, 3000);

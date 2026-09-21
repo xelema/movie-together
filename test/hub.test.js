@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRoomHub } from '../src/sync/hub.js';
+import { createSettings } from '../src/settings.js';
 
-const stubHub = (syncOptions = {}) => createRoomHub({ origin: 'http://localhost', syncOptions,
+const stubHub = (saved = {}) => createRoomHub({ origin: 'http://localhost',
+  settings: createSettings({ env: {}, saved }),
   sessionFor: () => null, sessionActive: () => true, canAccess: () => false,
   movieFor: () => null, moviePlayable: () => true });
 
