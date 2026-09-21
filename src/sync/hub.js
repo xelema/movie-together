@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { Room, validThresholds, cleanText } from './room.js';
+import { createSettings } from '../settings.js';
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 
@@ -8,8 +9,10 @@ const fail = (status, message) => Object.assign(new Error(message), { status });
 // liveness sweep. app.js keeps HTTP and auth; it reaches séances only through
 // this interface. Sessions and media stay outside: sessionFor/sessionActive,
 // canAccess, movieFor and moviePlayable are injected at the seam.
-export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, sweepMs = 10_000,
-  maxRooms = 20, maxClients = 8, maxSocketsPerSession = 2, sessionFor, sessionActive, canAccess, movieFor, moviePlayable } = {}) {
+export function createRoomHub({ origin, settings = createSettings(), sessionFor, sessionActive, canAccess, movieFor, moviePlayable } = {}) {
+  // Les seuils vivent ici pour les nouvelles séances comme pour tune() ; les
+  // autres réglages sont relus dans settings au moment de chaque opération.
+  const thresholds = { minBuffer: settings.get('minBuffer'), lowBuffer: settings.get('lowBuffer') };
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8192 });
   const rooms = new Map();
   const countSessions = room => new Set([...room.clients].map(client => client.session)).size;
@@ -58,12 +61,14 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
   };
 
   const create = ({ movieId, duration, code, probe }) => {
-    if (rooms.size >= maxRooms) throw fail(409, 'Fermer une room avant d’en créer une autre.');
+    if (rooms.size >= settings.get('maxRooms')) throw fail(409, 'Fermer une room avant d’en créer une autre.');
     if (code !== undefined && (typeof code !== 'string' || !/^[a-z0-9-]{4,32}$/i.test(code.trim()))) throw fail(400, 'Code : 4 à 32 lettres, chiffres ou tirets.');
     code = code?.trim().toLowerCase() || randomBytes(8).toString('hex');
     if ([...rooms.values()].some(room => room.code === code && room.expires > Date.now())) throw fail(409, 'Ce code est déjà utilisé.');
     // Séance instrumentée : dix ans au lieu de douze heures, télémétrie activée.
-    const room = { id: randomUUID(), code, expires: Date.now() + (probe ? 10 * 365 * 86400_000 : ttl), movieId, engine: new Room(syncOptions), clients: new Set(),
+    const room = { id: randomUUID(), code, expires: Date.now() + (probe ? 10 * 365 * 86400_000 : settings.get('ttlHours') * 3600_000), movieId,
+      engine: new Room({ ...thresholds, reportTimeout: settings.get('reportTimeout') * 1000,
+        startDelay: settings.get('startDelay') * 1000 }), clients: new Set(),
       probe: !!probe, logged: new Map(), loggedPhase: null };
     room.engine.load(duration); rooms.set(room.id, room);
     return room;
@@ -76,7 +81,7 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
       lowBuffer < 1 || minBuffer > 300 || !validThresholds({ minBuffer, lowBuffer })) {
       throw fail(400, 'Seuils invalides : 1 ≤ réserve < démarrage ≤ 300 s.');
     }
-    Object.assign(syncOptions, { minBuffer, lowBuffer });
+    Object.assign(thresholds, { minBuffer, lowBuffer });
     for (const room of rooms.values()) {
       room.engine.minBuffer = minBuffer; room.engine.lowBuffer = lowBuffer;
       broadcast(room);
@@ -93,7 +98,7 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
     const sessions = room ? countSessions(room) : 0;
     if (url.pathname !== '/ws' || request.headers.origin !== origin || !session ||
       !canAccess(session, room) || room.expires <= Date.now() ||
-      held >= maxSocketsPerSession || (!held && sessions >= maxClients) ||
+      held >= settings.get('maxSocketsPerSession') || (!held && sessions >= settings.get('maxClients')) ||
       !moviePlayable(room.movieId)) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
     }
@@ -106,7 +111,7 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
       // shipping them keeps the timing contract explicit instead of hardcoded twice.
       const { minBuffer, lowBuffer, reportTimeout, startDelay } = room.engine;
       ws.send(JSON.stringify({ type: 'welcome', id, probe: !!room.probe,
-        sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs } })); broadcast(room);
+        sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs: settings.get('tickMs') } })); broadcast(room);
       ws.on('pong', () => { ws.alive = true; });
       ws.on('error', () => {});
       ws.on('message', data => {
@@ -138,10 +143,8 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
     });
   });
 
-  const ticker = setInterval(() => {
-    for (const room of rooms.values()) { room.engine.tick(); broadcast(room); }
-  }, tickMs);
-  const sweeper = setInterval(() => {
+  const tick = () => { for (const room of rooms.values()) { room.engine.tick(); broadcast(room); } };
+  const sweep = () => {
     for (const room of rooms.values()) {
       if (room.expires <= Date.now()) { for (const ws of room.clients) ws.close(1000, 'Room expirée'); rooms.delete(room.id); continue; }
       for (const ws of room.clients) {
@@ -149,12 +152,21 @@ export function createRoomHub({ origin, ttl, syncOptions = {}, tickMs = 200, swe
         else { ws.alive = false; ws.ping(); }
       }
     }
-  }, sweepMs);
+  };
+  let ticker = setInterval(tick, settings.get('tickMs'));
+  let sweeper = setInterval(sweep, settings.get('sweepMs'));
+  // Cadences globales : un changement admin redémarre les deux boucles.
+  const retime = () => {
+    clearInterval(ticker); clearInterval(sweeper);
+    ticker = setInterval(tick, settings.get('tickMs'));
+    sweeper = setInterval(sweep, settings.get('sweepMs'));
+  };
 
   return {
     create,
     attach,
     tune,
+    retime,
     get: id => rooms.get(id),
     state,
     findByCode: code => typeof code === 'string'

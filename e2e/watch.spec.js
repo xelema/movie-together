@@ -92,6 +92,17 @@ test('admin manages a film and two named viewers join in their language with one
     for (const room of await (await host.request.get('/api/rooms')).json()) await host.request.delete(`/api/rooms/${room.id}`, { headers });
     for (const movie of await (await host.request.get('/api/movies')).json()) await host.request.delete(`/api/movies/${movie.id}`, { headers });
     await host.locator('#refresh').click();
+    // Réglages opérationnels : le formulaire groupe les paramètres, une
+    // modification persiste au rechargement et le reset rend les défauts.
+    await expect(host.locator('#settings-form fieldset')).toHaveCount(5);
+    await host.locator('#set-maxRooms').fill('25');
+    await host.locator('#settings-save').click();
+    await expect(host.locator('#notice')).toContainText('enregistrés');
+    await reload(host);
+    await expect(host.locator('#library')).toBeVisible();
+    await expect(host.locator('#set-maxRooms')).toHaveValue('25');
+    await host.locator('#settings-reset').click();
+    await expect(host.locator('#set-maxRooms')).toHaveValue('20');
     await host.locator('#upload-file').setInputFiles({ name: 'fixture.mp4', mimeType: 'video/mp4', buffer: await readFile('data/e2e/fixture.mp4') }); await host.locator('#upload-button').click();
     await expect(host.locator('#movies')).toContainText('À préparer');
     await openDetails();

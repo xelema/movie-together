@@ -51,7 +51,10 @@ Single Node process, no build step, no framework.
   directory so a failed run never replaces a working one. Administrator-added
   subtitle files carry `external: true` and are copied forward on re-prepare.
 - Uploads are resumable 8 MiB chunks through `/api/uploads`. Movies have a 20 GB
-  cap and added subtitle files a 2 MB cap.
+  cap and added subtitle files a 2 MB cap. These and other operational knobs
+  are admin-tunable at runtime: the registry lives in `src/settings.js`,
+  persists to `data/settings.json`, and applies to new operations (buffer
+  thresholds also reach live rooms).
 
 ## Checks before committing
 
