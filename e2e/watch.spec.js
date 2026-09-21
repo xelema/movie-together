@@ -20,7 +20,10 @@ test('admin manages a film and two named viewers join in their language with one
   const controls = page => page.locator('.plyr').hover();
   // Point the mouse where the control lands once shown: the move wakes Plyr's controls
   // and the wiggle enters the bar, so its hover flag keeps them open while playing.
-  const clickControl = (page, selector) => expect(async () => {
+  // A click can dispatch its events and still time out on a loaded box, so toggling
+  // controls pass a done check: a retry then skips the click instead of flipping back.
+  const clickControl = (page, selector, done) => expect(async () => {
+    if (done && await done()) return;
     const point = await page.locator(selector).evaluate(el => {
       const hidden = el.closest('.plyr').classList.contains('plyr--hide-controls');
       const r = el.getBoundingClientRect(), bar = el.closest('.plyr__controls').getBoundingClientRect();
@@ -29,6 +32,7 @@ test('admin manages a film and two named viewers join in their language with one
     await page.mouse.move(point.x, point.y);
     await page.mouse.move(point.x + 1, point.y);
     await page.locator(`.plyr:not(.plyr--hide-controls) ${selector}`).click({ timeout: 3000 });
+    if (done) expect(await done()).toBe(true);
   }).toPass({ timeout: 15_000 });
   try {
     await guest.addInitScript(() => {
@@ -136,7 +140,7 @@ test('admin manages a film and two named viewers join in their language with one
     await guest.evaluate(() => { window.testParticipant = document.querySelector('#participants li'); });
     await guest.waitForTimeout(1000);
     expect(await guest.evaluate(() => window.testParticipant === document.querySelector('#participants li'))).toBe(true);
-    await clickControl(guest, '.plyr__controls [data-plyr=play]');
+    await clickControl(guest, '.plyr__controls [data-plyr=play]', () => guest.locator('video').evaluate(video => video.paused));
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
     // Hold the first subtitle segment in flight: a fragment that finishes
     // parsing while its track is parked gets its cues dropped and is never
@@ -195,7 +199,7 @@ test('admin manages a film and two named viewers join in their language with one
     await guest.locator('#close-settings').click();
     await expect(guest.locator('#player-settings select')).toHaveCount(2);
     // Live bandwidth is admin-only: the host gets the toggle and the badge, the guest neither.
-    await clickControl(host, '#open-settings');
+    await clickControl(host, '#open-settings', () => host.locator('#player-settings').isVisible());
     await expect(host.locator('#bandwidth-row')).toBeVisible();
     await host.locator('#bandwidth-toggle').check();
     await host.locator('#close-settings').click();
@@ -222,7 +226,7 @@ test('admin manages a film and two named viewers join in their language with one
       await guest.screenshot({ path: `test-results/watch-${name}.png`, fullPage: true });
     }
     // A track switch is local to the viewer: it must not pause the room.
-    await clickControl(guest, '#open-settings');
+    await clickControl(guest, '#open-settings', () => guest.locator('#player-settings').isVisible());
     // The visible survivor follows the selector: another language takes the
     // single showing slot, then none keeps every track off the screen.
     await guest.locator('#subtitles').selectOption('1');
