@@ -7,12 +7,12 @@ const track = (mode, { kind = 'subtitles', cues = 0 } = {}) =>
   ({ kind, mode, activeCues: Array.from({ length: cues }, () => ({})) });
 
 test('subtitle font size follows the rendered picture height', () => {
-  // Reference: the old 2.4vw rule on a 1280x720 16:9 picture.
-  assert.equal(subtitleFontSize(720), 30.72);
-  assert.equal(subtitleFontSize(360), 18);
+  // Reference: the old 2.4vw rule on a 1280x720 16:9 picture, raised 25%.
+  assert.equal(subtitleFontSize(720), 38.4);
+  assert.equal(subtitleFontSize(360), 19.2);
   assert.equal(subtitleFontSize(0), 18);
-  assert.ok(Math.abs(subtitleFontSize(1080) - 46.08) < 1e-9);
-  assert.ok(Math.abs(subtitleFontSize(540) - 23.04) < 1e-9);
+  assert.ok(Math.abs(subtitleFontSize(1080) - 57.6) < 1e-9);
+  assert.ok(Math.abs(subtitleFontSize(540) - 28.8) < 1e-9);
 });
 
 test('the single showing text track is the one with live cues', () => {
@@ -73,15 +73,16 @@ test('positionSubtitles hides every text track when none is selected', () => {
 });
 
 test('webkit native fullscreen sizes subtitles from the screen', () => {
-  const player = fakePlayer([track('showing', { cues: 1 })], 0);
+  const player = fakePlayer([track('showing', { cues: 1 })], 0,
+    { getBoundingClientRect: () => ({ width: 1280, height: 720 }), videoWidth: 1280, videoHeight: 720 });
   positionSubtitles(player);
-  assert.equal(player.styles['--subtitle-size'], '46.08px');
+  assert.equal(player.styles['--subtitle-size'], '38.4px');
   const saved = globalThis.screen;
-  globalThis.screen = { width: 844, height: 390 };
+  globalThis.screen = { width: 640, height: 300 };
   player.video.webkitDisplayingFullscreen = true;
   try {
     positionSubtitles(player);
-    // Landscape 844x390 paints a 390 px tall picture, floored at 18 px.
+    // Landscape 640x300 paints a 300 px tall picture, floored at 18 px.
     assert.equal(player.styles['--subtitle-size'], '18px');
     assert.equal(player.video.textTracks[0].activeCues[0].line, 84);
   } finally {

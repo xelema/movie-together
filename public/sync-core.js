@@ -79,9 +79,9 @@ export function canBegin({ state, scheduled, activated, failure, hidden, silent 
 }
 
 // Subtitle glyphs scale with the rendered picture, not the window: the old
-// 2.4vw rule produced 30.72 px on a 720 px tall picture, which stays the
-// reference ratio. The floor keeps a tiny render readable.
-export const subtitleFontSize = pictureHeight => Math.max(18, pictureHeight * (30.72 / 720));
+// 2.4vw rule produced 30.72 px on a 720 px tall picture, and a 25% bump makes
+// 38.4 px the reference ratio. The floor keeps a tiny render readable.
+export const subtitleFontSize = pictureHeight => Math.max(18, pictureHeight * (38.4 / 720));
 
 // Only one text track may paint at once; WebKit can expose the same HLS
 // subtitle as duplicate TextTracks all in showing mode. The viewer's pick

@@ -3,11 +3,16 @@ import { readFile } from 'node:fs/promises';
 
 test('admin manages a film and two named viewers join in their language with one shared play', async ({ browser }) => {
   test.skip(process.platform === 'win32' && browser.browserType().name() === 'webkit', 'Playwright WebKit on Windows has neither HLS nor MSE decoding; run this project on macOS/Linux.');
+  // One pass over the whole flow: upload, a real ffmpeg prepare (45 s budget),
+  // two synced viewers, fullscreen, disconnect. CI needs more than the shared 90 s.
+  test.setTimeout(150_000);
   const a = await browser.newContext(), b = await browser.newContext();
   const host = await a.newPage(), guest = await b.newPage(), latest = new Map(), errors = [];
   let releaseMedia = () => {};
   for (const page of [host, guest]) {
-    page.setDefaultTimeout(10_000);
+    // Loads share one CI box with ffmpeg and the previous engine's teardown:
+    // navigation gets room while action checks stay tight.
+    page.setDefaultTimeout(10_000); page.setDefaultNavigationTimeout(30_000);
     page.on('pageerror', error => errors.push(error.message));
     page.on('websocket', ws => ws.on('framereceived', event => { const message = JSON.parse(event.payload); if (message.type === 'state') latest.set(page, message); }));
   }
@@ -15,7 +20,10 @@ test('admin manages a film and two named viewers join in their language with one
   const controls = page => page.locator('.plyr').hover();
   // Point the mouse where the control lands once shown: the move wakes Plyr's controls
   // and the wiggle enters the bar, so its hover flag keeps them open while playing.
-  const clickControl = (page, selector) => expect(async () => {
+  // A click can dispatch its events and still time out on a loaded box, so toggling
+  // controls pass a done check: a retry then skips the click instead of flipping back.
+  const clickControl = (page, selector, done) => expect(async () => {
+    if (done && await done()) return;
     const point = await page.locator(selector).evaluate(el => {
       const hidden = el.closest('.plyr').classList.contains('plyr--hide-controls');
       const r = el.getBoundingClientRect(), bar = el.closest('.plyr__controls').getBoundingClientRect();
@@ -24,6 +32,7 @@ test('admin manages a film and two named viewers join in their language with one
     await page.mouse.move(point.x, point.y);
     await page.mouse.move(point.x + 1, point.y);
     await page.locator(`.plyr:not(.plyr--hide-controls) ${selector}`).click({ timeout: 3000 });
+    if (done) expect(await done()).toBe(true);
   }).toPass({ timeout: 15_000 });
   try {
     await guest.addInitScript(() => {
@@ -131,7 +140,7 @@ test('admin manages a film and two named viewers join in their language with one
     await guest.evaluate(() => { window.testParticipant = document.querySelector('#participants li'); });
     await guest.waitForTimeout(1000);
     expect(await guest.evaluate(() => window.testParticipant === document.querySelector('#participants li'))).toBe(true);
-    await clickControl(guest, '.plyr__controls [data-plyr=play]');
+    await clickControl(guest, '.plyr__controls [data-plyr=play]', () => guest.locator('video').evaluate(video => video.paused));
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
     // Hold the first subtitle segment in flight: a fragment that finishes
     // parsing while its track is parked gets its cues dropped and is never
@@ -174,7 +183,7 @@ test('admin manages a film and two named viewers join in their language with one
       const css = parseFloat(getComputedStyle(video.parentElement).getPropertyValue('--subtitle-size'));
       const captions = document.querySelector('.color-captions');
       const overlay = captions ? parseFloat(getComputedStyle(captions).fontSize) : css;
-      return picture > 0 && Math.abs(css - Math.max(18, picture * 30.72 / 720)) < 1 && Math.abs(overlay - css) < 1;
+      return picture > 0 && Math.abs(css - Math.max(18, picture * 38.4 / 720)) < 1 && Math.abs(overlay - css) < 1;
     })).toBe(true);
     await expectSubtitleSize(guest);
     // Opening the overlay must never apply an image filter to video or an ancestor.
@@ -190,7 +199,7 @@ test('admin manages a film and two named viewers join in their language with one
     await guest.locator('#close-settings').click();
     await expect(guest.locator('#player-settings select')).toHaveCount(2);
     // Live bandwidth is admin-only: the host gets the toggle and the badge, the guest neither.
-    await clickControl(host, '#open-settings');
+    await clickControl(host, '#open-settings', () => host.locator('#player-settings').isVisible());
     await expect(host.locator('#bandwidth-row')).toBeVisible();
     await host.locator('#bandwidth-toggle').check();
     await host.locator('#close-settings').click();
@@ -217,7 +226,7 @@ test('admin manages a film and two named viewers join in their language with one
       await guest.screenshot({ path: `test-results/watch-${name}.png`, fullPage: true });
     }
     // A track switch is local to the viewer: it must not pause the room.
-    await clickControl(guest, '#open-settings');
+    await clickControl(guest, '#open-settings', () => guest.locator('#player-settings').isVisible());
     // The visible survivor follows the selector: another language takes the
     // single showing slot, then none keeps every track off the screen.
     await guest.locator('#subtitles').selectOption('1');
@@ -229,6 +238,15 @@ test('admin manages a film and two named viewers join in their language with one
     expect(latest.get(host)?.state.phase).toBe('playing');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(false);
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    // The 50 s fixture can end during the checks above: the room then freezes on
+    // pause and Plyr pins its controls open. Rewind and replay until the film is
+    // verifiably playing with enough left for the idle-hide assertions below.
+    await expect.poll(() => host.evaluate(() => {
+      const video = document.querySelector('video'), player = window.player;
+      if (video.currentTime >= 20) player.command('seek', 5);
+      if (player.state?.phase === 'paused') player.command('play');
+      return !video.paused && video.currentTime < 20;
+    }), { timeout: 15_000 }).toBe(true);
     // Controls auto-hide while playing; hover until they are shown before clicking fullscreen.
     await expect(async () => {
       if (await host.evaluate(() => document.fullscreenElement?.id) !== 'screen') await clickControl(host, '[data-plyr=fullscreen]');
@@ -245,7 +263,13 @@ test('admin manages a film and two named viewers join in their language with one
     await host.mouse.move(0,0); await expect(host.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
     await host.screenshot({ path: 'test-results/watch-fullscreen.png' }); await host.evaluate(() => document.exitFullscreen());
     await expectSubtitleSize(host);
-    await b.setOffline(true); await expect.poll(() => host.locator('video').evaluate(video => video.paused), { timeout: 6000 }).toBe(true);
+    // A member that loses its network pauses itself on the offline event; the room
+    // freezes as soon as its pause command lands or its report goes stale
+    // (reportTimeout), and the host follows. Both directions are the contract.
+    await b.setOffline(true);
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+    await expect(guest.locator('#buffering-label')).toContainText('연결이 끊겨');
+    await expect.poll(() => host.locator('video').evaluate(video => video.paused), { timeout: 10_000 }).toBe(true);
     await host.locator('.color-canvas').evaluate(canvas => canvas.getContext('webgl2').getExtension('WEBGL_lose_context').loseContext());
     await expect(host.locator('#buffering-label')).toContainText('rendu des couleurs');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
@@ -265,5 +289,5 @@ test('admin manages a film and two named viewers join in their language with one
     console.log('Failure:', error.message, 'Browser errors:', errors, await dump(host, 'host'), await dump(guest, 'guest'));
     throw error;
   }
-  finally { releaseMedia(); await guest.unrouteAll({ behavior: 'ignoreErrors' }); await a.close(); await b.close(); }
+  finally { releaseMedia(); await guest.unrouteAll({ behavior: 'ignoreErrors' }).catch(() => {}); await a.close(); await b.close(); }
 });
