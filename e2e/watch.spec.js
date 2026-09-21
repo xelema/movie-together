@@ -25,6 +25,14 @@ test('admin manages a film and two named viewers join in their language with one
     test.skip(true, `webgl-unavailable: no WebGL2 high-float context on ${pages}`);
   }
   const openDetails = async () => { if (!await host.locator('#movies details').evaluate(node => node.open)) await host.locator('#movies summary').click(); };
+  // A first paint can starve past one navigation budget on a loaded box: retry
+  // the navigation rather than stretch a single arbitrary timeout.
+  const goto = (page, url) => expect(async () => {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+  }).toPass({ timeout: 60_000 });
+  const reload = page => expect(async () => {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 });
+  }).toPass({ timeout: 60_000 });
   // A single hover can land inside the same auto-hide window on a loaded box:
   // wake Plyr, then wait for the controls state it actually reached.
   const showControls = page => expect(async () => {
@@ -51,8 +59,13 @@ test('admin manages a film and two named viewers join in their language with one
     });
     await page.mouse.move(point.x, point.y);
     await page.mouse.move(point.x + 1, point.y);
+    // The action a previous click started can land while these moves run:
+    // re-check before clicking or a toggle flips back while it is still landing.
+    if (done && await done()) return;
     await page.locator(`.plyr:not(.plyr--hide-controls) ${selector}`).click({ timeout: 3000 });
-    if (done) expect(await done()).toBe(true);
+    // A fullscreen request can take seconds to resolve on a loaded box: give the
+    // done state a poll window before deciding the click missed.
+    if (done) await expect.poll(done, { timeout: 4000 }).toBe(true);
   }).toPass({ timeout: 15_000 });
   try {
     await guest.addInitScript(() => {
@@ -62,15 +75,15 @@ test('admin manages a film and two named viewers join in their language with one
       };
       document.addEventListener('click', event => { if (event.target.closest('#allow-sound')) window.testSoundAllowed = true; }, true);
     });
-    await guest.goto('/', { waitUntil: 'domcontentloaded' });
+    await goto(guest, '/');
     await expect(guest.locator('#join-form input')).toHaveCount(1);
     await expect(guest.locator('#login-form')).toBeHidden();
-    await guest.locator('#language').selectOption('ko'); await guest.reload({ waitUntil: 'domcontentloaded' });
+    await guest.locator('#language').selectOption('ko'); await reload(guest);
     await expect(guest.locator('html')).toHaveAttribute('lang', 'ko');
     await expect(guest.locator('#language-flag')).toHaveAttribute('src', '/flags/ko.svg');
     await guest.setViewportSize({ width: 390, height: 844 });
     await guest.screenshot({ path: 'test-results/home-mobile.png', fullPage: true });
-    await host.goto('/admin', { waitUntil: 'domcontentloaded' });
+    await goto(host, '/admin');
     await host.locator('#login-form input').fill('browser-test-password'); await host.locator('#login-form button').click();
     await expect(host.locator('#library')).toBeVisible();
     await expect(host.locator('#disk-space')).toContainText('libres');
@@ -266,31 +279,49 @@ test('admin manages a film and two named viewers join in their language with one
     // than sleeping for a duration that only approximates that round trip.
     const hostState = latest.get(host);
     await expect.poll(() => latest.get(host) !== hostState).toBe(true);
-    expect(latest.get(host)?.state.phase).toBe('playing');
+    await expect.poll(() => latest.get(host)?.state.phase).toBe('playing');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(false);
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
-    // The 50 s fixture can end during the checks above: the room then freezes on
-    // pause and Plyr pins its controls open. Rewind and replay until the film is
-    // verifiably playing with enough left for the idle-hide assertions below.
-    await expect.poll(() => host.evaluate(() => {
-      const video = document.querySelector('video'), player = window.player;
-      if (video.currentTime >= 20) player.command('seek', 5);
-      if (player.state?.phase === 'paused') player.command('play');
-      return !video.paused && video.currentTime < 20;
-    }), { timeout: 15_000 }).toBe(true);
+    // The 50 s fixture can end during the checks above and a member stall can
+    // freeze the room mid-flight: Plyr pins its controls open unless the room is
+    // verifiably playing, so every pass below first restores that state. A room
+    // that refuses to resume fails on this poll, with the dump naming the gate.
+    const ensurePlaying = () => expect.poll(async () => {
+      const hostReady = await host.evaluate(() => {
+        const video = document.querySelector('video'), player = window.player;
+        if (video.currentTime >= 20) player.command('seek', 5);
+        if (player.state?.phase === 'paused') player.command('play');
+        return player.state?.phase === 'playing' && !video.paused && !video.seeking && video.currentTime < 20;
+      });
+      if (!hostReady) return false;
+      const [hostTime, guestTime] = await Promise.all([host, guest].map(page =>
+        page.locator('video').evaluate(video => video.paused || video.seeking || video.currentTime >= 20 ? -1 : video.currentTime)));
+      // The sync loop converges members well under a second; a wider gap is a
+      // member still realigning after a seek, not a settled room.
+      return hostTime >= 0 && guestTime >= 0 && Math.abs(hostTime - guestTime) < 1;
+    }, { timeout: 15_000 }).toBe(true);
     // Controls auto-hide while playing; hover until they are shown before clicking fullscreen.
     await expect(async () => {
+      await ensurePlaying();
       if (await host.evaluate(() => document.fullscreenElement?.id) !== 'screen') {
         await clickControl(host, '[data-plyr=fullscreen]', () => host.evaluate(() => document.fullscreenElement?.id === 'screen'));
       }
-      await expect.poll(() => host.evaluate(() => document.fullscreenElement?.id), { timeout: 3000 }).toBe('screen');
-    }).toPass({ timeout: 20_000 });
-    await expectSubtitleSize(host);
-    await expect(host.locator('#player-settings')).toBeHidden();
-    await expect.poll(() => host.locator('.color-canvas').evaluate(canvas => canvas.width === document.querySelector('video').videoWidth)).toBe(true);
-    await host.mouse.move(0,0); await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 5000 });
-    await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '0');
-    await expect(host.locator('video')).toHaveCSS('cursor', 'none');
+      await expect.poll(() => host.evaluate(() => document.fullscreenElement?.id), { timeout: 5000 }).toBe('screen');
+      // The renderer paints display pixels and never upscales the source:
+      // assert that contract, not an equality tied to the fullscreen size.
+      await expect.poll(() => host.locator('.color-canvas').evaluate(canvas => {
+        const video = document.querySelector('video'), rect = video.getBoundingClientRect();
+        if (canvas.dataset.ready !== 'true' || !video.videoWidth) return false;
+        const scale = Math.min(1, rect.width * devicePixelRatio / video.videoWidth, rect.height * devicePixelRatio / video.videoHeight);
+        return canvas.width === Math.max(1, Math.round(video.videoWidth * scale)) && canvas.height === Math.max(1, Math.round(video.videoHeight * scale));
+      }), { timeout: 3000 }).toBe(true);
+      await expectSubtitleSize(host);
+      await expect(host.locator('#player-settings')).toBeHidden();
+      await host.mouse.move(0, 0);
+      await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
+      await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '0', { timeout: 1000 });
+      await expect(host.locator('video')).toHaveCSS('cursor', 'none', { timeout: 1000 });
+    }).toPass({ timeout: 60_000 });
     await showControls(host);
     await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '1');
     await expect(host.locator('video')).not.toHaveCSS('cursor', 'none');
@@ -322,7 +353,7 @@ test('admin manages a film and two named viewers join in their language with one
         mse: window.Hls.isSupported(), vendor: navigator.vendor,
         tracks: Array.from(video.textTracks).map(track => ({ kind: track.kind, mode: track.mode,
           label: track.label, cues: track.cues?.length ?? 0, active: track.activeCues?.length ?? 0 })) })).catch(() => null),
-      canvas: await page.locator('.color-canvas').evaluate(canvas => ({ ...canvas.dataset })).catch(() => null),
+      canvas: await page.locator('.color-canvas').evaluate(canvas => ({ width: canvas.width, height: canvas.height, ...canvas.dataset })).catch(() => null),
       label: await page.locator('#buffering-label').textContent().catch(() => null),
     });
     console.log('Failure:', error.message, 'Browser errors:', errors, await dump(host, 'host'), await dump(guest, 'guest'));

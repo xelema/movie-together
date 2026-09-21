@@ -30,8 +30,16 @@ test('hdr content follows the screen: shader on sdr, native on hdr, force shader
     catch { capabilities.decodingInfo = decodingInfo; }
     window.__hdrMocked = navigator.mediaCapabilities?.decodingInfo === decodingInfo;
   });
+  // A first paint can starve past one navigation budget on a loaded box: retry
+  // the navigation rather than stretch a single arbitrary timeout.
+  const goto = url => expect(async () => {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+  }).toPass({ timeout: 60_000 });
+  const reload = () => expect(async () => {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 });
+  }).toPass({ timeout: 60_000 });
   try {
-    await page.goto('/admin', { waitUntil: 'domcontentloaded' });
+    await goto('/admin');
     // Le shader exige WebGL2 high-float : meme sonde que check-colors, avant
     // toute assertion (le Firefox de CI peut refuser le contexte).
     const { webgl2 } = await page.evaluate(webglProbe);
@@ -60,7 +68,7 @@ test('hdr content follows the screen: shader on sdr, native on hdr, force shader
     // les parametres et reconstruire le SyncPlayer.
     const reenter = async hash => {
       await page.evaluate(h => { location.hash = h; }, hash);
-      await page.reload({ waitUntil: 'domcontentloaded' });
+      await reload();
       await expect(page.locator('#name-dialog')).toBeVisible();
       await page.locator('#room-name').fill('HDR'); await page.locator('#name-dialog button').click();
       await expect(page.locator('#movie-title')).toHaveText('fixture');
