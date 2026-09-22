@@ -142,16 +142,35 @@ test('admin manages a film and two named viewers join in their language with one
     await host.screenshot({ path: 'test-results/admin-mobile.png', fullPage: true });
     await host.setViewportSize({ width: 1280, height: 720 });
     await host.getByRole('button', { name: 'Créer une séance', exact: true }).click();
+    // La traduction vocale est proposée décochée ; une séance ordinaire n'expose
+    // ni indicateur ni contrôle micro.
+    await expect(host.locator('#create-voice')).not.toBeChecked();
     await host.locator('#random-code').click(); await expect(host.locator('#create-code')).toHaveValue(/^[a-f0-9]{8}$/);
-    await host.locator('#create-code').fill('Cine-Soir');
+    await host.locator('#create-code').fill('Sans-Voix');
     await host.getByRole('button', { name: 'Créer', exact: true }).click();
     await expect(host.locator('#name-dialog')).toBeVisible(); await host.locator('#room-name').fill('Alex'); await host.locator('#name-dialog button').click();
     await expect(host.locator('#movie-title')).toHaveText('fixture');
+    await expect(host.locator('#voice-badge')).toBeHidden(); await expect(host.locator('#voice-mic')).toBeHidden();
+    await host.locator('#leave').click();
+    await host.getByRole('button', { name: 'Créer une séance', exact: true }).click();
+    await expect(host.locator('#create-voice')).not.toBeChecked();
+    await host.locator('#create-voice').check();
+    await host.locator('#create-code').fill('Cine-Soir');
+    await host.getByRole('button', { name: 'Créer', exact: true }).click();
+    await expect(host.locator('#name-dialog')).toBeVisible(); await host.locator('#name-dialog button').click();
+    await expect(host.locator('#movie-title')).toHaveText('fixture');
+    await expect(host.locator('#voice-badge')).toContainText('Traduction vocale');
+    await expect(host.locator('#voice-mic')).toBeVisible(); await expect(host.locator('#voice-mic')).toBeDisabled();
     const gate = new Promise(resolve => { releaseMedia = resolve; });
     await guest.route('**/*.m4s', async route => { await gate; await route.continue().catch(() => {}); });
     await guest.locator('#join-form input').fill('cine-soir'); await guest.locator('#join-form button').click();
     await expect(guest.locator('#name-dialog')).toBeVisible(); await guest.locator('#room-name').fill('민지'); await guest.locator('#name-dialog button').click();
     await expect(guest.locator('#movie-title')).toHaveText('fixture'); await expect(guest.locator('#choose-film')).toBeHidden();
+    // La capacité arrive dans l'état autoritatif et affiche le contrôle chez l'invité aussi.
+    await expect.poll(() => latest.get(guest)?.voice).toMatchObject({ enabled: true, pair: ['fr', 'ko'] });
+    expect(typeof latest.get(guest)?.voice?.available).toBe('boolean');
+    await expect(guest.locator('#voice-badge')).toContainText('음성 번역');
+    await expect(guest.locator('#voice-mic')).toBeVisible();
     await expect(host.locator('video')).toHaveCSS('filter', 'none');
     await expect(guest.locator('video')).toHaveCSS('filter', 'none');
     await expect(host.locator('#picture-settings')).toHaveCount(0);
