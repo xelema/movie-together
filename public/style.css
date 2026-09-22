@@ -208,7 +208,7 @@ video::cue{color:#fff;background:transparent;font-family:Arial,"Segoe UI",sans-s
 #voice-mic:hover{background:rgba(10,10,12,.82)}
 #voice-mic:disabled{cursor:default}
 #voice-mic[data-state=listening]{color:#e5484d;border-color:rgba(229,72,77,.7);animation:voice-pulse 1.4s var(--ease) infinite}
-#voice-mic[data-state=processing]{color:var(--pending);animation:voice-pulse 1.4s var(--ease) infinite}
+#voice-mic[data-state=processing],#voice-mic[data-state=starting]{color:var(--pending);animation:voice-pulse 1.4s var(--ease) infinite}
 #voice-mic[data-state=error]{color:var(--danger);border-color:rgba(226,141,148,.6)}
 @keyframes voice-pulse{50%{opacity:.55}}
 #voice-local{position:absolute;z-index:4;left:14px;bottom:14px;max-width:min(60%,420px);padding:8px 12px;

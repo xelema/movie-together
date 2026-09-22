@@ -3,6 +3,15 @@
 // contexte audio né hors appui. La permission n'est jamais demandée à
 // l'entrée de la séance. États intermédiaires et erreurs restent locaux.
 const LISTEN_MS = 20_000, PROCESS_GRACE_MS = 15_000, RESULT_MS = 8_000;
+// Chaque état porte un nom annoncé : le bouton reste le seul contrôle et les
+// lecteurs d'écran entendent la transition comme les voyants voient la couleur.
+const STATE_NAMES = {
+  idle: ['Parler', '말하기'],
+  starting: ['Activation du micro…', '마이크 켜는 중…'],
+  listening: ['Écoute en cours, appuyer pour terminer', '듣는 중입니다. 눌러서 마치기'],
+  processing: ['Traduction en cours…', '번역 중…'],
+  error: ['Réessayer de parler', '다시 말하기'],
+};
 
 export function attachVoice({ mic, local, supertitle, player, t, label }) {
   let state = 'idle', utterance = null, lastResultSeq = 0;
@@ -19,6 +28,8 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     state = next;
     mic.dataset.state = next;
     mic.setAttribute('aria-pressed', String(next === 'listening'));
+    const [fr, ko] = STATE_NAMES[next] ?? STATE_NAMES.idle;
+    mic.setAttribute('aria-label', t(fr, ko));
   };
   const stopCapture = () => {
     clearTimeout(listenTimer);
@@ -130,6 +141,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
   mic.addEventListener('click', tap);
   return {
     message,
+    rename: () => setState(state),
     dispose() {
       mic.removeEventListener('click', tap);
       abort();
