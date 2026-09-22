@@ -154,6 +154,29 @@ test('cancel, disconnect and the listening limit always release the room lock', 
   assert.ok(again);
 });
 
+test('a cancelled prise frees the lock and never reaches the room', async t => {
+  const { admin, createRoom, join, open, voice, send, service } = await boot(t, { patch: { voiceCooldown: 0 } });
+  const room = await createRoom({ code: 'cancel-room', voice: true });
+  const guest = await join(room.code);
+  const a = await open(room.id, admin, 'Alex');
+  const b = await open(room.id, guest, 'Minji');
+  send(a, 'start');
+  const started = await a.waitFor(m => m.state === 'started');
+  a.socket.send(frame());
+  send(a, 'cancel');
+  // The pong settles after the cancel on the same socket: the lock is free.
+  await a.settle();
+  send(b, 'start');
+  const granted = await b.waitFor(m => m.state === 'started');
+  assert.notEqual(granted.utterance, started.utterance);
+  // The aborted phrase produced nothing: no result, no failure echo, and the
+  // provider never saw its audio.
+  assert.deepEqual(voice(a).map(m => m.state), ['started']);
+  assert.deepEqual(voice(b).map(m => m.state), ['started']);
+  assert.equal(service.detected.length, 0);
+  assert.equal(service.translated.length, 0);
+});
+
 test('silence, noise and unclear language stay local and never reach the provider', async t => {
   const { admin, createRoom, join, open, send, service } = await boot(t, { patch: { voiceCooldown: 0 } });
   const room = await createRoom({ code: 'guard-room', voice: true });
