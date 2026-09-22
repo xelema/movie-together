@@ -17,6 +17,26 @@ test('admin manages a film and two named viewers join in their language with one
     page.on('pageerror', error => errors.push(error.message));
     page.on('websocket', ws => ws.on('framereceived', event => { const message = JSON.parse(event.payload); if (message.type === 'state') latest.set(page, message); }));
   }
+  // Micro factice déterministe : un oscillateur WebAudio alimente un vrai
+  // MediaStream, le pipeline de capture et le worklet restent réels. Seule
+  // la source matérielle est remplacée, sans réseau ni permission à mimer.
+  const fakeMic = () => {
+    window.voiceTest = { micCalls: 0 };
+    navigator.mediaDevices.getUserMedia = () => {
+      window.voiceTest.micCalls++;
+      if (!window.voiceTest.stream) {
+        const context = new AudioContext();
+        const osc = context.createOscillator(), gain = context.createGain();
+        const dest = context.createMediaStreamDestination();
+        osc.frequency.value = 330; gain.gain.value = .4;
+        osc.connect(gain); gain.connect(dest); osc.start();
+        context.resume();
+        window.voiceTest.stream = dest.stream;
+      }
+      return Promise.resolve(window.voiceTest.stream);
+    };
+  };
+  await host.addInitScript(fakeMic); await guest.addInitScript(fakeMic);
   // The fixture is HDR: each page needs its own WebGL2 probe before playback
   // assertions. A negative answer is missing browser coverage, not a pass.
   const [hostCaps, guestCaps] = await Promise.all([host.evaluate(webglProbe), guest.evaluate(webglProbe)]);
@@ -419,6 +439,7 @@ test('admin manages a film and two named viewers join in their language with one
       expect(await guest.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await showControls(guest);
       await expectSubtitleSize(guest);
+      await expect(guest.locator('#voice-mic')).toBeInViewport();
       if (width === 390) await expect.poll(() => guest.locator('video').evaluate(video =>
         Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.line < 80)))).toBe(true);
       await guest.screenshot({ path: `test-results/watch-${name}.png`, fullPage: true });
@@ -474,6 +495,7 @@ test('admin manages a film and two named viewers join in their language with one
       }), { timeout: 3000 }).toBe(true);
       await expectSubtitleSize(host);
       await expect(host.locator('#player-settings')).toBeHidden();
+      await expect(host.locator('#voice-mic')).toBeVisible();
       await host.mouse.move(0, 0);
       await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
       await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '0', { timeout: 1000 });
@@ -484,6 +506,53 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(host.locator('video')).not.toHaveCSS('cursor', 'none');
     await host.screenshot({ path: 'test-results/watch-fullscreen.png' }); await host.evaluate(() => document.exitFullscreen());
     await expectSubtitleSize(host);
+    // Traduction vocale : la permission micro n'est demandée qu'au premier
+    // appui, une seule prise est acceptée, le texte compris reste local et le
+    // surtitre traduit est partagé. La lecture ne bouge pas (#40, #48).
+    await ensurePlaying();
+    const micCalls = page => page.evaluate(() => window.voiceTest.micCalls);
+    expect(await micCalls(host)).toBe(0); expect(await micCalls(guest)).toBe(0);
+    await host.locator('#voice-mic').click();
+    expect(await micCalls(host)).toBe(1);
+    await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
+    // Pendant la prise de l'hôte, l'invité est refusé localement, en coréen,
+    // et aucun état intermédiaire ne fuite vers l'hôte.
+    await guest.locator('#voice-mic').click();
+    await expect(guest.locator('#voice-local')).toContainText('다른 참가자가 말하고 있습니다');
+    await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
+    await expect(host.locator('#voice-local')).toBeHidden();
+    await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
+    // Second appui : la prise passe en traitement puis produit le résultat.
+    await host.locator('#voice-mic').click();
+    await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'processing');
+    await expect(host.locator('#voice-local')).toContainText('Compris : On se retrouve au générique.');
+    await expect(host.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
+    await expect(guest.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
+    // Le texte compris n'atteint jamais l'invité et le film continue.
+    await expect(guest.locator('#voice-local')).not.toContainText('On se retrouve');
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    // Un événement périmé ne remplace pas un surtitre plus récent.
+    await guest.evaluate(() => window.player.onVoice({ type: 'voice', state: 'result', utterance: 'stale', seq: 0, speaker: 'Ghost', text: 'STALE' }));
+    await expect(guest.locator('#voice-result')).toContainText('Alex ·');
+    // Placement variante B : micro sur le bord droit, carte locale en bas à
+    // gauche, surtitre centré en haut de l'image.
+    const stage = await host.locator('.video-stage').boundingBox();
+    const micBox = await host.locator('#voice-mic').boundingBox();
+    const cardBox = await host.locator('#voice-local').boundingBox();
+    const resultBox = await host.locator('#voice-result').boundingBox();
+    expect(micBox.x + micBox.width / 2).toBeGreaterThan(stage.x + stage.width * .7);
+    expect(cardBox.x - stage.x).toBeLessThan(stage.width * .2);
+    expect(cardBox.y - stage.y).toBeGreaterThan(stage.height * .6);
+    expect(Math.abs(resultBox.x + resultBox.width / 2 - stage.x - stage.width / 2)).toBeLessThan(stage.width * .15);
+    expect(resultBox.y - stage.y).toBeLessThan(stage.height * .3);
+    // Après l'erreur, l'invité reprend la parole : même résultat partagé.
+    await guest.locator('#voice-mic').click();
+    await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
+    await guest.locator('#voice-mic').click();
+    await expect(guest.locator('#voice-local')).toContainText('이해함 : On se retrouve au générique.');
+    await expect(guest.locator('#voice-result')).toContainText('민지 · 엔딩 크레딧에서 만나요.');
+    await expect(host.locator('#voice-result')).toContainText('민지 · 엔딩 크레딧에서 만나요.');
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     // A member that loses its network pauses itself on the offline event; the room
     // freezes as soon as its pause command lands or its report goes stale
     // (reportTimeout), and the host follows. Both directions are the contract.
