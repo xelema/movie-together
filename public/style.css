@@ -201,6 +201,12 @@ video::cue{color:#fff;background:transparent;font-family:Arial,"Segoe UI",sans-s
 #open-settings{font-size:19px;line-height:1}
 #bandwidth-badge{position:absolute;z-index:4;top:12px;right:12px;padding:4px 10px;border:1px solid var(--line);border-radius:8px;
   background:rgba(15,17,21,.85);font-family:var(--mono);font-size:12px;color:var(--text);pointer-events:none}
+#voice-badge{position:absolute;z-index:4;top:12px;left:12px;padding:4px 10px;border:1px solid var(--line);border-radius:8px;
+  background:rgba(15,17,21,.85);font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:var(--text);pointer-events:none}
+#voice-mic{position:absolute;z-index:4;top:50%;right:14px;transform:translateY(-50%);width:52px;height:52px;min-height:0;padding:0;
+  display:grid;place-items:center;border-radius:50%;background:rgba(10,10,12,.62);color:var(--white);border:1px solid rgba(255,255,255,.18)}
+#voice-mic:hover{background:rgba(10,10,12,.82)}
+#voice-mic:disabled{cursor:default}
 #screen.settings-open .plyr__controls,#screen .plyr__controls:has(:focus-visible){opacity:1;transform:none;pointer-events:auto}
 #screen.settings-open .plyr--hide-controls,#screen.settings-open .plyr--hide-controls video{cursor:auto}
 
@@ -257,6 +263,9 @@ dialog button{width:100%}
 .dialog-actions button{flex:1}
 #create-dialog{text-align:left}
 #create-dialog p{margin:10px 0 0}
+#create-dialog .check{display:flex;align-items:center;gap:10px}
+#create-dialog .check>span{margin:0}
+#create-dialog .check input{margin:0}
 .room-pill{display:inline-flex;align-items:center;gap:10px;padding:7px 14px;margin:0 auto 28px;border-radius:999px;
   background:var(--sunk);border:1px solid var(--line);font-size:13px;color:var(--text-2)}
 .room-pill .dot{width:8px;height:8px;border-radius:50%;background:var(--ready);flex-shrink:0}

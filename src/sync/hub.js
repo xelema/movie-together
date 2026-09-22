@@ -9,7 +9,7 @@ const fail = (status, message) => Object.assign(new Error(message), { status });
 // liveness sweep. app.js keeps HTTP and auth; it reaches séances only through
 // this interface. Sessions and media stay outside: sessionFor/sessionActive,
 // canAccess, movieFor and moviePlayable are injected at the seam.
-export function createRoomHub({ origin, settings = createSettings(), sessionFor, sessionActive, canAccess, movieFor, moviePlayable } = {}) {
+export function createRoomHub({ origin, settings = createSettings(), sessionFor, sessionActive, canAccess, movieFor, moviePlayable, voiceService = null } = {}) {
   // Les seuils vivent ici pour les nouvelles séances comme pour tune() ; les
   // autres réglages sont relus dans settings au moment de chaque opération.
   const thresholds = { minBuffer: settings.get('minBuffer'), lowBuffer: settings.get('lowBuffer') };
@@ -23,7 +23,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
 
   // Waiting diagnostics are for the host: guests only need the shared bit.
   const state = (room, { details = true } = {}) => ({ type: 'state', roomId: room.id, code: room.code,
-    probe: !!room.probe,
+    probe: !!room.probe, ...(room.voice ? { voice: room.voice } : {}),
     state: room.engine.snapshot(), movie: room.movieId ? movieFor(room.movieId) : null,
     sync: { minBuffer: room.engine.minBuffer, lowBuffer: room.engine.lowBuffer },
     members: [...room.engine.members.keys()].map(id => {
@@ -64,7 +64,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     }
   };
 
-  const create = ({ movieId, duration, code, probe }) => {
+  const create = ({ movieId, duration, code, probe, voice }) => {
     if (rooms.size >= settings.get('maxRooms')) throw fail(409, 'Fermer une room avant d’en créer une autre.');
     if (code !== undefined && (typeof code !== 'string' || !/^[a-z0-9-]{4,32}$/i.test(code.trim()))) throw fail(400, 'Code : 4 à 32 lettres, chiffres ou tirets.');
     code = code?.trim().toLowerCase() || randomBytes(8).toString('hex');
@@ -74,6 +74,9 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       engine: new Room({ ...thresholds, reportTimeout: settings.get('reportTimeout') * 1000,
         startDelay: settings.get('startDelay') * 1000 }), clients: new Set(),
       probe: !!probe, logged: new Map(), loggedPhase: null };
+    // Traduction vocale : capacité figée à la création. La disponibilité reflète
+    // le service injecté, absent tant qu'aucun fournisseur n'est câblé.
+    if (voice) room.voice = Object.freeze({ enabled: true, pair: Object.freeze(['fr', 'ko']), available: !!voiceService });
     room.engine.load(duration); rooms.set(room.id, room);
     return room;
   };
@@ -115,6 +118,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       // shipping them keeps the timing contract explicit instead of hardcoded twice.
       const { minBuffer, lowBuffer, reportTimeout, startDelay } = room.engine;
       ws.send(JSON.stringify({ type: 'welcome', id, probe: !!room.probe,
+        ...(room.voice ? { voice: room.voice } : {}),
         sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs: cadence.tickMs } })); broadcast(room);
       ws.on('pong', () => { ws.alive = true; });
       ws.on('error', () => {});

@@ -439,3 +439,71 @@ test('joining a room with a malformed code is a client error, not a crash', asyn
   for (const code of [123, { code: 'abc' }, ['abc'], true, null])
     assert.equal((await join({ code })).status, 404, String(code));
 });
+
+test('voice translation is an opt-in capability published in room state', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
+  const origin = 'http://localhost:3000';
+  const movieId = 'dddddddd-eeee-ffff-aaaa-bbbbbbbbbbbb';
+  await mkdir(path.join(dataDir, 'movies', movieId), { recursive: true });
+  await writeFile(path.join(dataDir, 'movies', movieId, 'movie.json'),
+    JSON.stringify({ id: movieId, title: 'Voice Film', status: 'ready', duration: 90 }));
+  const instances = [], sockets = [];
+  const boot = async () => {
+    const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin, env: {} });
+    instances.push(instance);
+    await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${instance.server.address().port}`;
+    const request = (url, { cookie, method = 'GET', body } = {}) => fetch(base + url, {
+      method, headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body === undefined ? undefined : JSON.stringify(body) });
+    const login = await request('/api/login', { method: 'POST', body: { password: 'test-password-long-enough' } });
+    return { base, request, cookie: login.headers.get('set-cookie').split(';')[0] };
+  };
+  t.after(async () => {
+    sockets.forEach(socket => socket.terminate());
+    for (const instance of instances) await instance.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const first = await boot();
+  const voiced = await (await first.request('/api/rooms', { cookie: first.cookie, method: 'POST',
+    body: { movieId, code: 'voix-room', voice: true } })).json();
+  const plain = await (await first.request('/api/rooms', { cookie: first.cookie, method: 'POST',
+    body: { movieId, code: 'plain-room' } })).json();
+  assert.deepEqual((await (await first.request(`/api/rooms/${voiced.id}`, { cookie: first.cookie })).json()).voice,
+    { enabled: true, pair: ['fr', 'ko'], available: false });
+  const plainState = await (await first.request(`/api/rooms/${plain.id}`, { cookie: first.cookie })).json();
+  assert.equal('voice' in plainState, false);
+  // The capability rides the websocket welcome and the first state frame alike,
+  // for a guest session as for the host.
+  const frames = room => {
+    const guest = first.request('/api/join', { method: 'POST', body: { code: room.code } })
+      .then(response => response.headers.get('set-cookie').split(';')[0]);
+    return guest.then(cookie => new Promise((resolve, reject) => {
+      const socket = new WebSocket(`${first.base.replace('http', 'ws')}/ws?room=${room.id}`,
+        { headers: { Cookie: cookie, Origin: origin } });
+      sockets.push(socket);
+      const seen = [];
+      socket.on('error', reject);
+      socket.on('message', data => {
+        seen.push(JSON.parse(data));
+        if (seen.some(message => message.type === 'state')) resolve(seen);
+      });
+    }));
+  };
+  const voicedFrames = await frames(voiced);
+  assert.equal(voicedFrames.find(message => message.type === 'welcome')?.voice?.enabled, true);
+  assert.deepEqual(voicedFrames.find(message => message.type === 'state')?.voice,
+    { enabled: true, pair: ['fr', 'ko'], available: false });
+  // An ordinary room publishes no voice key at all.
+  const plainFrames = await frames(plain);
+  assert.equal('voice' in (plainFrames.find(message => message.type === 'welcome') ?? {}), false);
+  assert.equal('voice' in (plainFrames.find(message => message.type === 'state') ?? {}), false);
+  // A probe room keeps its capability across a restart.
+  await first.request('/api/rooms', { cookie: first.cookie, method: 'POST',
+    body: { movieId, code: 'probe-voix', probe: true, voice: true } });
+  const second = await boot();
+  const rooms = await (await second.request('/api/rooms', { cookie: second.cookie })).json();
+  const revived = rooms.find(room => room.code === 'probe-voix');
+  assert.ok(revived);
+  assert.equal((await (await second.request(`/api/rooms/${revived.id}`, { cookie: second.cookie })).json()).voice?.enabled, true);
+});
