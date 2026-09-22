@@ -50,7 +50,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
   // a stuck séance leaves one line naming the gate that blocks it.
   const logChanges = (room, current) => {
     if (current.state.phase !== room.loggedPhase) {
-      console.log(`[room ${room.code}] phase ${room.loggedPhase ?? 'new'} -> ${current.state.phase}`);
+      console.log(`[room ${room.tag}] phase ${room.loggedPhase ?? 'new'} -> ${current.state.phase}`);
       room.loggedPhase = current.state.phase;
     }
     for (const member of current.members) {
@@ -59,7 +59,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
         : 'ready';
       if (room.logged.get(member.id) !== signature) {
         room.logged.set(member.id, signature);
-        console.log(`[room ${room.code}] ${member.name}: ${signature}`);
+        console.log(`[room ${room.tag}] ${member.id}: ${signature}`);
       }
     }
   };
@@ -83,16 +83,17 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'voice', ...payload }));
   };
   const refuse = (room, ws, error, message, extra = {}) => {
-    console.log(`[room ${room.code}] voix refused:${error}`);
+    console.log(`[room ${room.tag}] voix refused:${error}`);
     voiceSend(ws, { state: 'failed', error, message, ...extra });
   };
   // Toute sortie détruit l'audio en mémoire : rien n'est persisté ni journalisé.
   const releaseUtterance = (room, utterance, category) => {
     clearTimeout(utterance.timer);
+    if (utterance.chunks) for (const chunk of utterance.chunks) chunk.fill(0);
     utterance.chunks = null;
     if (room.utterance === utterance) room.utterance = null;
     room.voiceReleased?.set(utterance.session, Date.now());
-    console.log(`[room ${room.code}] voix ${category}`);
+    console.log(`[room ${room.tag}] voix ${category}`);
   };
   const voiceStart = (room, ws) => {
     if (!room.voice?.enabled || typeof voiceService?.detect !== 'function' || typeof voiceService?.translate !== 'function') {
@@ -112,7 +113,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       speaker: ws.displayName, chunks: [], bytes: 0, state: 'listening', timer: null };
     utterance.timer = setTimeout(() => finishUtterance(room, utterance), timing.listenMs);
     room.utterance = utterance;
-    console.log(`[room ${room.code}] voix started`);
+    console.log(`[room ${room.tag}] voix started`);
     voiceSend(ws, { state: 'started', utterance: utterance.id, seq: utterance.seq });
   };
   const voiceFrame = (room, ws, data) => {
@@ -171,10 +172,15 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       }
       return { language: detected.language, result };
     })();
-    const expired = new Promise((_, reject) =>
-      setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'timeout' })), timing.processMs));
+    let expire;
+    const expired = new Promise((_, reject) => {
+      expire = setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'timeout' })), timing.processMs);
+    });
     Promise.race([pipeline, expired]).then(({ language, result }) => {
-      // Une réponse arrivée après la libération de la prise est ignorée.
+      // L'audio est effacé à l'état terminal ; une réponse arrivée après la
+      // libération de la prise est ignorée, son buffer déjà réduit à zéro.
+      clearTimeout(expire);
+      pcm.fill(0);
       if (room.utterance !== utterance) return;
       releaseUtterance(room, utterance, `completed ${audioMs}ms`);
       voiceSend(utterance.ws, { state: 'understood', utterance: utterance.id, seq: utterance.seq,
@@ -185,6 +191,8 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
         if (client.readyState === WebSocket.OPEN) client.send(resultMessage);
       }
     }, error => {
+      clearTimeout(expire);
+      pcm.fill(0);
       if (room.utterance !== utterance) return;
       fail(error.code ?? 'provider', VOICE_MESSAGES[error.code] ?? 'Traduction indisponible.');
     });
@@ -196,7 +204,9 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     code = code?.trim().toLowerCase() || randomBytes(8).toString('hex');
     if ([...rooms.values()].some(room => room.code === code && room.expires > Date.now())) throw fail(409, 'Ce code est déjà utilisé.');
     // Séance instrumentée : dix ans au lieu de douze heures, télémétrie activée.
-    const room = { id: randomUUID(), code, expires: Date.now() + (probe ? 10 * 365 * 86400_000 : settings.get('ttlHours') * 3600_000), movieId,
+    // Journaux voix : identifiant pseudonymisé (#39), jamais le code ni un nom.
+    const id = randomUUID();
+    const room = { id, tag: id.slice(0, 8), code, expires: Date.now() + (probe ? 10 * 365 * 86400_000 : settings.get('ttlHours') * 3600_000), movieId,
       engine: new Room({ ...thresholds, reportTimeout: settings.get('reportTimeout') * 1000,
         startDelay: settings.get('startDelay') * 1000 }), clients: new Set(),
       probe: !!probe, logged: new Map(), loggedPhase: null };
@@ -280,7 +290,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
           else throw new Error('Message inconnu.');
           broadcast(room);
         } catch (error) {
-          console.warn(`[room ${room.code}] ${ws.displayName}: ${error.message}`);
+          console.warn(`[room ${room.tag}] ${ws.memberId}: ${error.message}`);
           ws.send(JSON.stringify({ type: 'error', error: 'Commande invalide.' }));
         }
       });
@@ -332,6 +342,8 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     movieAssigned: movieId => [...rooms.values()].some(room => room.movieId === movieId),
     async close() {
       clearInterval(ticker); clearInterval(sweeper);
+      // Une prise encore en vol est un état terminal : l'audio est effacé.
+      for (const room of rooms.values()) if (room.utterance) releaseUtterance(room, room.utterance, 'closed');
       for (const ws of wss.clients) ws.terminate();
       await new Promise(resolve => wss.close(resolve));
     },

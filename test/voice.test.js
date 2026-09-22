@@ -15,7 +15,7 @@ const fakeService = () => {
     return service.nextDetect ?? { speech: pcm.some(byte => byte !== 0), language: 'fr' };
   };
   service.translate = async (pcm, options) => {
-    service.translated.push({ bytes: pcm.length, ...options });
+    service.translated.push({ bytes: pcm.length, pcm, ...options });
     if (service.nextTranslate) return service.nextTranslate();
     return { text: 'Bonjour le film.', translation: options.language === 'fr' ? '영화 안녕하세요.' : 'Bonjour le film.' };
   };
@@ -295,4 +295,55 @@ test('an active prise stays out of room state and nothing is persisted', async t
   assert.deepEqual(await readdir(path.join(dataDir, 'movies', 'eeeeeeee-1111-2222-3333-444444444444')), ['movie.json']);
   const extra = (await readdir(dataDir)).filter(name => name !== 'movies');
   assert.deepEqual(extra, ['uploads']);
+});
+
+test('voice logs stay metadata-only: pseudonymized room, no code or names', async t => {
+  const lines = [];
+  const original = console.log;
+  console.log = (...args) => lines.push(args.join(' '));
+  t.after(() => { console.log = original; });
+  const { admin, createRoom, join, open, send } = await boot(t, { patch: { voiceCooldown: 0 } });
+  const room = await createRoom({ code: 'log-room', voice: true });
+  const guest = await join(room.code);
+  const a = await open(room.id, admin, 'Alex');
+  const b = await open(room.id, guest, 'Minji');
+  send(a, 'start');
+  await a.waitFor(m => m.state === 'started');
+  send(b, 'start');
+  await b.waitFor(m => m.state === 'failed' && m.error === 'busy');
+  a.socket.send(frame());
+  send(a, 'stop');
+  await a.waitFor(m => m.state === 'result');
+  const voice = lines.filter(line => line.includes('voix'));
+  assert.ok(voice.length >= 3);
+  for (const line of voice) assert.match(line, /\[room [a-f0-9]{8}\] voix /, line);
+  // Aucune ligne de la séance ne porte le code d'invitation ni un nom de
+  // participant : signatures d'attente comprises.
+  for (const line of lines) {
+    assert.equal(line.includes('log-room'), false, line);
+    assert.equal(line.includes('Alex'), false, line);
+    assert.equal(line.includes('Minji'), false, line);
+  }
+});
+
+test('audio buffers are zeroed on terminal states, including late results', async t => {
+  const { admin, createRoom, open, send, service } = await boot(t, {
+    timing: { processMs: 120 }, patch: { voiceCooldown: 0 } });
+  const room = await createRoom({ code: 'wipe-room', voice: true });
+  const a = await open(room.id, admin, 'Alex');
+  const prise = async () => {
+    send(a, 'start');
+    await a.waitFor(m => m.state === 'started');
+    a.socket.send(frame());
+    send(a, 'stop');
+  };
+  await prise();
+  await a.waitFor(m => m.state === 'result');
+  assert.ok(service.translated[0].pcm.every(byte => byte === 0));
+  // A provider answer past the processing cap finds an already-zeroed buffer
+  // and its result is dropped, never broadcast.
+  service.nextTranslate = () => new Promise(resolve => setTimeout(() => resolve({ text: 'tard', translation: 'tard' }), 400));
+  await prise();
+  await a.waitFor(m => m.state === 'failed' && m.error === 'timeout');
+  assert.ok(service.translated[1].pcm.every(byte => byte === 0));
 });
