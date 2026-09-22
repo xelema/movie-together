@@ -2,14 +2,139 @@ import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { webglProbe } from '../scripts/color-capability.js';
 
+// The séance journey below runs as four serial passes sharing the live pages:
+// the upload, the real ffmpeg prepare and the joins are paid once in the first
+// pass, while each pass keeps its own slice of the budget the single 150 s
+// monolith used to burst on a loaded box. `joined` gates the passes after it.
+test.describe.configure({ mode: 'serial' });
+
+let a, b, host, guest, releaseMedia = () => {}, joined = false;
+const latest = new Map(), errors = [];
+
+// Micro factice déterministe : un oscillateur WebAudio alimente un vrai
+// MediaStream, le pipeline de capture et le worklet restent réels. Seule
+// la source matérielle est remplacée, sans réseau ni permission à mimer.
+const fakeMic = () => {
+  window.voiceTest = { micCalls: 0, streams: [], pending: [], hold: false };
+  // WebKit peut remplacer l'objet MediaDevices en cours de vie de la page :
+  // la propriété est interceptée sur navigator, jamais sur l'instance.
+  Object.defineProperty(navigator, 'mediaDevices', {
+    configurable: true,
+    get: () => ({ getUserMedia: () => {
+      window.voiceTest.micCalls++;
+      // Chaque appel produit un vrai flux distinct, armé dans le geste même :
+      // résolu plus tard quand `hold` est levé, jamais réutilisé d'un appel
+      // à l'autre pour qu'un flux orphelin soit observable.
+      const context = new AudioContext();
+      const osc = context.createOscillator(), gain = context.createGain();
+      const dest = context.createMediaStreamDestination();
+      osc.frequency.value = 330; gain.gain.value = .4;
+      osc.connect(gain); gain.connect(dest); osc.start();
+      context.resume();
+      window.voiceTest.stream = dest.stream;
+      window.voiceTest.streams.push(dest.stream);
+      if (window.voiceTest.hold) return new Promise(resolve => window.voiceTest.pending.push(() => resolve(dest.stream)));
+      return Promise.resolve(dest.stream);
+    } }),
+  });
+};
+
+// A first paint can starve past one navigation budget on a loaded box: retry
+// the navigation rather than stretch a single arbitrary timeout.
+const goto = (page, url) => expect(async () => {
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+}).toPass({ timeout: 60_000 });
+const reload = page => expect(async () => {
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 });
+}).toPass({ timeout: 60_000 });
+// A single hover can land inside the same auto-hide window on a loaded box:
+// wake Plyr, then wait for the controls state it actually reached.
+const showControls = page => expect(async () => {
+  const point = await page.locator('.plyr__controls').evaluate(el => {
+    const rect = el.getBoundingClientRect();
+    const hidden = el.closest('.plyr').classList.contains('plyr--hide-controls');
+    return { x: rect.x + rect.width / 2, y: rect.y - (hidden ? rect.height : 0) + rect.height / 2 };
+  });
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.move(point.x + 1, point.y);
+  await expect(page.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/, { timeout: 1000 });
+  await page.mouse.move(point.x + 2, point.y);
+}).toPass({ timeout: 10_000 });
+// Point the mouse where the control lands once shown: the move wakes Plyr's controls
+// and the wiggle enters the bar, so its hover flag keeps them open while playing.
+// A click can dispatch its events and still time out on a loaded box, so toggling
+// controls pass a done check: a retry then skips the click instead of flipping back.
+const clickControl = (page, selector, done) => expect(async () => {
+  if (done && await done()) return;
+  const point = await page.locator(selector).evaluate(el => {
+    const hidden = el.closest('.plyr').classList.contains('plyr--hide-controls');
+    const r = el.getBoundingClientRect(), bar = el.closest('.plyr__controls').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y - (hidden ? bar.height : 0) + r.height / 2 };
+  });
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.move(point.x + 1, point.y);
+  // The action a previous click started can land while these moves run:
+  // re-check before clicking or a toggle flips back while it is still landing.
+  if (done && await done()) return;
+  await page.locator(`.plyr:not(.plyr--hide-controls) ${selector}`).click({ timeout: 3000 });
+  // A fullscreen request can take seconds to resolve on a loaded box: give the
+  // done state a poll window before deciding the click missed.
+  if (done) await expect.poll(done, { timeout: 4000 }).toBe(true);
+}).toPass({ timeout: 15_000 });
+
+const subtitleModes = page => page.locator('video').evaluate(video =>
+  Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind)).map(track => track.mode));
+const showingTracks = page => page.locator('video').evaluate(video =>
+  Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind) && track.mode === 'showing').length);
+
+const expectSubtitleSize = page => expect.poll(async () => page.locator('video').evaluate(video => {
+  const rect = video.getBoundingClientRect(), aspect = video.videoWidth / video.videoHeight || 16 / 9;
+  const picture = Math.min(rect.height, rect.width / aspect);
+  const css = parseFloat(getComputedStyle(video.parentElement).getPropertyValue('--subtitle-size'));
+  const captions = document.querySelector('.color-captions');
+  const overlay = captions ? parseFloat(getComputedStyle(captions).fontSize) : css;
+  return picture > 0 && Math.abs(css - Math.max(18, picture * 38.4 / 720)) < 1 && Math.abs(overlay - css) < 1;
+})).toBe(true);
+
+// The 50 s fixture can end during the checks above and a member stall can
+// freeze the room mid-flight: Plyr pins its controls open unless the room is
+// verifiably playing, so every pass below first restores that state. A room
+// that refuses to resume fails on this poll, with the dump naming the gate.
+const ensurePlaying = () => expect.poll(async () => {
+  const hostReady = await host.evaluate(() => {
+    const video = document.querySelector('video'), player = window.player;
+    if (video.currentTime >= 20) player.command('seek', 5);
+    if (player.state?.phase === 'paused') player.command('play');
+    return player.state?.phase === 'playing' && !video.paused && !video.seeking && video.currentTime < 20;
+  });
+  if (!hostReady) return false;
+  const [hostTime, guestTime] = await Promise.all([host, guest].map(page =>
+    page.locator('video').evaluate(video => video.paused || video.seeking || video.currentTime >= 20 ? -1 : video.currentTime)));
+  // The sync loop converges members well under a second; a wider gap is a
+  // member still realigning after a seek, not a settled room.
+  return hostTime >= 0 && guestTime >= 0 && Math.abs(hostTime - guestTime) < 1;
+}, { timeout: 15_000 }).toBe(true);
+
+const dump = async (page, role) => `${role}: ` + JSON.stringify({
+  state: latest.get(page)?.state,
+  media: await page.locator('video').evaluate(video => ({ ready: video.readyState, error: video.error?.message,
+    paused: video.paused, seeking: video.seeking, time: video.currentTime, width: video.videoWidth,
+    source: video.currentSrc, buffered: video.buffered.length, nativeHls: video.canPlayType('application/vnd.apple.mpegurl'),
+    mse: window.Hls.isSupported(), vendor: navigator.vendor,
+    tracks: Array.from(video.textTracks).map(track => ({ kind: track.kind, mode: track.mode,
+      label: track.label, cues: track.cues?.length ?? 0, active: track.activeCues?.length ?? 0 })) })).catch(() => null),
+  canvas: await page.locator('.color-canvas').evaluate(canvas => ({ width: canvas.width, height: canvas.height, ...canvas.dataset })).catch(() => null),
+  label: await page.locator('#buffering-label').textContent().catch(() => null),
+});
+const reportFailure = async error =>
+  console.log('Failure:', error.message, 'Browser errors:', errors, host && await dump(host, 'host'), guest && await dump(guest, 'guest'));
+
 test('admin manages a film and two named viewers join in their language with one shared play', async ({ browser }) => {
   test.skip(process.platform === 'win32' && browser.browserType().name() === 'webkit', 'Playwright WebKit on Windows has neither HLS nor MSE decoding; run this project on macOS/Linux.');
-  // One pass over the whole flow: upload, a real ffmpeg prepare (45 s budget),
-  // two synced viewers, fullscreen, disconnect. CI needs more than the shared 90 s.
-  test.setTimeout(150_000);
-  const a = await browser.newContext(), b = await browser.newContext();
-  const host = await a.newPage(), guest = await b.newPage(), latest = new Map(), errors = [];
-  let releaseMedia = () => {};
+  // The upload and the real ffmpeg prepare (45 s budget) dominate this pass.
+  test.setTimeout(90_000);
+  a = await browser.newContext(); b = await browser.newContext();
+  host = await a.newPage(); guest = await b.newPage();
   for (const page of [host, guest]) {
     // Loads share one CI box with ffmpeg and the previous engine's teardown:
     // navigation gets room while action checks stay tight.
@@ -17,33 +142,6 @@ test('admin manages a film and two named viewers join in their language with one
     page.on('pageerror', error => errors.push(error.message));
     page.on('websocket', ws => ws.on('framereceived', event => { const message = JSON.parse(event.payload); if (message.type === 'state') latest.set(page, message); }));
   }
-  // Micro factice déterministe : un oscillateur WebAudio alimente un vrai
-  // MediaStream, le pipeline de capture et le worklet restent réels. Seule
-  // la source matérielle est remplacée, sans réseau ni permission à mimer.
-  const fakeMic = () => {
-    window.voiceTest = { micCalls: 0, streams: [], pending: [], hold: false };
-    // WebKit peut remplacer l'objet MediaDevices en cours de vie de la page :
-    // la propriété est interceptée sur navigator, jamais sur l'instance.
-    Object.defineProperty(navigator, 'mediaDevices', {
-      configurable: true,
-      get: () => ({ getUserMedia: () => {
-        window.voiceTest.micCalls++;
-        // Chaque appel produit un vrai flux distinct, armé dans le geste même :
-        // résolu plus tard quand `hold` est levé, jamais réutilisé d'un appel
-        // à l'autre pour qu'un flux orphelin soit observable.
-        const context = new AudioContext();
-        const osc = context.createOscillator(), gain = context.createGain();
-        const dest = context.createMediaStreamDestination();
-        osc.frequency.value = 330; gain.gain.value = .4;
-        osc.connect(gain); gain.connect(dest); osc.start();
-        context.resume();
-        window.voiceTest.stream = dest.stream;
-        window.voiceTest.streams.push(dest.stream);
-        if (window.voiceTest.hold) return new Promise(resolve => window.voiceTest.pending.push(() => resolve(dest.stream)));
-        return Promise.resolve(dest.stream);
-      } }),
-    });
-  };
   await host.addInitScript(fakeMic); await guest.addInitScript(fakeMic);
   // The fixture is HDR: each page needs its own WebGL2 probe before playback
   // assertions. A negative answer is missing browser coverage, not a pass.
@@ -53,48 +151,6 @@ test('admin manages a film and two named viewers join in their language with one
     test.skip(true, `webgl-unavailable: no WebGL2 high-float context on ${pages}`);
   }
   const openDetails = async () => { if (!await host.locator('#movies details').evaluate(node => node.open)) await host.locator('#movies summary').click(); };
-  // A first paint can starve past one navigation budget on a loaded box: retry
-  // the navigation rather than stretch a single arbitrary timeout.
-  const goto = (page, url) => expect(async () => {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 });
-  }).toPass({ timeout: 60_000 });
-  const reload = page => expect(async () => {
-    await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 });
-  }).toPass({ timeout: 60_000 });
-  // A single hover can land inside the same auto-hide window on a loaded box:
-  // wake Plyr, then wait for the controls state it actually reached.
-  const showControls = page => expect(async () => {
-    const point = await page.locator('.plyr__controls').evaluate(el => {
-      const rect = el.getBoundingClientRect();
-      const hidden = el.closest('.plyr').classList.contains('plyr--hide-controls');
-      return { x: rect.x + rect.width / 2, y: rect.y - (hidden ? rect.height : 0) + rect.height / 2 };
-    });
-    await page.mouse.move(point.x, point.y);
-    await page.mouse.move(point.x + 1, point.y);
-    await expect(page.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/, { timeout: 1000 });
-    await page.mouse.move(point.x + 2, point.y);
-  }).toPass({ timeout: 10_000 });
-  // Point the mouse where the control lands once shown: the move wakes Plyr's controls
-  // and the wiggle enters the bar, so its hover flag keeps them open while playing.
-  // A click can dispatch its events and still time out on a loaded box, so toggling
-  // controls pass a done check: a retry then skips the click instead of flipping back.
-  const clickControl = (page, selector, done) => expect(async () => {
-    if (done && await done()) return;
-    const point = await page.locator(selector).evaluate(el => {
-      const hidden = el.closest('.plyr').classList.contains('plyr--hide-controls');
-      const r = el.getBoundingClientRect(), bar = el.closest('.plyr__controls').getBoundingClientRect();
-      return { x: r.x + r.width / 2, y: r.y - (hidden ? bar.height : 0) + r.height / 2 };
-    });
-    await page.mouse.move(point.x, point.y);
-    await page.mouse.move(point.x + 1, point.y);
-    // The action a previous click started can land while these moves run:
-    // re-check before clicking or a toggle flips back while it is still landing.
-    if (done && await done()) return;
-    await page.locator(`.plyr:not(.plyr--hide-controls) ${selector}`).click({ timeout: 3000 });
-    // A fullscreen request can take seconds to resolve on a loaded box: give the
-    // done state a poll window before deciding the click missed.
-    if (done) await expect.poll(done, { timeout: 4000 }).toBe(true);
-  }).toPass({ timeout: 15_000 });
   try {
     await guest.addInitScript(() => {
       const play = HTMLMediaElement.prototype.play;
@@ -247,6 +303,18 @@ test('admin manages a film and two named viewers join in their language with one
     const guestState = latest.get(guest);
     await expect.poll(() => latest.get(guest) !== guestState).toBe(true);
     expect(await guest.evaluate(() => window.testParticipant === document.querySelector('#participants li'))).toBe(true);
+    joined = true;
+  } catch (error) {
+    await reportFailure(error);
+    throw error;
+  }
+});
+
+test('track and settings choices stay viewer-local while only the transport moves the room', async ({ browser }) => {
+  test.skip(!joined, 'the séance setup pass did not complete');
+  // Chromium alone pays the trusted-touch pass: this is the longest slice.
+  test.setTimeout(120_000);
+  try {
     await clickControl(guest, '.plyr__controls [data-plyr=play]', () => guest.locator('video').evaluate(video => video.paused));
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
     // Hold the first subtitle segment in flight: a fragment that finishes
@@ -263,10 +331,6 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(guest.locator('#audio')).toBeInViewport(); await expect(guest.locator('#subtitles')).toBeInViewport();
     // Only one text track may render at once, whatever the engine exposes, and
     // glyph size follows the painted picture rather than the window.
-    const subtitleModes = page => page.locator('video').evaluate(video =>
-      Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind)).map(track => track.mode));
-    const showingTracks = page => page.locator('video').evaluate(video =>
-      Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind) && track.mode === 'showing').length);
     await expect.poll(() => showingTracks(guest)).toBe(1);
     // Simulate a WebKit-style duplicate: a second subtitle track forced to
     // showing is demoted again, and the selected track keeps its cues.
@@ -288,14 +352,6 @@ test('admin manages a film and two named viewers join in their language with one
     await expect.poll(async () => (await subtitleModes(guest))[0]).toBe('showing');
     // The reported failure was a showing track whose cues never activated.
     await expect.poll(() => guest.locator('video').evaluate(video => Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind))[0].activeCues?.length ?? 0)).toBeGreaterThan(0);
-    const expectSubtitleSize = page => expect.poll(async () => page.locator('video').evaluate(video => {
-      const rect = video.getBoundingClientRect(), aspect = video.videoWidth / video.videoHeight || 16 / 9;
-      const picture = Math.min(rect.height, rect.width / aspect);
-      const css = parseFloat(getComputedStyle(video.parentElement).getPropertyValue('--subtitle-size'));
-      const captions = document.querySelector('.color-captions');
-      const overlay = captions ? parseFloat(getComputedStyle(captions).fontSize) : css;
-      return picture > 0 && Math.abs(css - Math.max(18, picture * 38.4 / 720)) < 1 && Math.abs(overlay - css) < 1;
-    })).toBe(true);
     await expectSubtitleSize(guest);
     // Opening the overlay must never apply an image filter to video or an ancestor.
     for (const page of [host, guest]) expect(await page.locator('video').evaluate(video => {
@@ -437,6 +493,16 @@ test('admin manages a film and two named viewers join in their language with one
       await host.evaluate(() => window.player.command('play'));
       await expect.poll(() => latest.get(host)?.state?.phase).toBe('playing');
     }
+  } catch (error) {
+    await reportFailure(error);
+    throw error;
+  }
+});
+
+test('the picture layout holds across viewports and fullscreen', async () => {
+  test.skip(!joined, 'the séance setup pass did not complete');
+  test.setTimeout(90_000);
+  try {
     // The toggles above never pause the room now, so it kept burning the
     // fixture: rewind again for the viewport pass and the sections after it.
     await showControls(host);
@@ -468,24 +534,6 @@ test('admin manages a film and two named viewers join in their language with one
     await expect.poll(() => latest.get(host)?.state.phase).toBe('playing');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(false);
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
-    // The 50 s fixture can end during the checks above and a member stall can
-    // freeze the room mid-flight: Plyr pins its controls open unless the room is
-    // verifiably playing, so every pass below first restores that state. A room
-    // that refuses to resume fails on this poll, with the dump naming the gate.
-    const ensurePlaying = () => expect.poll(async () => {
-      const hostReady = await host.evaluate(() => {
-        const video = document.querySelector('video'), player = window.player;
-        if (video.currentTime >= 20) player.command('seek', 5);
-        if (player.state?.phase === 'paused') player.command('play');
-        return player.state?.phase === 'playing' && !video.paused && !video.seeking && video.currentTime < 20;
-      });
-      if (!hostReady) return false;
-      const [hostTime, guestTime] = await Promise.all([host, guest].map(page =>
-        page.locator('video').evaluate(video => video.paused || video.seeking || video.currentTime >= 20 ? -1 : video.currentTime)));
-      // The sync loop converges members well under a second; a wider gap is a
-      // member still realigning after a seek, not a settled room.
-      return hostTime >= 0 && guestTime >= 0 && Math.abs(hostTime - guestTime) < 1;
-    }, { timeout: 15_000 }).toBe(true);
     // Controls auto-hide while playing; hover until they are shown before clicking fullscreen.
     await expect(async () => {
       await ensurePlaying();
@@ -514,6 +562,16 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(host.locator('video')).not.toHaveCSS('cursor', 'none');
     await host.screenshot({ path: 'test-results/watch-fullscreen.png' }); await host.evaluate(() => document.exitFullscreen());
     await expectSubtitleSize(host);
+  } catch (error) {
+    await reportFailure(error);
+    throw error;
+  }
+});
+
+test('a voice prise is exclusive to one speaker and member failures pause the room', async () => {
+  test.skip(!joined, 'the séance setup pass did not complete');
+  test.setTimeout(90_000);
+  try {
     // Traduction vocale : la permission micro n'est demandée qu'au premier
     // appui, une seule prise est acceptée, le texte compris reste local et le
     // surtitre traduit est partagé. La lecture ne bouge pas (#40, #48).
@@ -608,23 +666,13 @@ test('admin manages a film and two named viewers join in their language with one
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
     expect(errors).toEqual([]);
   } catch (error) {
-    const dump = async (page, role) => `${role}: ` + JSON.stringify({
-      state: latest.get(page)?.state,
-      media: await page.locator('video').evaluate(video => ({ ready: video.readyState, error: video.error?.message,
-        paused: video.paused, seeking: video.seeking, time: video.currentTime, width: video.videoWidth,
-        source: video.currentSrc, buffered: video.buffered.length, nativeHls: video.canPlayType('application/vnd.apple.mpegurl'),
-        mse: window.Hls.isSupported(), vendor: navigator.vendor,
-        tracks: Array.from(video.textTracks).map(track => ({ kind: track.kind, mode: track.mode,
-          label: track.label, cues: track.cues?.length ?? 0, active: track.activeCues?.length ?? 0 })) })).catch(() => null),
-      canvas: await page.locator('.color-canvas').evaluate(canvas => ({ width: canvas.width, height: canvas.height, ...canvas.dataset })).catch(() => null),
-      label: await page.locator('#buffering-label').textContent().catch(() => null),
-    });
-    console.log('Failure:', error.message, 'Browser errors:', errors, await dump(host, 'host'), await dump(guest, 'guest'));
+    await reportFailure(error);
     throw error;
   }
-  finally {
-    releaseMedia();
-    // Cleanup must not replace the first assertion with a context-close error.
-    await Promise.allSettled([guest.unrouteAll({ behavior: 'ignoreErrors' }), a.close(), b.close()]);
-  }
+});
+
+test.afterAll(async () => {
+  releaseMedia();
+  // Cleanup must not replace the first assertion with a context-close error.
+  await Promise.allSettled([guest?.unrouteAll({ behavior: 'ignoreErrors' }), a?.close(), b?.close()]);
 });
