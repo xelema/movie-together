@@ -145,7 +145,7 @@ function translate() {
   $('player-settings').setAttribute('aria-label', t('Réglages', '설정')); $('close-settings').setAttribute('aria-label', t('Fermer', '닫기'));
   $('room-name').setAttribute('aria-label', t('Votre pseudo', '닉네임'));
   $('screen').setAttribute('aria-label', t('Lecteur vidéo', '동영상 플레이어'));
-  $('voice-mic').setAttribute('aria-label', t('Parler', '말하기'));
+  if (voice) voice.rename(); else $('voice-mic').setAttribute('aria-label', t('Parler', '말하기'));
   if (player) player.tracks();
   updatePlayback(player); updateFilmMeta();
 }
