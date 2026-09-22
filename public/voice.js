@@ -26,6 +26,9 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     // lève InvalidAccessError sur certains moteurs.
     try { worklet?.disconnect(); source?.disconnect(); } catch {}
     worklet = source = null;
+    // Le flux reste ouvert pour éviter de redemander la permission, mais
+    // muet en dehors de l'écoute : aucun échantillon ne peut circuler.
+    stream?.getAudioTracks().forEach(track => { track.enabled = false; });
     if (audioContext) { audioContext.close().catch(() => {}); audioContext = null; }
   };
   const fail = text => {
@@ -100,6 +103,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
         utterance = null;
         return;
       }
+      stream.getAudioTracks().forEach(track => { track.enabled = true; });
       source.connect(worklet);
       worklet.connect(audioContext.destination);
       listenTimer = setTimeout(stopSpeaking, LISTEN_MS);
