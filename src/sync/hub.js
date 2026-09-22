@@ -4,12 +4,23 @@ import { Room, validThresholds, cleanText } from './room.js';
 import { createSettings } from '../settings.js';
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
+// Bornes du protocole voix décidées dans #39 : trames PCM s16 mono 16 kHz de
+// 30 ms (960 octets), 20 s d'écoute, 10 s de traitement et 2 000 caractères par
+// texte produit. Les durées restent injectables pour les tests.
+const VOICE_FRAME = 960, VOICE_TEXT_MAX = 2000;
+const VOICE_MESSAGES = {
+  'no-speech': 'Aucune parole détectée.',
+  'unclear': 'Langue incertaine, réessayez.',
+  'provider': 'Traduction indisponible.',
+  'invalid-response': 'Réponse de traduction invalide.',
+  'timeout': 'La traduction a expiré.',
+};
 
 // The séance protocol: room registry, websocket dispatch, broadcast, ticker and
 // liveness sweep. app.js keeps HTTP and auth; it reaches séances only through
 // this interface. Sessions and media stay outside: sessionFor/sessionActive,
 // canAccess, movieFor and moviePlayable are injected at the seam.
-export function createRoomHub({ origin, settings = createSettings(), sessionFor, sessionActive, canAccess, movieFor, moviePlayable, voiceService = null } = {}) {
+export function createRoomHub({ origin, settings = createSettings(), sessionFor, sessionActive, canAccess, movieFor, moviePlayable, voiceService = null, voiceTiming = {} } = {}) {
   // Les seuils vivent ici pour les nouvelles séances comme pour tune() ; les
   // autres réglages sont relus dans settings au moment de chaque opération.
   const thresholds = { minBuffer: settings.get('minBuffer'), lowBuffer: settings.get('lowBuffer') };
@@ -17,6 +28,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
   // cale son seuil de silence sur le tickMs du welcome, le retimer à chaud
   // désynchroniserait les séances ouvertes. Un nouveau tickMs vaut au relancement.
   const cadence = { tickMs: settings.get('tickMs'), sweepMs: settings.get('sweepMs') };
+  const timing = { listenMs: 20_000, processMs: 10_000, ...voiceTiming };
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8192 });
   const rooms = new Map();
   const countSessions = room => new Set([...room.clients].map(client => client.session)).size;
@@ -64,6 +76,120 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     }
   };
 
+  // Prise de parole : une seule par séance, identifiée et ordonnée par le
+  // serveur. Les états intermédiaires ne quittent jamais le socket de l'orateur
+  // et toute libération arme le délai de reprise décidé dans #39.
+  const voiceSend = (ws, payload) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'voice', ...payload }));
+  };
+  const refuse = (room, ws, error, message, extra = {}) => {
+    console.log(`[room ${room.code}] voix refused:${error}`);
+    voiceSend(ws, { state: 'failed', error, message, ...extra });
+  };
+  // Toute sortie détruit l'audio en mémoire : rien n'est persisté ni journalisé.
+  const releaseUtterance = (room, utterance, category) => {
+    clearTimeout(utterance.timer);
+    utterance.chunks = null;
+    if (room.utterance === utterance) room.utterance = null;
+    room.voiceReleased?.set(utterance.session, Date.now());
+    console.log(`[room ${room.code}] voix ${category}`);
+  };
+  const voiceStart = (room, ws) => {
+    if (!room.voice?.enabled || typeof voiceService?.detect !== 'function' || typeof voiceService?.translate !== 'function') {
+      return refuse(room, ws, 'unavailable', 'Traduction vocale indisponible.');
+    }
+    if (room.utterance) return refuse(room, ws, 'busy', 'Un participant parle déjà.');
+    const limits = room.voiceLimits;
+    const cooled = (room.voiceReleased.get(ws.session) ?? 0) + limits.cooldownMs - Date.now();
+    if (cooled > 0) return refuse(room, ws, 'cooldown', 'Attendre avant de reprendre la parole.', { retryAfter: Math.ceil(cooled / 100) / 10 });
+    const calls = (room.voiceCalls.get(ws.session) ?? []).filter(at => Date.now() - at < limits.windowMs);
+    room.voiceCalls.set(ws.session, calls);
+    if (calls.length >= limits.quota) {
+      const retryAfter = Math.max(1, Math.ceil((calls[0] + limits.windowMs - Date.now()) / 1000));
+      return refuse(room, ws, 'quota', 'Quota de traductions atteint.', { retryAfter });
+    }
+    const utterance = { id: randomUUID(), seq: ++room.voiceSeq, ws, session: ws.session,
+      speaker: ws.displayName, chunks: [], bytes: 0, state: 'listening', timer: null };
+    utterance.timer = setTimeout(() => finishUtterance(room, utterance), timing.listenMs);
+    room.utterance = utterance;
+    console.log(`[room ${room.code}] voix started`);
+    voiceSend(ws, { state: 'started', utterance: utterance.id, seq: utterance.seq });
+  };
+  const voiceFrame = (room, ws, data) => {
+    const utterance = room.utterance;
+    if (!utterance || utterance.ws !== ws || utterance.state !== 'listening') return;
+    // Le transport est une suite de trames de 30 ms ; toute autre taille est rejetée.
+    if (!data.length || data.length % VOICE_FRAME ||
+      utterance.bytes + data.length > Math.ceil(timing.listenMs / 30 + 10) * VOICE_FRAME) {
+      releaseUtterance(room, utterance, 'aborted:invalid');
+      return voiceSend(ws, { state: 'failed', utterance: utterance.id, seq: utterance.seq,
+        error: 'invalid', message: 'Trame vocale invalide.' });
+    }
+    utterance.chunks.push(data);
+    utterance.bytes += data.length;
+  };
+  const voiceStop = (room, ws) => {
+    const utterance = room.utterance;
+    if (utterance && utterance.ws === ws && utterance.state === 'listening') finishUtterance(room, utterance);
+  };
+  const voiceCancel = (room, ws) => {
+    const utterance = room.utterance;
+    if (utterance && utterance.ws === ws) releaseUtterance(room, utterance, 'cancelled');
+  };
+  const voiceControl = (room, ws, message) => {
+    if (message.action === 'start') return voiceStart(room, ws);
+    if (message.action === 'stop') return voiceStop(room, ws);
+    if (message.action === 'cancel') return voiceCancel(room, ws);
+    throw new Error('Message inconnu.');
+  };
+  // La phrase complète passe le garde-fou de parole et la détection de langue
+  // avant tout appel facturé ; chaque sortie d'erreur libère le verrou.
+  const finishUtterance = (room, utterance) => {
+    if (room.utterance !== utterance || utterance.state !== 'listening') return;
+    utterance.state = 'processing';
+    clearTimeout(utterance.timer);
+    const pcm = Buffer.concat(utterance.chunks);
+    utterance.chunks = null;
+    const audioMs = Math.round(pcm.length / 32);
+    const fail = (error, message) => {
+      releaseUtterance(room, utterance, `failed:${error}`);
+      voiceSend(utterance.ws, { state: 'failed', utterance: utterance.id, seq: utterance.seq, error, message });
+    };
+    const pipeline = (async () => {
+      const detected = await voiceService.detect(pcm);
+      if (!detected?.speech) throw Object.assign(new Error('no speech'), { code: 'no-speech' });
+      if (!room.voice.pair.includes(detected.language)) throw Object.assign(new Error('unclear'), { code: 'unclear' });
+      // Seul l'appel réellement envoyé au fournisseur consomme le quota (#39).
+      const calls = room.voiceCalls.get(utterance.session) ?? [];
+      calls.push(Date.now());
+      room.voiceCalls.set(utterance.session, calls);
+      const result = await voiceService.translate(pcm, { language: detected.language, pair: room.voice.pair });
+      if (!result || typeof result.text !== 'string' || typeof result.translation !== 'string' ||
+        !result.text.length || !result.translation.length ||
+        result.text.length > VOICE_TEXT_MAX || result.translation.length > VOICE_TEXT_MAX) {
+        throw Object.assign(new Error('invalid'), { code: 'invalid-response' });
+      }
+      return { language: detected.language, result };
+    })();
+    const expired = new Promise((_, reject) =>
+      setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'timeout' })), timing.processMs));
+    Promise.race([pipeline, expired]).then(({ language, result }) => {
+      // Une réponse arrivée après la libération de la prise est ignorée.
+      if (room.utterance !== utterance) return;
+      releaseUtterance(room, utterance, `completed ${audioMs}ms`);
+      voiceSend(utterance.ws, { state: 'understood', utterance: utterance.id, seq: utterance.seq,
+        text: result.text, language });
+      const resultMessage = JSON.stringify({ type: 'voice', state: 'result',
+        utterance: utterance.id, seq: utterance.seq, speaker: utterance.speaker, text: result.translation });
+      for (const client of room.clients) {
+        if (client.readyState === WebSocket.OPEN) client.send(resultMessage);
+      }
+    }, error => {
+      if (room.utterance !== utterance) return;
+      fail(error.code ?? 'provider', VOICE_MESSAGES[error.code] ?? 'Traduction indisponible.');
+    });
+  };
+
   const create = ({ movieId, duration, code, probe, voice }) => {
     if (rooms.size >= settings.get('maxRooms')) throw fail(409, 'Fermer une room avant d’en créer une autre.');
     if (code !== undefined && (typeof code !== 'string' || !/^[a-z0-9-]{4,32}$/i.test(code.trim()))) throw fail(400, 'Code : 4 à 32 lettres, chiffres ou tirets.');
@@ -76,7 +202,14 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       probe: !!probe, logged: new Map(), loggedPhase: null };
     // Traduction vocale : capacité figée à la création. La disponibilité reflète
     // le service injecté, absent tant qu'aucun fournisseur n'est câblé.
-    if (voice) room.voice = Object.freeze({ enabled: true, pair: Object.freeze(['fr', 'ko']), available: !!voiceService });
+    if (voice) {
+      room.voice = Object.freeze({ enabled: true, pair: Object.freeze(['fr', 'ko']), available: !!voiceService });
+      // Quotas et délais copiés à la création (#39) : immuables pendant la séance.
+      room.voiceLimits = { quota: settings.get('voiceQuota'), windowMs: settings.get('voiceWindow') * 1000,
+        cooldownMs: settings.get('voiceCooldown') * 1000 };
+      room.voiceSeq = 0; room.utterance = null;
+      room.voiceCalls = new Map(); room.voiceReleased = new Map();
+    }
     room.engine.load(duration); rooms.set(room.id, room);
     return room;
   };
@@ -122,9 +255,10 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
         sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs: cadence.tickMs } })); broadcast(room);
       ws.on('pong', () => { ws.alive = true; });
       ws.on('error', () => {});
-      ws.on('message', data => {
+      ws.on('message', (data, isBinary) => {
         if (Date.now() - windowAt >= 1000) { windowAt = Date.now(); messages = 0; }
         if (++messages > 40 || session.expires <= Date.now()) return ws.close(1008, 'Session invalide');
+        if (isBinary) return voiceFrame(room, ws, data);
         try {
           const message = JSON.parse(data);
           if (message.type === 'identify') {
@@ -136,6 +270,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
           if (message.type === 'ping' && Number.isFinite(message.sentAt)) {
             return ws.send(JSON.stringify({ type: 'pong', sentAt: message.sentAt, serverNow: performance.now() }));
           }
+          if (message.type === 'voice') return voiceControl(room, ws, message);
           if (message.type === 'report') {
             // Ordinary buffer reports share the ticker, transitions are sent immediately.
             if (!room.engine.report(id, message).changed) return;
@@ -147,14 +282,20 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
           ws.send(JSON.stringify({ type: 'error', error: 'Commande invalide.' }));
         }
       });
-      ws.on('close', () => { room.clients.delete(ws); room.engine.leave(id); if (rooms.has(room.id)) broadcast(room); });
+      ws.on('close', () => {
+        if (room.utterance?.ws === ws) releaseUtterance(room, room.utterance, 'aborted:disconnect');
+        room.clients.delete(ws); room.engine.leave(id); if (rooms.has(room.id)) broadcast(room);
+      });
     });
   });
 
   const tick = () => { for (const room of rooms.values()) { room.engine.tick(); broadcast(room); } };
   const sweep = () => {
     for (const room of rooms.values()) {
-      if (room.expires <= Date.now()) { for (const ws of room.clients) ws.close(1000, 'Room expirée'); rooms.delete(room.id); continue; }
+      if (room.expires <= Date.now()) {
+        if (room.utterance) releaseUtterance(room, room.utterance, 'closed');
+        for (const ws of room.clients) ws.close(1000, 'Room expirée'); rooms.delete(room.id); continue;
+      }
       for (const ws of room.clients) {
         if (!ws.alive || !sessionActive(ws.session)) ws.terminate();
         else { ws.alive = false; ws.ping(); }
@@ -179,7 +320,10 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     setMovie(room, movie) { room.movieId = movie.id; room.engine.load(movie.duration); broadcast(room); },
     remove(id) {
       const room = rooms.get(id);
-      if (room) { for (const client of room.clients) client.close(1000, 'Room fermée'); rooms.delete(id); }
+      if (room) {
+        if (room.utterance) releaseUtterance(room, room.utterance, 'closed');
+        for (const client of room.clients) client.close(1000, 'Room fermée'); rooms.delete(id);
+      }
     },
     // idleMovie guards edits; movie deletion guards any reference.
     movieInUse: movieId => [...rooms.values()].some(room => room.movieId === movieId && room.engine.members.size),

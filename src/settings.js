@@ -24,6 +24,9 @@ export const FIELDS = {
   segmentSeconds:       { category: 'media',    def: 4,     min: 1,   max: 15,     unit: 's' },
   loginLimit:           { category: 'security', def: 10,    min: 1,   max: 1000 },
   inviteLimit:          { category: 'security', def: 20,    min: 1,   max: 1000 },
+  voiceQuota:           { category: 'voice',    def: 3,     min: 1,   max: 30 },
+  voiceWindow:          { category: 'voice',    def: 60,    min: 10,  max: 600,   unit: 's' },
+  voiceCooldown:        { category: 'voice',    def: 2,     min: 0,   max: 60,    unit: 's' },
 };
 
 // Contraintes entre champs, vérifiées sur les valeurs fusionnées : un PATCH
