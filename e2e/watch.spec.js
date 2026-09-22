@@ -338,6 +338,58 @@ test('admin manages a film and two named viewers join in their language with one
     await host.locator('.plyr__video-wrapper').click({ position: { x: 10, y: 10 } });
     await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/);
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    // A real finger tap starts on the poster, the controls slide up under the
+    // finger during the hold, and the click Chrome synthesizes at touchend is
+    // hit-tested against the transport they carry: it must still only toggle
+    // the overlay. Trusted touch input needs CDP, a Chromium-only pass.
+    if (browser.browserType().name() === 'chromium') {
+      const touchContext = await browser.newContext({ hasTouch: true });
+      const phone = await touchContext.newPage();
+      phone.setDefaultTimeout(10_000); phone.setDefaultNavigationTimeout(30_000);
+      phone.on('pageerror', error => errors.push(error.message));
+      phone.on('websocket', ws => ws.on('framereceived', event => { const message = JSON.parse(event.payload); if (message.type === 'state') latest.set(phone, message); }));
+      await goto(phone, '/');
+      await phone.locator('#join-form input').fill('cine-soir'); await phone.locator('#join-form button').click();
+      await expect(phone.locator('#name-dialog')).toBeVisible(); await phone.locator('#room-name').fill('Sam'); await phone.locator('#name-dialog button').click();
+      await expect(phone.locator('#movie-title')).toHaveText('fixture');
+      // The first play can still be gated: a tap on the prompt is the gesture.
+      await expect.poll(() => phone.evaluate(() =>
+        !document.querySelector('video')?.paused || document.querySelector('#allow-sound')?.checkVisibility() === true), { timeout: 15_000 }).toBe(true);
+      if (await phone.locator('#allow-sound').isVisible()) await phone.locator('#allow-sound').tap();
+      await expect.poll(() => latest.get(phone)?.state?.phase, { timeout: 15_000 }).toBe('playing');
+      await expect.poll(() => phone.locator('video').evaluate(video => video.paused), { timeout: 10_000 }).toBe(false);
+      await expect(phone.locator('#buffering-overlay')).toBeHidden();
+      await expect(phone.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 10_000 });
+      const cdp = await touchContext.newCDPSession(phone);
+      const tap = async (point, hold = 0) => {
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: point.x, y: point.y, id: 1 }] });
+        if (hold) await phone.waitForTimeout(hold);
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      };
+      // offsetTop ignores the hide transform: this is where the play button
+      // sits once the sheet is up, while the tap still starts on the poster.
+      const spot = await phone.evaluate(() => {
+        const controls = document.querySelector('.plyr__controls'), button = controls.querySelector('[data-plyr=play]');
+        const box = controls.closest('.plyr').getBoundingClientRect();
+        return { x: box.left + controls.offsetLeft + button.offsetLeft + button.offsetWidth / 2,
+                 y: box.top + controls.offsetTop + button.offsetTop + button.offsetHeight / 2 };
+      });
+      await tap(spot, 550);
+      await expect(phone.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
+      // A wrongly delivered press pauses the room within a frame or two.
+      await phone.waitForTimeout(500);
+      await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+      // A tap that starts on the shown transport is a real press and moves the room.
+      await tap(spot);
+      await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+      await tap(spot);
+      await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+      await touchContext.close();
+      // A member leaving pauses the room: wait for it, then resume.
+      await expect.poll(() => latest.get(host)?.state?.phase).toBe('paused');
+      await host.evaluate(() => window.player.command('play'));
+      await expect.poll(() => latest.get(host)?.state?.phase).toBe('playing');
+    }
     // The toggles above never pause the room now, so it kept burning the
     // fixture: rewind again for the viewport pass and the sections after it.
     await showControls(host);

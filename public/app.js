@@ -62,22 +62,40 @@ playbackUI.on('controlshidden', () => { $('watch').dataset.chrome = 'false'; });
 // Plyr's own buttons move the room. Plyr pins the controls open while paused,
 // so a flag re-hides every show a click asks for until a real pointer gesture
 // asks for the controls back.
-let clickHidden = false, touchHidden = false;
+let clickHidden = false, touchHidden = false, touchOnPicture = false;
 playbackUI.elements.container.addEventListener('mousemove', () => { clickHidden = false; }, true);
-playbackUI.elements.container.addEventListener('touchstart', () => {
+playbackUI.elements.container.addEventListener('touchstart', event => {
   clickHidden = false;
   touchHidden = playbackUI.elements.container.classList.contains('plyr--hide-controls');
+  touchOnPicture = Boolean(event.target.closest('.plyr__video-wrapper'));
 }, true);
-playbackUI.elements.container.addEventListener('click', event => {
-  // Any non-touch click drops the snapshot an aborted touch gesture left behind.
-  if (event.pointerType !== 'touch') touchHidden = false;
+playbackUI.elements.container.addEventListener('touchcancel', () => { touchOnPicture = false; }, true);
+const toggleOverlay = () => {
   const hidden = touchHidden || playbackUI.elements.container.classList.contains('plyr--hide-controls');
   touchHidden = false;
-  if (!player || !event.target.closest('.plyr__video-wrapper')) return;
+  if (!player) return;
   // A hide timer armed before the click must not clip the show it asks for.
   clearTimeout(playbackUI.timers.controls);
   clickHidden = !hidden;
   playbackUI.toggleControls(hidden);
+};
+// A tap that starts on the picture slides the controls up under the finger, so
+// the click Chrome then synthesizes is hit-tested against a transport that was
+// hidden at touchstart. Capture it and spend it on the overlay alone; a tap
+// that started on a control, or a real mouse or pen click, still reaches it.
+playbackUI.elements.container.addEventListener('click', event => {
+  const onPicture = touchOnPicture;
+  touchOnPicture = false;
+  if (!onPicture || event.pointerType === 'mouse' || event.pointerType === 'pen' ||
+      event.target.closest('.plyr__video-wrapper')) return;
+  event.stopPropagation(); event.preventDefault();
+  toggleOverlay();
+}, true);
+playbackUI.elements.container.addEventListener('click', event => {
+  // Any non-touch click drops the snapshot an aborted touch gesture left behind.
+  if (event.pointerType !== 'touch') touchHidden = false;
+  if (!event.target.closest('.plyr__video-wrapper')) return;
+  toggleOverlay();
 });
 playbackUI.on('controlsshown', () => { if (clickHidden) playbackUI.toggleControls(false); });
 $('video').addEventListener('play', () => { clickHidden = false; });
