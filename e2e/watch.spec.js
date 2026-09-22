@@ -94,7 +94,7 @@ test('admin manages a film and two named viewers join in their language with one
     await host.locator('#refresh').click();
     // Réglages opérationnels : le formulaire groupe les paramètres, une
     // modification persiste au rechargement et le reset rend les défauts.
-    await expect(host.locator('#settings-form fieldset')).toHaveCount(5);
+    await expect(host.locator('#settings-form fieldset')).toHaveCount(6);
     // L'input compact garde ses 86 px : la règle globale input{width:100%} ne
     // doit pas écraser le libellé de la ligne.
     const settingRow = host.locator('.setting-row').first();
@@ -103,7 +103,7 @@ test('admin manages a film and two named viewers join in their language with one
     expect(inputBox.width).toBe(86);
     expect(spanBox.width).toBeGreaterThan(inputBox.width);
     // Chaque réglage porte une description française exposée au survol via title.
-    await expect(host.locator('.setting-row label > span[title]')).toHaveCount(19);
+    await expect(host.locator('.setting-row label > span[title]')).toHaveCount(22);
     await expect(host.locator('.setting-row label > span').filter({ hasText: 'Buffer de démarrage' }))
       .toHaveAttribute('title', /tampon à accumuler/);
     await expect(host.locator('#set-loginLimit')).toHaveAttribute('title', /15 minutes/);
@@ -160,7 +160,7 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(host.locator('#name-dialog')).toBeVisible(); await host.locator('#name-dialog button').click();
     await expect(host.locator('#movie-title')).toHaveText('fixture');
     await expect(host.locator('#voice-badge')).toContainText('Traduction vocale');
-    await expect(host.locator('#voice-mic')).toBeVisible(); await expect(host.locator('#voice-mic')).toBeDisabled();
+    await expect(host.locator('#voice-mic')).toBeVisible(); await expect(host.locator('#voice-mic')).toBeEnabled();
     const gate = new Promise(resolve => { releaseMedia = resolve; });
     await guest.route('**/*.m4s', async route => { await gate; await route.continue().catch(() => {}); });
     await guest.locator('#join-form input').fill('cine-soir'); await guest.locator('#join-form button').click();

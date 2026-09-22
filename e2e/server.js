@@ -13,7 +13,18 @@ await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavf
   '-color_primaries', 'bt2020', '-color_trc', 'smpte2084', '-colorspace', 'bt2020nc',
   '-c:a', 'aac', '-ac', '2', '-metadata:s:a:0', 'language=fra', '-metadata:s:a:1', 'language=eng', path.join(root, 'fixture.mp4')]);
 const dataDir = path.join(root, randomUUID());
-const instance = createApplication({ dataDir, origin: 'http://localhost:3100', password: 'browser-test-password' });
+// Fournisseur factice au niveau de la couture serveur : aucune donnée réseau ni
+// micro réel. detect() juge la parole sur l'énergie PCM pour que le garde-fou
+// silence soit exercé ; translate() renvoie un couple fixe.
+const voiceService = {
+  detect: async pcm => {
+    let energy = 0;
+    for (let i = 0; i + 1 < pcm.length; i += 2) energy += Math.abs(pcm.readInt16LE(i));
+    return { speech: pcm.length > 1 && energy / (pcm.length / 2) / 32768 > 0.01, language: 'fr' };
+  },
+  translate: async () => ({ text: 'On se retrouve au générique.', translation: '엔딩 크레딧에서 만나요.' }),
+};
+const instance = createApplication({ dataDir, origin: 'http://localhost:3100', password: 'browser-test-password', voiceService });
 instance.server.listen(3100, '127.0.0.1');
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => {
   await instance.close(); await rm(dataDir, { recursive: true, force: true }); process.exit(0);
