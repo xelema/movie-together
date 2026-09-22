@@ -108,7 +108,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   // recreated as long as their film is still playable.
   const persistRoom = room => {
     store.saveRooms([...store.rooms().filter(saved => saved.code !== room.code),
-      { code: room.code, movieId: room.movieId, probe: true }]);
+      { code: room.code, movieId: room.movieId, probe: true, ...(room.voice ? { voice: true } : {}) }]);
   };
   const forgetRoom = room => {
     if (room?.probe) store.saveRooms(store.rooms().filter(saved => saved.code !== room.code));
@@ -116,7 +116,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   for (const saved of store.rooms()) {
     const movie = store.movies.get(saved?.movieId);
     try {
-      if (saved?.probe && movie && jobs.playable(movie)) hub.create({ movieId: movie.id, duration: movie.duration, code: saved.code, probe: true });
+      if (saved?.probe && movie && jobs.playable(movie)) hub.create({ movieId: movie.id, duration: movie.duration, code: saved.code, probe: true, voice: saved.voice === true });
     } catch { }
   }
   const cookie = (res, session) => {
@@ -147,7 +147,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.post('/api/rooms', admin, (req, res) => {
     const movie = getMovie(req.body.movieId);
     if (!jobs.playable(movie)) throw fail(409, 'Film non préparé.');
-    const room = hub.create({ movieId: movie.id, duration: movie.duration, code: req.body.code, probe: req.body.probe === true });
+    const room = hub.create({ movieId: movie.id, duration: movie.duration, code: req.body.code, probe: req.body.probe === true, voice: req.body.voice === true });
     if (room.probe) persistRoom(room);
     res.status(201).json({ id: room.id, code: room.code, link: `${origin}/#invite=${room.code}` });
   });
