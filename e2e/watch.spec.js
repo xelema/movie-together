@@ -21,10 +21,16 @@ test('admin manages a film and two named viewers join in their language with one
   // MediaStream, le pipeline de capture et le worklet restent réels. Seule
   // la source matérielle est remplacée, sans réseau ni permission à mimer.
   const fakeMic = () => {
-    window.voiceTest = { micCalls: 0 };
-    navigator.mediaDevices.getUserMedia = () => {
-      window.voiceTest.micCalls++;
-      if (!window.voiceTest.stream) {
+    window.voiceTest = { micCalls: 0, streams: [], pending: [], hold: false };
+    // WebKit peut remplacer l'objet MediaDevices en cours de vie de la page :
+    // la propriété est interceptée sur navigator, jamais sur l'instance.
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      get: () => ({ getUserMedia: () => {
+        window.voiceTest.micCalls++;
+        // Chaque appel produit un vrai flux distinct, armé dans le geste même :
+        // résolu plus tard quand `hold` est levé, jamais réutilisé d'un appel
+        // à l'autre pour qu'un flux orphelin soit observable.
         const context = new AudioContext();
         const osc = context.createOscillator(), gain = context.createGain();
         const dest = context.createMediaStreamDestination();
@@ -32,9 +38,11 @@ test('admin manages a film and two named viewers join in their language with one
         osc.connect(gain); gain.connect(dest); osc.start();
         context.resume();
         window.voiceTest.stream = dest.stream;
-      }
-      return Promise.resolve(window.voiceTest.stream);
-    };
+        window.voiceTest.streams.push(dest.stream);
+        if (window.voiceTest.hold) return new Promise(resolve => window.voiceTest.pending.push(() => resolve(dest.stream)));
+        return Promise.resolve(dest.stream);
+      } }),
+    });
   };
   await host.addInitScript(fakeMic); await guest.addInitScript(fakeMic);
   // The fixture is HDR: each page needs its own WebGL2 probe before playback
@@ -517,17 +525,46 @@ test('admin manages a film and two named viewers join in their language with one
     await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
     // Pendant la prise de l'hôte, l'invité est refusé localement, en coréen,
     // et aucun état intermédiaire ne fuite vers l'hôte.
+    // La permission micro est tenue en attente : deux demandes qui se
+    // chevauchent produisent un flux orphelin qui ne doit jamais rester actif.
+    await guest.evaluate(() => { window.voiceTest.hold = true; });
     await guest.locator('#voice-mic').click();
     await expect(guest.locator('#voice-local')).toContainText('다른 참가자가 말하고 있습니다');
     await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
+    await guest.locator('#voice-mic').click();
+    await expect.poll(() => guest.evaluate(() => window.voiceTest.micCalls)).toBe(2);
+    await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
+    await guest.evaluate(() => {
+      window.voiceTest.hold = false;
+      window.voiceTest.pending.splice(0).forEach(grant => grant());
+    });
+    // Le micro refusé n'est jamais devenu actif : le flux adopté reste muet et
+    // le flux orphelin est arrêté.
+    await expect.poll(() => guest.evaluate(() =>
+      window.voiceTest.streams.length === 2 &&
+      window.voiceTest.streams[0].getAudioTracks().every(track => track.readyState === 'ended') &&
+      window.voiceTest.streams[1].getAudioTracks().every(track => !track.enabled))).toBe(true);
+    // Une autorisation orpheline est refermée sans toucher l'état ni le micro.
+    await guest.evaluate(() => window.player.onVoice({ type: 'voice', state: 'started', utterance: 'ghost', seq: 99 }));
+    await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
     await expect(host.locator('#voice-local')).toBeHidden();
     await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
-    // Second appui : la prise passe en traitement puis produit le résultat.
+    // Second appui : la prise passe en traitement puis produit le résultat. Le
+    // passage par 'processing' est bref : on l'enregistre au lieu de le sonder.
+    await host.evaluate(() => {
+      window.voiceTest.states = [];
+      new MutationObserver(mutations => {
+        for (const mutation of mutations) window.voiceTest.states.push(mutation.target.dataset.state);
+      }).observe(document.querySelector('#voice-mic'), { attributes: true, attributeFilter: ['data-state'] });
+    });
     await host.locator('#voice-mic').click();
-    await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'processing');
     await expect(host.locator('#voice-local')).toContainText('Compris : On se retrouve au générique.');
+    expect(await host.evaluate(() => window.voiceTest.states)).toContain('processing');
     await expect(host.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
     await expect(guest.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
+    // Hors écoute, la piste est muette : pas de micro actif au repos.
+    await expect.poll(() => host.evaluate(() =>
+      window.voiceTest.stream?.getAudioTracks().every(track => !track.enabled) ?? false)).toBe(true);
     // Le texte compris n'atteint jamais l'invité et le film continue.
     await expect(guest.locator('#voice-local')).not.toContainText('On se retrouve');
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);

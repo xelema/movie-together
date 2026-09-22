@@ -16,7 +16,7 @@ const STATE_NAMES = {
 export function attachVoice({ mic, local, supertitle, player, t, label }) {
   let state = 'idle', utterance = null, lastResultSeq = 0;
   let stream = null, audioContext = null, source = null, worklet = null;
-  let listenTimer = null, watchdog = null, hardware = null;
+  let listenTimer = null, watchdog = null, hardware = null, armSeq = 0;
 
   const show = (node, text, ms = 0) => {
     node.textContent = text;
@@ -44,9 +44,11 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
   };
   const fail = text => {
     utterance = null;
-    // Rien à arrêter tant que la prise n'est pas branchée : détruire le
-    // contexte pendant que beginCapture l'utilise casserait l'erreur réelle.
-    if (state === 'listening') stopCapture();
+    // Une prise armée mais non branchée (starting) est démontée aussi : le
+    // graphe est libéré et la piste rendue muette. Fermer le contexte peut
+    // faire échouer un armement encore en vol ; son erreur, plus tardive,
+    // n'écrase pas celle affichée ici.
+    if (state === 'listening' || state === 'starting') stopCapture();
     clearTimeout(watchdog);
     setState(text ? 'error' : 'idle');
     if (text) show(local, text);
@@ -58,13 +60,27 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
   // Le matériel s'arme dès l'appui mais aucune trame ne part avant l'accord :
   // la source n'est branchée qu'à la réception de 'started'. En cas de refus
   // le flux reste prêt et évite une nouvelle demande de permission.
-  const beginCapture = async () => {
+  const beginCapture = async seq => {
+    const stale = () => seq !== armSeq;
     try {
       audioContext ??= new AudioContext();
-      stream ??= await navigator.mediaDevices.getUserMedia({
+      const granted = stream ?? await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+      // Une permission résolue après une demande plus récente produirait un flux
+      // orphelin encore actif : il est arrêté plutôt qu'adopté.
+      if (stale()) {
+        if (granted !== stream) granted.getTracks().forEach(track => track.stop());
+        return false;
+      }
+      stream = granted;
+      // La piste n'est active que pendant l'écoute : elle reste muette tant que
+      // la séance n'a pas accordé la prise, et après un refus arrivé entre-temps.
+      stream.getAudioTracks().forEach(track => { track.enabled = false; });
       if (!worklet) {
         await audioContext.audioWorklet.addModule('/voice-worklet.js');
+        // Un armement périmé ne branche rien : la prise plus récente reconstruit
+        // ses propres noeuds au prochain appui.
+        if (stale()) return false;
         source = audioContext.createMediaStreamSource(stream);
         worklet = new AudioWorkletNode(audioContext, 'voice-pcm');
         // Le seuil de bufferedAmount décidé dans #39 arrête la prise proprement :
@@ -75,8 +91,11 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       }
       return true;
     } catch (error) {
+      // Un armement partiel est démonté : piste muette, contexte libéré, le
+      // flux garde la permission pour l'essai suivant.
+      stopCapture();
       // Un refus déjà affiché (occupé, quota…) prime une panne matérielle tardive.
-      if (state === 'starting') {
+      if (state !== 'error') {
         show(local, error.name === 'NotAllowedError'
           ? t('Micro refusé.', '마이크 사용이 거부되었습니다.')
           : t('Micro indisponible.', '마이크를 사용할 수 없습니다.'));
@@ -96,7 +115,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
   const tap = () => {
     if (state === 'listening') return stopSpeaking();
     if (state !== 'idle' && state !== 'error') return;
-    hardware = beginCapture();
+    hardware = beginCapture(++armSeq);
     player.send({ type: 'voice', action: 'start' });
     setState('starting');
   };
@@ -107,9 +126,10 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       if (state !== 'starting') return player.send({ type: 'voice', action: 'cancel' });
       utterance = event.utterance;
       local.hidden = true;
-      // L'état a pu changer pendant l'armement du micro : un échec arrivé
-      // entre-temps rend la prise déjà morte, on la referme côté serveur.
-      if (state !== 'starting' || !await hardware) {
+      // L'état a pu changer pendant l'armement du micro : une fermeture ou un
+      // échec arrivé entre-temps rend la prise morte, on la referme côté serveur.
+      const armed = state === 'starting' && await hardware;
+      if (!armed || state !== 'starting') {
         player.send({ type: 'voice', action: 'cancel' });
         utterance = null;
         return;
@@ -122,6 +142,9 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       return;
     }
     if (event.state === 'failed') {
+      // Un échec identifié ne vaut que pour la prise courante ; un refus sans
+      // identifiant ne s'applique qu'à une demande en attente d'accord.
+      if (event.utterance ? event.utterance !== utterance : state !== 'starting') return;
       const suffix = event.retryAfter ? t(` · ${Math.ceil(event.retryAfter)} s`, ` · ${Math.ceil(event.retryAfter)}초`) : '';
       fail(event.message ? label(event.message) + suffix : undefined);
       return;
@@ -144,6 +167,8 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     rename: () => setState(state),
     dispose() {
       mic.removeEventListener('click', tap);
+      // Une permission encore en vol est périmée : son flux sera arrêté.
+      armSeq++;
       abort();
       stream?.getTracks().forEach(track => track.stop());
       stream = null;
