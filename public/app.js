@@ -144,6 +144,7 @@ function translate() {
   $('player-settings').setAttribute('aria-label', t('Réglages', '설정')); $('close-settings').setAttribute('aria-label', t('Fermer', '닫기'));
   $('room-name').setAttribute('aria-label', t('Votre pseudo', '닉네임'));
   $('screen').setAttribute('aria-label', t('Lecteur vidéo', '동영상 플레이어'));
+  $('voice-mic').setAttribute('aria-label', t('Parler', '말하기'));
   if (player) player.tracks();
   updatePlayback(player); updateFilmMeta();
 }
@@ -332,9 +333,9 @@ function movieCard(movie) {
       .filter(Boolean).join(' · ');
     if (meta) card.append(el('p', meta, 'hint'));
     const create = async () => {
-      randomCode();
+      randomCode(); $('create-voice').checked = false;
       const code = await askDialog('create-dialog', 'create-code'); if (!code) return;
-      const room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code } });
+      const room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code, voice: $('create-voice').checked } });
       notice(`${t('Invitation', '초대')}: ${room.link}`);
       await enterRoom(room.id, undefined, { code: room.code, title: movie.title });
     };
@@ -458,6 +459,7 @@ async function enterRoom(id, name, context = {}) {
   sessionStorage.setItem('nickname', name); showSettings(false);
   await api(`/api/rooms/${id}`); session = await api('/api/session');
   disposePlayer(); activeRoom = id; roomMessage = null;
+  $('voice-badge').hidden = $('voice-mic').hidden = true;
   $('entry').hidden = true; $('library').hidden = true; $('watch').hidden = false; $('choose-film').hidden = !session.admin;
   history.replaceState(null, '', `${adminPage ? '/admin' : '/'}#room=${id}`);
   player = window.player = new SyncPlayer({ video: $('video'), roomId: id, name,
@@ -473,6 +475,12 @@ async function enterRoom(id, name, context = {}) {
     onState: (message, controller) => {
       if (message.probe && !telemetry) telemetry = attachTelemetry(controller, $('video'), id);
       roomMessage = message; updatePlayback(controller);
+      const voice = message.voice;
+      $('voice-badge').hidden = $('voice-mic').hidden = !voice?.enabled;
+      if (voice) {
+        $('voice-mic').disabled = !voice.available;
+        $('voice-mic').title = voice.available ? '' : t('Traduction vocale indisponible', '음성 번역을 사용할 수 없습니다');
+      }
       const key = JSON.stringify([message.movie?.id, message.movie?.title, message.code, controller.memberId,
         t('fr', 'ko'), message.members.map(({ id, name, waiting, reason, blockers, failure, buffered }) => [id, name, waiting, reason, blockers, failure, Math.round(buffered ?? 0)])]);
       if (controller.roomUIKey === key) return;

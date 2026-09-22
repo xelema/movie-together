@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { createRoomHub } from '../src/sync/hub.js';
 import { createSettings } from '../src/settings.js';
 
-const stubHub = (saved = {}) => createRoomHub({ origin: 'http://localhost',
+const stubHub = (saved = {}, overrides = {}) => createRoomHub({ origin: 'http://localhost',
   settings: createSettings({ env: {}, saved }),
   sessionFor: () => null, sessionActive: () => true, canAccess: () => false,
-  movieFor: () => null, moviePlayable: () => true });
+  movieFor: () => null, moviePlayable: () => true, ...overrides });
 
 test('tune applies thresholds to existing and future rooms', async t => {
   const hub = stubHub({ minBuffer: 20, lowBuffer: 5 });
@@ -30,4 +30,20 @@ test('tune rejects invalid thresholds without touching rooms', async t => {
     assert.throws(() => hub.tune(bad), /Seuils invalides/);
   }
   assert.equal(hub.get(room.id).engine.minBuffer, 20);
+});
+
+test('the voice capability is frozen at creation and absent from ordinary rooms', async t => {
+  const bare = stubHub();
+  t.after(() => bare.close());
+  const plain = bare.create({ movieId: 'movie', duration: 100, code: 'plain-room' });
+  const voiced = bare.create({ movieId: 'movie', duration: 100, code: 'voix-room', voice: true });
+  assert.equal('voice' in bare.state(plain), false);
+  const voice = bare.state(voiced).voice;
+  assert.deepEqual(voice, { enabled: true, pair: ['fr', 'ko'], available: false });
+  assert.ok(Object.isFrozen(voice));
+  // Availability is not a room setting: it mirrors the service wired into the hub.
+  const served = stubHub({}, { voiceService: {} });
+  t.after(() => served.close());
+  const room = served.create({ movieId: 'movie', duration: 100, code: 'servi-room', voice: true });
+  assert.equal(served.state(room).voice.available, true);
 });
