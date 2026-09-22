@@ -22,14 +22,17 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
   };
   const stopCapture = () => {
     clearTimeout(listenTimer);
-    worklet?.disconnect();
-    source?.disconnect();
+    // Les noeuds ne sont branchés qu'à l'accord : une déconnexion sans lien
+    // lève InvalidAccessError sur certains moteurs.
+    try { worklet?.disconnect(); source?.disconnect(); } catch {}
     worklet = source = null;
     if (audioContext) { audioContext.close().catch(() => {}); audioContext = null; }
   };
   const fail = text => {
     utterance = null;
-    stopCapture();
+    // Rien à arrêter tant que la prise n'est pas branchée : détruire le
+    // contexte pendant que beginCapture l'utilise casserait l'erreur réelle.
+    if (state === 'listening') stopCapture();
     clearTimeout(watchdog);
     setState(text ? 'error' : 'idle');
     if (text) show(local, text);
@@ -58,10 +61,13 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       }
       return true;
     } catch (error) {
-      show(local, error.name === 'NotAllowedError'
-        ? t('Micro refusé.', '마이크 사용이 거부되었습니다.')
-        : t('Micro indisponible.', '마이크를 사용할 수 없습니다.'));
-      setState('error');
+      // Un refus déjà affiché (occupé, quota…) prime une panne matérielle tardive.
+      if (state === 'starting') {
+        show(local, error.name === 'NotAllowedError'
+          ? t('Micro refusé.', '마이크 사용이 거부되었습니다.')
+          : t('Micro indisponible.', '마이크를 사용할 수 없습니다.'));
+        setState('error');
+      }
       return false;
     }
   };
@@ -87,7 +93,9 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       if (state !== 'starting') return player.send({ type: 'voice', action: 'cancel' });
       utterance = event.utterance;
       local.hidden = true;
-      if (!await hardware) {
+      // L'état a pu changer pendant l'armement du micro : un échec arrivé
+      // entre-temps rend la prise déjà morte, on la referme côté serveur.
+      if (state !== 'starting' || !await hardware) {
         player.send({ type: 'voice', action: 'cancel' });
         utterance = null;
         return;
@@ -123,6 +131,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       abort();
       stream?.getTracks().forEach(track => track.stop());
       stream = null;
+      audioContext?.close().catch(() => {}); audioContext = null;
       mic.dataset.state = 'idle';
     },
   };

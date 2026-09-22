@@ -256,9 +256,11 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       ws.on('pong', () => { ws.alive = true; });
       ws.on('error', () => {});
       ws.on('message', (data, isBinary) => {
+        // Les trames PCM sont bornées par la prise elle-même (taille, total
+        // d'octets, verrou de séance) : hors budget des messages JSON.
+        if (isBinary) return voiceFrame(room, ws, data);
         if (Date.now() - windowAt >= 1000) { windowAt = Date.now(); messages = 0; }
         if (++messages > 40 || session.expires <= Date.now()) return ws.close(1008, 'Session invalide');
-        if (isBinary) return voiceFrame(room, ws, data);
         try {
           const message = JSON.parse(data);
           if (message.type === 'identify') {
