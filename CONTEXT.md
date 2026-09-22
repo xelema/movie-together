@@ -97,3 +97,17 @@ vocabulaire partage.
   rendue, pas la fenetre.
 - **Choix de piste** : reglage strictement local a un participant (« pour vous
   »). Il ne doit pas changer la position ni la phase de la seance.
+
+## Traduction vocale
+
+- **Prise de parole** (utterance) : une phrase courte prononcee par un
+  participant, une seule active a la fois dans la seance. Le serveur lui
+  attribue un identifiant et une sequence ; son cycle passe par des etats
+  prives puis un resultat final ou un echec, sans rien persister.
+- **Surtitre traduit** : la traduction finale d'une prise, diffusee a tous
+  les participants en surimpression coloree avec le nom de l'orateur, puis
+  effacee apres sa fenetre d'affichage. L'orateur recoit en plus son texte
+  compris, visible de lui seul.
+- **Capacite de seance** : la traduction vocale se choisit a la creation de
+  la seance, desactivee par defaut et figee ensuite. L'etat autoritaire
+  annonce la paire de langues et la disponibilite du service.
