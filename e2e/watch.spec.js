@@ -142,7 +142,7 @@ test('admin manages a film and two named viewers join in their language with one
     await host.screenshot({ path: 'test-results/admin-mobile.png', fullPage: true });
     await host.setViewportSize({ width: 1280, height: 720 });
     await host.getByRole('button', { name: 'Créer une séance', exact: true }).click();
-    // La traduction vocale est proposée décochée ; une séance ordinaire n'expose
+    // La traduction vocale est proposée décochée. Une séance ordinaire n'expose
     // ni indicateur ni contrôle micro.
     await expect(host.locator('#create-voice')).not.toBeChecked();
     await host.locator('#random-code').click(); await expect(host.locator('#create-code')).toHaveValue(/^[a-f0-9]{8}$/);
