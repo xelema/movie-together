@@ -22,7 +22,12 @@ const voiceService = {
     for (let i = 0; i + 1 < pcm.length; i += 2) energy += Math.abs(pcm.readInt16LE(i));
     return { speech: pcm.length > 1 && energy / (pcm.length / 2) / 32768 > 0.01, language: 'fr' };
   },
-  translate: async () => ({ text: 'On se retrouve au générique.', translation: '엔딩 크레딧에서 만나요.' }),
+  // Un léger délai rend l'état 'processing' observable côté client : sans lui
+  // la réponse arriverait avant que le navigateur n'affiche la transition.
+  translate: async () => {
+    await new Promise(resolve => setTimeout(resolve, 250));
+    return { text: 'On se retrouve au générique.', translation: '엔딩 크레딧에서 만나요.' };
+  },
 };
 const instance = createApplication({ dataDir, origin: 'http://localhost:3100', password: 'browser-test-password', voiceService });
 instance.server.listen(3100, '127.0.0.1');
