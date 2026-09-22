@@ -207,6 +207,15 @@ video::cue{color:#fff;background:transparent;font-family:Arial,"Segoe UI",sans-s
   display:grid;place-items:center;border-radius:50%;background:rgba(10,10,12,.62);color:var(--white);border:1px solid rgba(255,255,255,.18)}
 #voice-mic:hover{background:rgba(10,10,12,.82)}
 #voice-mic:disabled{cursor:default}
+#voice-mic[data-state=listening]{color:#e5484d;border-color:rgba(229,72,77,.7);animation:voice-pulse 1.4s var(--ease) infinite}
+#voice-mic[data-state=processing]{color:var(--pending);animation:voice-pulse 1.4s var(--ease) infinite}
+#voice-mic[data-state=error]{color:var(--danger);border-color:rgba(226,141,148,.6)}
+@keyframes voice-pulse{50%{opacity:.55}}
+#voice-local{position:absolute;z-index:4;left:14px;bottom:14px;max-width:min(60%,420px);padding:8px 12px;
+  border:1px solid var(--line);border-radius:8px;background:rgba(15,17,21,.82);color:var(--text);font-size:13px;line-height:1.4;pointer-events:none}
+#voice-result{position:absolute;z-index:4;top:9%;left:50%;transform:translateX(-50%);max-width:82%;padding:6px 16px;border-radius:8px;
+  background:rgba(10,10,12,.55);color:#4fd7e8;font-size:calc(var(--subtitle-size,20px)*1.05);font-weight:600;text-align:center;
+  text-shadow:0 1px 3px rgba(0,0,0,.85);pointer-events:none}
 #screen.settings-open .plyr__controls,#screen .plyr__controls:has(:focus-visible){opacity:1;transform:none;pointer-events:auto}
 #screen.settings-open .plyr--hide-controls,#screen.settings-open .plyr--hide-controls video{cursor:auto}
 

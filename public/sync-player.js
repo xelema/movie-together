@@ -23,8 +23,8 @@ export function bufferEnd(video) {
 }
 
 export class SyncPlayer {
-  constructor({ video, roomId, name = '', forceShader = false, onStatus, onState, onTracks, onActivation }) {
-    Object.assign(this, { video, roomId, forceShader, onStatus, onState, onTracks, onActivation });
+  constructor({ video, roomId, name = '', forceShader = false, onStatus, onState, onTracks, onActivation, onVoice }) {
+    Object.assign(this, { video, roomId, forceShader, onStatus, onState, onTracks, onActivation, onVoice });
     this.offset = 0; this.audioChoice = 0; this.subtitleChoice = -1;
     this.name = name;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
@@ -122,6 +122,13 @@ export class SyncPlayer {
   position() { return Math.max(0, this.video.currentTime - this.offset); }
   target() { return roomTarget(this.state, this.serverTime()); }
   send(message) { if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(message)); }
+  // PCM frames ride the same socket; the 64 Kio bufferedAmount bound from #39
+  // aborts the prise rather than dropping audio silently or stalling the page.
+  sendFrame(bytes) {
+    if (this.ws?.readyState !== WebSocket.OPEN || this.ws.bufferedAmount >= 65536) return false;
+    this.ws.send(bytes);
+    return true;
+  }
   ping() { this.send({ type: 'ping', sentAt: performance.now() }); }
   connect() {
     if (this.disposed) return;
@@ -138,6 +145,7 @@ export class SyncPlayer {
       const message = JSON.parse(event.data);
       this.lastMessage = performance.now();
       if (message.type === 'pong') this.clock.sample(message.sentAt, performance.now(), message.serverNow);
+      if (message.type === 'voice') this.onVoice?.(message);
       if (message.type === 'welcome') {
         this.memberId = message.id;
         this.applySync(message.sync);
@@ -155,6 +163,7 @@ export class SyncPlayer {
     };
     this.ws.onclose = event => {
       if (this.disposed) return;
+      this.onVoice?.(null);
       clearInterval(this.initialPings); this.pauseLocal(); clearTimeout(this.startTimer); this.state = null;
       if ([1000, 1008].includes(event.code)) this.failure = 'Room fermée ou session expirée.';
       this.onStatus(event.code === 1000 || event.code === 1008 ? 'Room fermée ou session expirée.' : 'Connexion perdue. Séance en pause, reconnexion…');

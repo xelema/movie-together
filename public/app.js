@@ -3,12 +3,13 @@ import { attachTelemetry } from './telemetry.js';
 import { label } from './labels.js';
 import { trackName, defaultTrackNames, sourceTitle, trackLayout } from './track-names.js';
 import { SUBTITLE_EXT, SUBTITLE_ACCEPT, IMAGE_SUBTITLE_CODECS } from './subtitle-formats.js';
+import { attachVoice } from './voice.js';
 
 const $ = id => document.getElementById(id);
 const t = (fr, ko) => sessionStorage.getItem('language') === 'ko' ? ko : fr;
 const adminPage = location.pathname === '/admin';
-let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null, diskInfo = null, telemetry = null;
-function disposePlayer() { telemetry?.dispose(); telemetry = null; player?.dispose(); player = null; window.player = null; refreshBandwidth(); }
+let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null, diskInfo = null, telemetry = null, voice = null;
+function disposePlayer() { telemetry?.dispose(); telemetry = null; voice?.dispose(); voice = null; player?.dispose(); player = null; window.player = null; refreshBandwidth(); }
 const movieCards = new Map(), openPanels = new Set(), closedPanels = new Set();
 const playbackUI = new window.Plyr($('video'), {
   controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'fullscreen'],
@@ -459,11 +460,12 @@ async function enterRoom(id, name, context = {}) {
   sessionStorage.setItem('nickname', name); showSettings(false);
   await api(`/api/rooms/${id}`); session = await api('/api/session');
   disposePlayer(); activeRoom = id; roomMessage = null;
-  $('voice-badge').hidden = $('voice-mic').hidden = true;
+  $('voice-badge').hidden = $('voice-mic').hidden = $('voice-local').hidden = $('voice-result').hidden = true;
   $('entry').hidden = true; $('library').hidden = true; $('watch').hidden = false; $('choose-film').hidden = !session.admin;
   history.replaceState(null, '', `${adminPage ? '/admin' : '/'}#room=${id}`);
   player = window.player = new SyncPlayer({ video: $('video'), roomId: id, name,
     forceShader: sessionStorage.getItem('hdr') === 'shader',
+    onVoice: message => voice?.message(message),
     onStatus: message => { telemetry?.event('status', { msg: message }); $('playback-status').textContent = label(message); updatePlayback(player); },
     onActivation: () => updatePlayback(player),
     onTracks: (audio, subtitles) => {
@@ -500,6 +502,7 @@ async function enterRoom(id, name, context = {}) {
       }));
     },
   });
+  voice = attachVoice({ mic: $('voice-mic'), local: $('voice-local'), supertitle: $('voice-result'), player, t, label });
   refreshBandwidth();
   if (session.admin) { movies = await api('/api/movies'); selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title])); }
 }
@@ -539,6 +542,9 @@ const SETTING_LABELS = {
   segmentSeconds: ['Durée des segments (s)', '세그먼트 길이 (초)'],
   loginLimit: ['Essais de connexion par 15 min', '15분당 로그인 시도 수'],
   inviteLimit: ['Essais de code par minute', '분당 코드 시도 수'],
+  voiceQuota: ['Appels de traduction par participant', '참가자당 번역 호출 수'],
+  voiceWindow: ['Fenêtre du quota de traduction (s)', '번역 쿼터 시간 창 (초)'],
+  voiceCooldown: ['Délai entre deux prises (s)', '연속 발화 최소 간격 (초)'],
 };
 // Aide au survol, en français seul : l'attribut title sert aussi de
 // description accessible pour le lecteur d'écran.
@@ -562,9 +568,12 @@ const SETTING_DESCRIPTIONS = {
   segmentSeconds: 'Durée de chaque segment vidéo produit pour la lecture.',
   loginLimit: 'Tentatives de connexion autorisées par tranche de 15 minutes.',
   inviteLimit: 'Tentatives de code d’invitation autorisées par minute.',
+  voiceQuota: 'Nombre maximal d’appels au fournisseur de traduction par participant sur la fenêtre glissante.',
+  voiceWindow: 'Durée de la fenêtre glissante sur laquelle le quota de traduction est compté.',
+  voiceCooldown: 'Délai minimal après chaque prise de parole avant qu’un nouveau départ soit accepté.',
 };
 const SETTING_CATEGORIES = { sync: ['Synchronisation', '동기화'], rooms: ['Séances', '시청방'],
-  uploads: ['Envois', '업로드'], media: ['Préparation', '준비'], security: ['Sécurité', '보안'] };
+  uploads: ['Envois', '업로드'], media: ['Préparation', '준비'], security: ['Sécurité', '보안'], voice: ['Traduction vocale', '음성 번역'] };
 let settingsValues = {};
 const settingInputs = new Map();
 function renderSettings(payload) {
