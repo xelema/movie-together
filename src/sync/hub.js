@@ -12,7 +12,7 @@ const VOICE_FRAME = 960, VOICE_TEXT_MAX = 2000, VOICE_FRAME_RATE = 100;
 const VOICE_MESSAGES = {
   'no-speech': 'Aucune parole détectée.',
   'inconsistent': 'Traduction incohérente, réessayez.',
-  'provider': 'Traduction indisponible.',
+  'provider': 'Traduction temporairement indisponible.',
   'invalid-response': 'Réponse de traduction invalide.',
   'timeout': 'La traduction a expiré.',
 };
@@ -29,7 +29,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
   // cale son seuil de silence sur le tickMs du welcome, le retimer à chaud
   // désynchroniserait les séances ouvertes. Un nouveau tickMs vaut au relancement.
   const cadence = { tickMs: settings.get('tickMs'), sweepMs: settings.get('sweepMs') };
-  const timing = { listenMs: 20_000, processMs: 10_000, ...voiceTiming };
+  const timing = { listenMs: 20_000, processMs: 10_000, idleMs: 2_000, ...voiceTiming };
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8192 });
   const rooms = new Map();
   const countSessions = room => new Set([...room.clients].map(client => client.session)).size;
@@ -78,30 +78,48 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
   };
 
   // Prise de parole : une seule par séance, identifiée et ordonnée par le
-  // serveur. Les états intermédiaires ne quittent jamais le socket de l'orateur
-  // et toute libération arme le délai de reprise décidé dans #39.
+  // serveur. La traduction part en direct vers une session Live Translate dès
+  // que le garde-fou local atteste la parole ; les surtitres partiels sont
+  // diffusés à tous sous séquence et révision, la transcription source reste
+  // locale à l'orateur. Toute libération ferme la session amont, efface
+  // l'audio et arme le délai de reprise décidé dans #39.
   const voiceSend = (ws, payload) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'voice', ...payload }));
+  };
+  const broadcastVoice = (room, payload) => {
+    const message = JSON.stringify({ type: 'voice', ...payload });
+    for (const client of room.clients) {
+      if (client.readyState === WebSocket.OPEN) client.send(message);
+    }
   };
   const refuse = (room, ws, error, message, extra = {}) => {
     console.log(`[room ${room.tag}] voix refused:${error}`);
     voiceSend(ws, { state: 'failed', error, message, ...extra });
   };
-  // Toute sortie détruit l'audio en mémoire : rien n'est persisté ni journalisé.
+  // Toute sortie ferme la session amont et détruit l'audio en mémoire : rien
+  // n'est persisté ni journalisé. Un surtitre partiel déjà diffusé est retiré.
   const releaseUtterance = (room, utterance, category) => {
     clearTimeout(utterance.timer);
-    // Un appel fournisseur encore en vol est réellement interrompu (#46).
-    utterance.controller?.abort();
+    clearInterval(utterance.idlePoll);
+    utterance.live?.close();
+    utterance.live = null;
     if (utterance.chunks) for (const chunk of utterance.chunks) chunk.fill(0);
     utterance.chunks = null;
-    if (utterance.pcm) utterance.pcm.fill(0);
-    utterance.pcm = null;
+    if (utterance.partialSent && !utterance.resultSent) {
+      broadcastVoice(room, { state: 'withdrawn', utterance: utterance.id, seq: utterance.seq });
+    }
     if (room.utterance === utterance) room.utterance = null;
     room.voiceReleased?.set(utterance.session, Date.now());
     console.log(`[room ${room.tag}] voix ${category}`);
   };
+  const failUtterance = (room, utterance, error, message) => {
+    if (room.utterance !== utterance) return;
+    releaseUtterance(room, utterance, `failed:${error}`);
+    voiceSend(utterance.ws, { state: 'failed', utterance: utterance.id, seq: utterance.seq,
+      error, message: message ?? VOICE_MESSAGES[error] ?? VOICE_MESSAGES.provider });
+  };
   const voiceStart = (room, ws, message) => {
-    if (!room.voice?.enabled || typeof voiceService?.translate !== 'function') {
+    if (!room.voice?.enabled || typeof voiceService?.openSession !== 'function') {
       return refuse(room, ws, 'unavailable', 'Traduction vocale indisponible.');
     }
     // La langue d'interface de l'orateur fixe le sens de la prise (#44) : elle
@@ -120,7 +138,9 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     }
     const utterance = { id: randomUUID(), seq: ++room.voiceSeq, ws, session: ws.session,
       speaker: ws.displayName, source, target: room.voice.pair.find(code => code !== source),
-      chunks: [], bytes: 0, state: 'listening', timer: null };
+      chunks: [], bytes: 0, gate: { energy: 0, crossings: 0, samples: 0, previous: 0 },
+      live: null, translation: '', heard: '', rev: 0, lastOutput: 0, stoppedAt: 0,
+      partialSent: false, resultSent: false, state: 'listening', timer: null, idlePoll: null };
     utterance.timer = setTimeout(() => finishUtterance(room, utterance), timing.listenMs);
     room.utterance = utterance;
     console.log(`[room ${room.tag}] voix started`);
@@ -132,12 +152,48 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     // Le transport est une suite de trames de 30 ms. Toute autre taille est rejetée.
     if (!data.length || data.length % VOICE_FRAME ||
       utterance.bytes + data.length > Math.ceil(timing.listenMs / 30 + 10) * VOICE_FRAME) {
-      releaseUtterance(room, utterance, 'aborted:invalid');
-      return voiceSend(ws, { state: 'failed', utterance: utterance.id, seq: utterance.seq,
-        error: 'invalid', message: 'Trame vocale invalide.' });
+      return failUtterance(room, utterance, 'invalid', 'Trame vocale invalide.');
     }
-    utterance.chunks.push(data);
     utterance.bytes += data.length;
+    // Session déjà ouverte : la trame part au fournisseur puis est effacée.
+    if (utterance.live) { utterance.live.send(data); data.fill(0); return; }
+    // Sinon elle s'accumule pour le garde-fou et pour l'envoi groupé à
+    // l'ouverture : aucun fournisseur n'est sollicité avant la parole attestée.
+    utterance.chunks.push(data);
+    gatePush(utterance.gate, data);
+    if (gateHasSpeech(utterance.gate)) openLive(room, utterance);
+  };
+  // La session fournisseur ne s'ouvre qu'une fois la parole attestée (#45) :
+  // c'est l'ouverture réelle qui consomme le quota, pas la demande de prise.
+  const openLive = (room, utterance) => {
+    const calls = room.voiceCalls.get(utterance.session) ?? [];
+    calls.push(Date.now());
+    room.voiceCalls.set(utterance.session, calls);
+    let live;
+    try { live = utterance.live = voiceService.openSession({ source: utterance.source, target: utterance.target }); }
+    catch { return failUtterance(room, utterance, 'provider'); }
+    live.onText = chunk => {
+      if (room.utterance !== utterance || typeof chunk !== 'string' || !chunk) return;
+      utterance.translation = (utterance.translation + chunk).slice(0, VOICE_TEXT_MAX + 1);
+      utterance.lastOutput = Date.now();
+      utterance.partialSent = true;
+      broadcastVoice(room, { state: 'partial', utterance: utterance.id, seq: utterance.seq,
+        rev: ++utterance.rev, speaker: utterance.speaker, text: utterance.translation });
+    };
+    live.onSource = chunk => {
+      if (room.utterance !== utterance || typeof chunk !== 'string' || !chunk) return;
+      utterance.heard = (utterance.heard + chunk).slice(0, VOICE_TEXT_MAX + 1);
+      voiceSend(utterance.ws, { state: 'heard', utterance: utterance.id, seq: utterance.seq, text: utterance.heard });
+    };
+    live.onEnd = error => {
+      if (room.utterance !== utterance) return;
+      if (error || utterance.state === 'listening') return failUtterance(room, utterance, 'provider');
+      settleUtterance(room, utterance);
+    };
+    // L'audio accumulé avant l'ouverture part d'un coup puis est effacé.
+    for (const chunk of utterance.chunks) { live.send(chunk); chunk.fill(0); }
+    utterance.chunks = null;
+    console.log(`[room ${room.tag}] voix session`);
   };
   const voiceStop = (room, ws) => {
     const utterance = room.utterance;
@@ -153,94 +209,63 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     if (message.action === 'cancel') return voiceCancel(room, ws);
     throw new Error('Message inconnu.');
   };
-  // Garde-fou local avant tout appel facturé (#45) : le silence a une énergie
-  // nulle, un offset continu un taux de passage par zéro nul malgré l'énergie
-  // et un bruit large bande un taux proche de 0,5. La parole reste entre les
-  // deux. Rien d'autre ne doit atteindre le fournisseur.
-  const hasSpeech = pcm => {
-    let energy = 0, crossings = 0, previous = pcm.length > 1 ? pcm.readInt16LE(0) : 0;
-    for (let i = 2; i + 1 < pcm.length; i += 2) {
+  // Garde-fou local avant toute session facturée (#45), alimenté trame par
+  // trame : le silence a une énergie nulle, un offset continu un taux de
+  // passage par zéro nul malgré l'énergie et un bruit large bande un taux
+  // proche de 0,5. La parole reste entre les deux. Rien d'autre ne doit
+  // atteindre le fournisseur.
+  const gatePush = (gate, pcm) => {
+    for (let i = 0; i + 1 < pcm.length; i += 2) {
       const sample = pcm.readInt16LE(i);
-      energy += Math.abs(sample);
-      if (sample < 0 !== previous < 0) crossings++;
-      previous = sample;
+      gate.samples++;
+      if (gate.samples === 1) { gate.previous = sample; continue; }
+      gate.energy += Math.abs(sample);
+      if (sample < 0 !== gate.previous < 0) gate.crossings++;
+      gate.previous = sample;
     }
-    const samples = pcm.length >> 1, zcr = samples > 1 ? crossings / (samples - 1) : 0;
-    return samples > 1 && energy / samples / 32768 > 0.01 && zcr > 0.005 && zcr < 0.4;
   };
-  // Validation stricte du résultat (#44) : les deux champs textuels, présents
-  // et bornés. Le sens vient de la prise, pas du modèle : une écriture
-  // coréenne absente ou déplacée contredit le sens figé (#45), sans prétendre
-  // distinguer le français d'une autre langue latine.
-  const HANGUL = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/;
-  const voiceResultError = (result, source, target) => {
-    if (!result || typeof result.text !== 'string' || typeof result.translation !== 'string' ||
-      !result.text.length || !result.translation.length ||
-      result.text.length > VOICE_TEXT_MAX || result.translation.length > VOICE_TEXT_MAX) {
-      return 'invalid-response';
-    }
-    if (HANGUL.test(result.text) !== (source === 'ko') ||
-      HANGUL.test(result.translation) !== (target === 'ko')) return 'inconsistent';
-    return null;
-  };
-  // Un seul appel fournisseur par prise (#44) : transcription et traduction
-  // reviennent ensemble. Chaque sortie d'erreur libère le verrou.
+  const gateHasSpeech = gate => gate.samples > 1 &&
+    gate.energy / gate.samples / 32768 > 0.01 &&
+    gate.crossings / (gate.samples - 1) > 0.005 && gate.crossings / (gate.samples - 1) < 0.4;
+  // À l'arrêt (appui ou plafond d'écoute) la session reçoit son silence de
+  // terminaison puis on attend le texte qui traîne : le modèle n'émet aucun
+  // signal de fin fiable, on clôt après idleMs sans nouveau texte.
   const finishUtterance = (room, utterance) => {
     if (room.utterance !== utterance || utterance.state !== 'listening') return;
     utterance.state = 'processing';
     clearTimeout(utterance.timer);
-    // La concaténation copie : les trames d'origine sont effacées tout de suite
-    // et la copie part seule au fournisseur, effaçable pendant le traitement.
-    const pcm = utterance.pcm = Buffer.concat(utterance.chunks);
-    for (const chunk of utterance.chunks) chunk.fill(0);
+    for (const chunk of utterance.chunks ?? []) chunk.fill(0);
     utterance.chunks = null;
-    const audioMs = Math.round(pcm.length / 32);
-    // Le traitement fournisseur est interrompu à l'échéance comme sur toute
-    // sortie de prise (#46) : le signal atteint le fetch, pas seulement la course.
-    const controller = utterance.controller = new AbortController();
-    const fail = (error, message) => {
-      releaseUtterance(room, utterance, `failed:${error}`);
-      voiceSend(utterance.ws, { state: 'failed', utterance: utterance.id, seq: utterance.seq, error, message });
-    };
-    const pipeline = (async () => {
-      // Silence et bruit sont écartés localement : aucun appel, aucun quota.
-      if (!hasSpeech(pcm)) throw Object.assign(new Error('no speech'), { code: 'no-speech' });
-      // Seul l'appel réellement envoyé au fournisseur consomme le quota (#39).
-      const calls = room.voiceCalls.get(utterance.session) ?? [];
-      calls.push(Date.now());
-      room.voiceCalls.set(utterance.session, calls);
-      const result = await voiceService.translate(pcm, { source: utterance.source, target: utterance.target, signal: controller.signal });
-      const rejected = voiceResultError(result, utterance.source, utterance.target);
-      if (rejected) throw Object.assign(new Error(rejected), { code: rejected });
-      return result;
-    })();
-    let expire;
-    const expired = new Promise((_, reject) => {
-      expire = setTimeout(() => {
-        controller.abort();
-        reject(Object.assign(new Error('timeout'), { code: 'timeout' }));
-      }, timing.processMs);
-    });
-    Promise.race([pipeline, expired]).then(result => {
-      // L'audio est effacé à l'état terminal. Une réponse arrivée après la
-      // libération de la prise est ignorée, son buffer déjà réduit à zéro.
-      clearTimeout(expire);
-      pcm.fill(0);
-      if (room.utterance !== utterance) return;
-      releaseUtterance(room, utterance, `completed ${audioMs}ms`);
-      voiceSend(utterance.ws, { state: 'understood', utterance: utterance.id, seq: utterance.seq,
-        text: result.text });
-      const resultMessage = JSON.stringify({ type: 'voice', state: 'result',
-        utterance: utterance.id, seq: utterance.seq, speaker: utterance.speaker, text: result.translation });
-      for (const client of room.clients) {
-        if (client.readyState === WebSocket.OPEN) client.send(resultMessage);
+    if (!utterance.live) return failUtterance(room, utterance, 'no-speech');
+    utterance.live.flush();
+    utterance.stoppedAt = Date.now();
+    utterance.timer = setTimeout(() => failUtterance(room, utterance, 'timeout'), timing.processMs);
+    utterance.idlePoll = setInterval(() => {
+      if (Date.now() - Math.max(utterance.stoppedAt, utterance.lastOutput) >= timing.idleMs) {
+        settleUtterance(room, utterance);
       }
-    }, error => {
-      clearTimeout(expire);
-      pcm.fill(0);
-      if (room.utterance !== utterance) return;
-      fail(error.code ?? 'provider', VOICE_MESSAGES[error.code] ?? 'Traduction indisponible.');
-    });
+    }, Math.max(20, Math.min(100, timing.idleMs / 4)));
+  };
+  // Clôture normale : la traduction accumulée est validée dans le sens figé
+  // (#45) puis partagée à tous ; la transcription reste chez l'orateur. Une
+  // phrase sans traduction exploitable est retirée et comptée comme échec.
+  const HANGUL = /[ᄀ-ᅟ㄰-㆏가-힯]/;
+  const settleUtterance = (room, utterance) => {
+    if (room.utterance !== utterance || utterance.state !== 'processing') return;
+    const { translation, heard, bytes } = utterance;
+    if (!translation || translation.length > VOICE_TEXT_MAX ||
+      (heard && heard.length > VOICE_TEXT_MAX)) {
+      return failUtterance(room, utterance, 'invalid-response');
+    }
+    if (HANGUL.test(translation) !== (utterance.target === 'ko') ||
+      (heard && HANGUL.test(heard) !== (utterance.source === 'ko'))) {
+      return failUtterance(room, utterance, 'inconsistent');
+    }
+    utterance.resultSent = true;
+    releaseUtterance(room, utterance, `completed ${Math.round(bytes / 32)}ms`);
+    if (heard) voiceSend(utterance.ws, { state: 'understood', utterance: utterance.id, seq: utterance.seq, text: heard });
+    broadcastVoice(room, { state: 'result', utterance: utterance.id, seq: utterance.seq,
+      speaker: utterance.speaker, text: translation });
   };
 
   const create = ({ movieId, duration, code, probe, voice }) => {

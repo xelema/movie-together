@@ -6,17 +6,35 @@ import path from 'node:path';
 import { WebSocket } from 'ws';
 import { createApplication } from '../src/app.js';
 
-// Fake translation provider: one call per prise returns the source transcript
-// and the final translation together (#44). `nextTranslate` steers the answer,
-// calls are counted in `translated` with the frozen direction they received.
+// Fake Live Translate provider: openSession returns a controllable session.
+// `nextResult` steers what flush() emits (heard = source transcription, text =
+// translation); `nextOpen` steers the session itself. Sessions record sent
+// frames, flushes and closes so tests see the real upstream lifecycle.
+// Une session qui continue d'émettre après le flush : le repos idleMs ne
+// vient jamais, c'est le plafond de traitement qui referme.
+const dripSession = options => ({ options, sent: [], flushed: 0, closed: false,
+  onText: null, onSource: null, onEnd: null, drip: null,
+  send(pcm) { this.sent.push(pcm); },
+  flush() { this.flushed++; this.drip = setInterval(() => this.onText?.('…'), 20); },
+  close() { this.closed = true; clearInterval(this.drip); } });
+
 const fakeService = () => {
-  const service = { translated: [] };
-  service.translate = async (pcm, options) => {
-    service.translated.push({ bytes: pcm.length, pcm, ...options });
-    if (service.nextTranslate) return service.nextTranslate();
-    return options.source === 'ko'
-      ? { text: '엔딩에서 만나요.', translation: 'On se retrouve au générique.' }
-      : { text: 'Bonjour le film.', translation: '영화 안녕하세요.' };
+  const service = { sessions: [] };
+  service.openSession = options => {
+    if (service.nextOpen) return service.nextOpen(options);
+    const session = { options, sent: [], flushed: 0, closed: false,
+      onText: null, onSource: null, onEnd: null,
+      send(pcm) { this.sent.push(pcm); },
+      flush() {
+        this.flushed++;
+        const result = service.nextResult === undefined ? (options.source === 'ko'
+          ? { heard: '엔딩에서 만나요.', text: 'On se retrouve au générique.' }
+          : { heard: 'Bonjour le film.', text: '영화 안녕하세요.' }) : service.nextResult;
+        if (result) queueMicrotask(() => { session.onSource?.(result.heard); session.onText?.(result.text); });
+      },
+      close() { this.closed = true; } };
+    service.sessions.push(session);
+    return session;
   };
   return service;
 };
@@ -46,7 +64,7 @@ async function boot(t, { service = fakeService(), timing, patch } = {}) {
   await writeFile(path.join(dataDir, 'movies', movieId, 'movie.json'),
     JSON.stringify({ id: movieId, title: 'Voice Film', status: 'ready', duration: 120 }));
   const instance = createApplication({ dataDir, password: 'test-password-long-enough',
-    origin, env: {}, voiceService: service, voiceTiming: timing });
+    origin, env: {}, voiceService: service, voiceTiming: { idleMs: 80, ...timing } });
   await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${instance.server.address().port}`;
   const sockets = [];
@@ -109,18 +127,37 @@ test('a prise is private to the speaker, exclusive and server-ordered', async t 
   const started = await a.waitFor(m => m.type === 'voice' && m.state === 'started');
   assert.ok(started.utterance);
   assert.equal(started.seq, 1);
-  // The second participant only learns the phrase exists at the final result.
   send(b, 'start', 'ko');
   const refused = await b.waitFor(m => m.type === 'voice' && m.state === 'failed');
   assert.equal(refused.error, 'busy');
   a.socket.send(tone());
+  await a.settle();
+  // La parole attestée a ouvert la session amont avec le sens figé.
+  assert.equal(service.sessions.length, 1);
+  assert.deepEqual(service.sessions[0].options, { source: 'fr', target: 'ko' });
+  // Les partiels de traduction sont partagés à tous, attribués et révisés ;
+  // la transcription source ne quitte que le socket de l'orateur.
+  service.sessions[0].onSource('Bonjour ');
+  service.sessions[0].onText('영화 ');
+  service.nextResult = { heard: 'le film.', text: '안녕하세요.' };
+  const [aPartial, bPartial] = await Promise.all([
+    a.waitFor(m => m.state === 'partial'),
+    b.waitFor(m => m.state === 'partial'),
+  ]);
+  for (const partial of [aPartial, bPartial]) {
+    assert.equal(partial.utterance, started.utterance);
+    assert.equal(partial.seq, 1);
+    assert.equal(partial.rev, 1);
+    assert.equal(partial.speaker, 'Alex');
+    assert.equal(partial.text, '영화 ');
+  }
+  const heard = await a.waitFor(m => m.state === 'heard');
+  assert.equal(heard.text, 'Bonjour ');
+  assert.equal(voice(b).filter(m => ['heard', 'understood'].includes(m.state)).length, 0);
   send(a, 'stop');
   const understood = await a.waitFor(m => m.type === 'voice' && m.state === 'understood');
   assert.equal(understood.text, 'Bonjour le film.');
   assert.equal(understood.utterance, started.utterance);
-  // Le fournisseur a reçu le sens figé par la langue d'interface d'Alex.
-  assert.equal(service.translated[0].source, 'fr');
-  assert.equal(service.translated[0].target, 'ko');
   const [aResult, bResult] = await Promise.all([
     a.waitFor(m => m.type === 'voice' && m.state === 'result'),
     b.waitFor(m => m.type === 'voice' && m.state === 'result'),
@@ -129,9 +166,11 @@ test('a prise is private to the speaker, exclusive and server-ordered', async t 
   assert.equal(bResult.speaker, 'Alex');
   assert.equal(bResult.utterance, started.utterance);
   assert.equal(bResult.seq, started.seq);
-  // Guests receive no intermediate state and no transcript.
-  assert.equal(voice(b).filter(m => ['started', 'understood', 'failed'].includes(m.state)).length, 1);
-  assert.equal(voice(b)[0].state, 'failed');
+  // L'invité ne voit jamais les états privés : started, failed, heard,
+  // understood. Le seul 'failed' de b est son refus 'busy'.
+  assert.deepEqual(voice(b).filter(m => ['started', 'failed', 'heard', 'understood'].includes(m.state))
+    .map(m => m.error), ['busy']);
+  assert.equal(service.sessions[0].flushed, 1);
   // A second prise gets a fresh identifier and a higher sequence.
   send(a, 'start', 'fr');
   const second = await a.waitFor(m => m.type === 'voice' && m.state === 'started' && m.utterance !== started.utterance);
@@ -143,13 +182,14 @@ test('a prise is private to the speaker, exclusive and server-ordered', async t 
   send(b, 'start', 'ko');
   await b.waitFor(m => m.state === 'started');
   b.socket.send(tone());
+  await b.settle();
+  delete service.nextResult;
+  assert.deepEqual(service.sessions[1].options, { source: 'ko', target: 'fr' });
   send(b, 'stop');
   const understoodKo = await b.waitFor(m => m.state === 'understood');
   assert.equal(understoodKo.text, '엔딩에서 만나요.');
   const koResult = await a.waitFor(m => m.type === 'voice' && m.state === 'result' && m.speaker === 'Minji');
   assert.equal(koResult.text, 'On se retrouve au générique.');
-  assert.equal(service.translated.at(-1).source, 'ko');
-  assert.equal(service.translated.at(-1).target, 'fr');
 });
 
 test('cancel, disconnect and the listening limit always release the room lock', async t => {
@@ -176,13 +216,13 @@ test('cancel, disconnect and the listening limit always release the room lock', 
   // No stop: the 350 ms cap ends the prise by itself and still produces a result.
   const result = await a.waitFor(m => m.type === 'voice' && m.state === 'result');
   assert.equal(result.text, '영화 안녕하세요.');
-  assert.equal(service.translated.length, 1);
+  assert.equal(service.sessions.length, 1);
   send(b, 'start', 'fr');
   const again = await b.waitFor(m => m.type === 'voice' && m.state === 'started');
   assert.ok(again);
 });
 
-test('a cancelled prise frees the lock and never reaches the room', async t => {
+test('a cancelled prise frees the lock, closes upstream and withdraws partials', async t => {
   const { admin, createRoom, join, open, voice, send, service } = await boot(t, { patch: { voiceCooldown: 0 } });
   const room = await createRoom({ code: 'cancel-room', voice: true });
   const guest = await join(room.code);
@@ -191,20 +231,25 @@ test('a cancelled prise frees the lock and never reaches the room', async t => {
   send(a, 'start', 'fr');
   const started = await a.waitFor(m => m.state === 'started');
   a.socket.send(tone());
-  send(a, 'cancel');
-  // The pong settles after the cancel on the same socket: the lock is free.
   await a.settle();
+  service.sessions[0].onText('영화 ');
+  await b.waitFor(m => m.state === 'partial');
+  send(a, 'cancel');
+  // The pong settles after the cancel on the same socket: the lock is free,
+  // the upstream session is closed and the shared partial is withdrawn.
+  await a.settle();
+  const withdrawn = await b.waitFor(m => m.state === 'withdrawn');
+  assert.equal(withdrawn.utterance, started.utterance);
+  assert.equal(service.sessions[0].closed, true);
   send(b, 'start', 'fr');
   const granted = await b.waitFor(m => m.state === 'started');
   assert.notEqual(granted.utterance, started.utterance);
-  // The aborted phrase produced nothing: no result, no failure echo, and the
-  // provider never saw its audio.
-  assert.deepEqual(voice(a).map(m => m.state), ['started']);
-  assert.deepEqual(voice(b).map(m => m.state), ['started']);
-  assert.equal(service.translated.length, 0);
+  // The aborted phrase produced nothing: no result, no failure echo.
+  assert.deepEqual(voice(a).map(m => m.state), ['started', 'partial', 'withdrawn']);
+  assert.equal(voice(b).filter(m => m.state === 'result').length, 0);
 });
 
-test('silence and noise are refused locally before any provider call', async t => {
+test('silence and noise are refused locally before any provider session', async t => {
   const { admin, createRoom, join, open, send, service } = await boot(t, {
     patch: { voiceCooldown: 0, voiceQuota: 2 } });
   const room = await createRoom({ code: 'guard-room', voice: true });
@@ -221,19 +266,18 @@ test('silence and noise are refused locally before any provider call', async t =
   };
   assert.equal((await prise(silence())).error, 'no-speech');
   assert.equal((await prise(noise())).error, 'no-speech');
-  // Neither prise reached the provider nor leaked to the room, so the quota
-  // is intact for real phrases.
-  assert.equal(service.translated.length, 0);
+  // Ni session ni quota consommés, rien n'a fuité vers la séance.
+  assert.equal(service.sessions.length, 0);
   assert.equal(b.messages.filter(m => m.type === 'voice').length, 0);
   // Une phrase courte n'est pas bloquée par le garde-fou (#45) : deux trames
-  // de 30 ms suffisent à déclencher l'appel.
+  // de 30 ms suffisent à ouvrir la session.
   await prise(tone(300, 2), 'result');
-  assert.equal(service.translated.length, 1);
+  assert.equal(service.sessions.length, 1);
   await prise(tone(), 'result');
-  assert.equal(service.translated.length, 2);
+  assert.equal(service.sessions.length, 2);
 });
 
-test('malformed or direction-inconsistent answers fail locally after the call', async t => {
+test('empty or direction-inconsistent output fails locally after the call', async t => {
   const { admin, createRoom, join, open, send, service } = await boot(t, {
     patch: { voiceCooldown: 0, voiceQuota: 20 } });
   const room = await createRoom({ code: 'reject-room', voice: true });
@@ -246,64 +290,44 @@ test('malformed or direction-inconsistent answers fail locally after the call', 
     await a.waitFor(m => m.state === 'started', since);
     a.socket.send(tone());
     send(a, 'stop');
-    return a.waitFor(m => m.state === 'failed' || m.state === 'understood', since);
+    return a.waitFor(m => m.state === 'failed' || m.state === 'result', since);
   };
-  // Champ absent, vide, non textuel ou hors borne : faute fournisseur, jamais
-  // de langue, de cible ni de certitude déclarées à valider.
-  for (const result of [
-    null,
-    { text: 'Bonjour.' },
-    { translation: '안녕.' },
-    { text: '', translation: '안녕.' },
-    { text: 'Bonjour.', translation: '' },
-    { text: 'x'.repeat(2001), translation: '안녕.' },
-    { text: 42, translation: '안녕.' },
-  ]) {
-    service.nextTranslate = () => result;
-    const failed = await prise();
-    assert.equal(failed.state, 'failed', JSON.stringify(result));
-    assert.equal(failed.error, 'invalid-response', JSON.stringify(result));
-  }
+  // Aucune traduction produite : faute fournisseur, rien n'est diffusé.
+  service.nextResult = null;
+  const empty = await prise();
+  assert.equal(empty.error, 'invalid-response');
   // Sens figé fr -> ko : une traduction sans Hangul ou une transcription en
   // Hangul contredit le sens choisi (#45), sans prétendre lire le français.
   for (const result of [
-    { text: 'Bonjour.', translation: 'Bonjour.' },
-    { text: '안녕하세요.', translation: '안녕.' },
+    { heard: 'Bonjour.', text: 'Bonjour.' },
+    { heard: '안녕하세요.', text: '안녕.' },
   ]) {
-    service.nextTranslate = () => result;
+    service.nextResult = result;
     const failed = await prise();
-    assert.equal(failed.state, 'failed', JSON.stringify(result));
     assert.equal(failed.error, 'inconsistent', JSON.stringify(result));
   }
   // Sens inverse ko -> fr : le même contrôle de script dans l'autre sens.
   for (const result of [
-    { text: 'Bonjour.', translation: 'On se retrouve.' },
-    { text: '안녕.', translation: '안녕하세요.' },
+    { heard: 'Bonjour.', text: 'On se retrouve.' },
+    { heard: '안녕.', text: '안녕하세요.' },
   ]) {
-    service.nextTranslate = () => result;
+    service.nextResult = result;
     const failed = await prise('ko');
-    assert.equal(failed.state, 'failed', JSON.stringify(result));
     assert.equal(failed.error, 'inconsistent', JSON.stringify(result));
   }
-  // Every call actually sent consumed quota (#45). Nothing reached the room.
-  assert.equal(service.translated.length, 11);
-  assert.equal(b.messages.filter(m => m.type === 'voice').length, 0);
-  // Une réponse cohérente dans le sens figé passe : transcription coréenne à
-  // l'orateur, traduction française à tous.
-  delete service.nextTranslate;
-  const last = a.messages.length;
-  send(a, 'start', 'ko');
-  await a.waitFor(m => m.state === 'started', last);
-  a.socket.send(tone());
-  send(a, 'stop');
-  const understood = await a.waitFor(m => m.state === 'understood', last);
-  assert.equal(understood.text, '엔딩에서 만나요.');
-  await b.waitFor(m => m.type === 'voice' && m.state === 'result' && m.text === 'On se retrouve au générique.');
+  // Chaque session ouverte a consommé le quota (#45). L'invité n'a vu que
+  // les partiels retirés ensuite : jamais d'état privé ni de résultat.
+  assert.equal(service.sessions.length, 5);
+  assert.equal(b.messages.filter(m => m.type === 'voice' && !['partial', 'withdrawn'].includes(m.state)).length, 0);
+  // Une réponse cohérente dans le sens figé passe.
+  delete service.nextResult;
+  const ok = await prise();
+  assert.equal(ok.state, 'result');
 });
 
-test('provider failures are local and release the lock for the next prise', async t => {
+test('provider failures are local, close upstream and release the lock', async t => {
   const { admin, createRoom, join, open, send, service } = await boot(t, {
-    timing: { processMs: 120 }, patch: { voiceCooldown: 0, voiceQuota: 10 } });
+    timing: { processMs: 150 }, patch: { voiceCooldown: 0, voiceQuota: 10 } });
   const room = await createRoom({ code: 'fail-room', voice: true });
   const guest = await join(room.code);
   const a = await open(room.id, admin, 'Alex');
@@ -312,32 +336,35 @@ test('provider failures are local and release the lock for the next prise', asyn
     send(a, 'start', 'fr');
     await a.waitFor(m => m.state === 'started');
     a.socket.send(tone());
+    await a.settle();
     send(a, 'stop');
   };
-  service.nextTranslate = () => { throw new Error('provider down'); };
+  // Panne amont pendant l'écoute : échec local, session refermée.
   await prise();
+  service.sessions[0].onEnd(new Error('provider down'));
   const down = await a.waitFor(m => m.state === 'failed');
   assert.equal(down.error, 'provider');
-  service.nextTranslate = () => ({ text: 42 });
+  assert.equal(service.sessions[0].closed, true);
+  // Panne pendant le traitement, après des partiels : retirés chez tous.
   await prise();
-  const malformed = await a.waitFor(m => m.state === 'failed' && m.error === 'invalid-response');
-  assert.ok(malformed);
-  service.nextTranslate = () => new Promise(resolve => setTimeout(() => resolve({ text: 'tard', translation: 'tard' }), 500));
+  service.sessions[1].onText('영화 ');
+  await b.waitFor(m => m.state === 'partial');
+  service.sessions[1].onEnd(new Error('provider down'));
+  const downAgain = await a.waitFor(m => m.state === 'failed' && m.seq === 2);
+  assert.equal(downAgain.error, 'provider');
+  await b.waitFor(m => m.state === 'withdrawn' && m.seq === 2);
+  // Le plafond de traitement referme la session amont elle-même (#46) : le
+  // fournisseur continue d'émettre, le repos idle ne vient jamais.
+  service.nextOpen = options => { const s = dripSession(options); service.sessions.push(s); return s; };
   await prise();
   const late = await a.waitFor(m => m.state === 'failed' && m.error === 'timeout');
   assert.ok(late);
-  // The cap aborts the provider call itself, not only the local race (#46):
-  // the signal the prise was sent with is already aborted, the call still
-  // consumed quota, and a late answer is dropped without reaching the room.
-  assert.equal(service.translated[2].signal.aborted, true);
-  delete service.nextTranslate;
+  assert.equal(service.sessions[2].closed, true);
+  // La séance repart : une prise saine produit son résultat partagé.
+  delete service.nextOpen;
   await prise();
-  const [fresh, shared] = await Promise.all([
-    a.waitFor(m => m.state === 'result'),
-    b.waitFor(m => m.type === 'voice' && m.state === 'result'),
-  ]);
+  const shared = await b.waitFor(m => m.type === 'voice' && m.state === 'result');
   assert.equal(shared.text, '영화 안녕하세요.');
-  assert.equal(b.messages.filter(m => m.type === 'voice' && m.state === 'result').length, 1);
 });
 
 test('quota and cooldown gate new prises per participant', async t => {
@@ -352,7 +379,7 @@ test('quota and cooldown gate new prises per participant', async t => {
   a.socket.send(tone());
   send(a, 'stop');
   await a.waitFor(m => m.state === 'result');
-  assert.equal(service.translated.length, 1);
+  assert.equal(service.sessions.length, 1);
   // The cooldown follows every release, before quota is even checked.
   send(a, 'start', 'fr');
   const cooled = await a.waitFor(m => m.state === 'failed');
@@ -365,6 +392,11 @@ test('quota and cooldown gate new prises per participant', async t => {
   // The quota belongs to the participant: the other member can still speak.
   send(b, 'start', 'ko');
   await b.waitFor(m => m.state === 'started');
+  // Une prise sans parole ne consomme pas le quota restant.
+  b.socket.send(silence());
+  send(b, 'stop');
+  await b.waitFor(m => m.state === 'failed' && m.error === 'no-speech');
+  assert.equal(service.sessions.length, 1);
 });
 
 test('malformed voice input is refused at the boundary', async t => {
@@ -394,7 +426,6 @@ test('malformed voice input is refused at the boundary', async t => {
   a.socket.send(Buffer.alloc(500));
   const invalid = await a.waitFor(m => m.state === 'failed', since);
   assert.equal(invalid.error, 'invalid');
-  send(a, 'stop');
   send(a, 'start', 'fr');
   await a.waitFor(m => m.state === 'started' && m.utterance !== undefined, a.messages.length);
   assert.ok(true);
@@ -460,47 +491,55 @@ test('voice logs stay metadata-only: pseudonymized room, no code or names', asyn
   }
 });
 
-test('audio buffers are zeroed on terminal states, including late results', async t => {
+test('audio buffers are zeroed and upstream closed on terminal states', async t => {
   const { admin, createRoom, join, open, send, service, hub } = await boot(t, {
-    timing: { processMs: 120 }, patch: { voiceCooldown: 0 } });
+    timing: { processMs: 150 }, patch: { voiceCooldown: 0 } });
   const room = await createRoom({ code: 'wipe-room', voice: true });
   const guest = await join(room.code);
   const a = await open(room.id, admin, 'Alex');
   const b = await open(room.id, guest, 'Minji');
   // Le pong confirme la trame rangée : les buffers d'origine sont observables
-  // par référence avant que la prise ne passe en traitement.
+  // par référence avant que la session ne s'ouvre.
   const prise = async () => {
     send(a, 'start', 'fr');
     await a.waitFor(m => m.state === 'started');
     a.socket.send(tone());
     await a.settle();
-    const chunks = [...(hub.get(room.id).utterance?.chunks ?? [])];
     send(a, 'stop');
-    return chunks;
   };
-  const first = await prise();
+  await prise();
   await a.waitFor(m => m.state === 'result');
-  assert.ok(service.translated[0].pcm.every(byte => byte === 0));
-  // Les trames reçues sont elles-mêmes réduites à zéro dès la concaténation.
-  assert.ok(first.length > 0);
-  assert.ok(first.every(chunk => chunk.every(byte => byte === 0)));
-  // A provider answer past the processing cap finds an already-zeroed buffer
-  // and its result is dropped, never broadcast.
-  service.nextTranslate = () => new Promise(resolve => setTimeout(() => resolve({ text: 'tard', translation: 'tard' }), 400));
-  const late = await prise();
+  // Les trames envoyées au fournisseur sont elles-mêmes réduites à zéro.
+  assert.ok(service.sessions[0].sent.length > 0);
+  assert.ok(service.sessions[0].sent.every(chunk => chunk.every(byte => byte === 0)));
+  assert.equal(service.sessions[0].closed, true);
+  // Une prise refusée localement garde ses trames côté serveur : elles sont
+  // observables par référence puis effacées à la libération.
+  send(a, 'start', 'fr');
+  await a.waitFor(m => m.state === 'started');
+  a.socket.send(silence());
+  await a.settle();
+  const buffered = [...(hub.get(room.id).utterance?.chunks ?? [])];
+  send(a, 'stop');
+  await a.waitFor(m => m.state === 'failed' && m.error === 'no-speech');
+  assert.ok(buffered.length > 0);
+  assert.ok(buffered.every(chunk => chunk.every(byte => byte === 0)));
+  // Le plafond de traitement referme la session amont et efface l'audio.
+  service.nextOpen = options => { const s = dripSession(options); service.sessions.push(s); return s; };
+  await prise();
+  delete service.nextOpen;
   await a.waitFor(m => m.state === 'failed' && m.error === 'timeout');
-  assert.ok(service.translated[1].pcm.every(byte => byte === 0));
-  assert.ok(late.every(chunk => chunk.every(byte => byte === 0)));
-  assert.equal(service.translated[1].signal.aborted, true);
-  // Une prise libérée pendant le traitement perd aussi sa copie concaténée.
-  const third = await prise();
+  assert.equal(service.sessions[1].closed, true);
+  assert.ok(service.sessions[1].sent.every(chunk => chunk.every(byte => byte === 0)));
+  // Une déconnexion pendant l'écoute referme la session encore ouverte (#46).
+  send(a, 'start', 'fr');
+  await a.waitFor(m => m.state === 'started');
+  a.socket.send(tone());
+  await a.settle();
   const since = b.messages.length;
   a.socket.close();
   await b.waitFor(m => m.type === 'state' && m.members.length === 1, since);
-  assert.ok(service.translated[2].pcm.every(byte => byte === 0));
-  assert.ok(third.every(chunk => chunk.every(byte => byte === 0)));
-  // A disconnect during processing aborts the call still in flight (#46).
-  assert.equal(service.translated[2].signal.aborted, true);
+  assert.equal(service.sessions[2].closed, true);
 });
 
 test('binary traffic is bounded per socket while healthy frames and JSON flow', async t => {
@@ -516,7 +555,7 @@ test('binary traffic is bounded per socket while healthy frames and JSON flow', 
   for (let i = 0; i < 60; i++) a.socket.send(tone(300, 1));
   send(a, 'stop');
   await a.waitFor(m => m.state === 'result');
-  assert.equal(service.translated.length, 1);
+  assert.equal(service.sessions.length, 1);
   // Un JSON invalide reste une erreur locale sans fermer le socket.
   a.socket.send('not json');
   await a.waitFor(m => m.type === 'error');
