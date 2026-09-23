@@ -33,8 +33,8 @@ test('one generateContent request carries the audio and the output contract', as
   assert.equal(body.contents.length, 1);
   const audio = body.contents[0].parts.find(part => part.inlineData);
   assert.equal(audio.inlineData.mimeType, 'audio/wav');
-  // Le PCM nu n'a pas de type accepte : il part dans un conteneur WAV s16 mono
-  // 16 kHz dont la charge utile reste identique, octet pour octet.
+  // Le conteneur WAV déclare le PCM s16 mono 16 kHz et conserve la charge
+  // utile identique, octet pour octet.
   const wav = Buffer.from(audio.inlineData.data, 'base64');
   assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
   assert.equal(wav.readUInt32LE(4), 36 + pcm.length);

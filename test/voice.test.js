@@ -240,6 +240,7 @@ test('uncertain, unsupported or contradictory language is rejected after the pro
     { language: 'fr', text: 'Bonjour.', target: 'fr', translation: 'Bonjour.', confidence: 0.9 },
     { language: 'ko', text: '안녕하세요.', target: 'ko', translation: 'Bonjour.', confidence: 0.9 },
     { language: 'fr', text: 'Bonjour.', target: 'ko', translation: '안녕.', confidence: 0.2 },
+    { language: 'fr', text: 'Bonjour.', target: 'ko', translation: '안녕.', confidence: 1.2 },
   ]) {
     service.nextTranslate = () => result;
     const failed = await prise();
@@ -252,7 +253,7 @@ test('uncertain, unsupported or contradictory language is rejected after the pro
   assert.equal(malformed.state, 'failed');
   assert.equal(malformed.error, 'invalid-response');
   // Every call actually sent consumed quota (#45); nothing reached the room.
-  assert.equal(service.translated.length, 8);
+  assert.equal(service.translated.length, 9);
   assert.equal(b.messages.filter(m => m.type === 'voice').length, 0);
   // Une réponse coréenne cohérente passe : transcription à l'orateur,
   // traduction française à tous.

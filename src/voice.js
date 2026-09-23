@@ -17,8 +17,8 @@ const promptFor = pair =>
   '"confidence", your certainty in the detected language between 0 and 1. ' +
   `If the utterance is in neither language, translate into ${NAMES[pair[0]] ?? pair[0]}. No commentary.`;
 
-// Gemini n'accepte pas le PCM nu en inlineData : les trames s16 mono 16 kHz
-// partent dans un conteneur WAV minimal, charge utile copiée telle quelle.
+// Le conteneur WAV déclare le format des trames s16 mono 16 kHz sans dépendre
+// des paramètres MIME du PCM brut. La charge utile est copiée telle quelle.
 const wavFor = pcm => {
   const header = Buffer.alloc(44);
   header.write('RIFF');
