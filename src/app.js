@@ -462,5 +462,5 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     await hub.close();
     await new Promise(resolve => server.close(resolve));
   };
-  return { app, server, store, close };
+  return { app, server, store, hub, close };
 }

@@ -1,7 +1,8 @@
 // Fournisseur Gemini (#44) : un seul appel generateContent par prise renvoie
-// langue source, transcription et traduction en JSON structuré. La clé et le
-// choix du modèle restent côté serveur ; sans clé configurée le service est
-// absent et la capacité annonce indisponible, jamais simulée.
+// langue source, transcription, langue cible, traduction et certitude en JSON
+// structuré. La clé et le choix du modèle restent côté serveur ; sans clé
+// configurée le service est absent et la capacité annonce indisponible,
+// jamais simulée.
 const MODEL = 'gemini-3.1-flash-lite';
 const ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 const NAMES = { fr: 'French', ko: 'Korean' };
@@ -11,8 +12,29 @@ const promptFor = pair =>
   'Detect the language actually spoken and answer with the JSON fields only: ' +
   '"language", the ISO 639-1 code of the utterance (it may be neither language of the pair); ' +
   '"text", the exact transcription in that language; ' +
-  `"translation", the translation into the other language of the pair (${pair[0]} -> ${pair[1]} or ${pair[1]} -> ${pair[0]}). ` +
+  `"target", the ISO 639-1 code of the language translated into (one of the pair: ${pair[0]} or ${pair[1]}); ` +
+  '"translation", the translation into the target language; ' +
+  '"confidence", your certainty in the detected language between 0 and 1. ' +
   `If the utterance is in neither language, translate into ${NAMES[pair[0]] ?? pair[0]}. No commentary.`;
+
+// Gemini n'accepte pas le PCM nu en inlineData : les trames s16 mono 16 kHz
+// partent dans un conteneur WAV minimal, charge utile copiée telle quelle.
+const wavFor = pcm => {
+  const header = Buffer.alloc(44);
+  header.write('RIFF');
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVEfmt ', 8);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(16000, 24);
+  header.writeUInt32LE(32000, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+};
 
 export function createVoiceService({ env = process.env, fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
   const apiKey = env.GEMINI_API_KEY || env.GOOGLE_API_KEY;
@@ -26,7 +48,7 @@ export function createVoiceService({ env = process.env, fetchImpl = fetch, timeo
         headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({
           contents: [{ parts: [
-            { inlineData: { mimeType: 'audio/L16;codec=pcm;rate=16000', data: pcm.toString('base64') } },
+            { inlineData: { mimeType: 'audio/wav', data: wavFor(pcm).toString('base64') } },
             { text: promptFor(pair) },
           ] }],
           generationConfig: {
@@ -36,10 +58,12 @@ export function createVoiceService({ env = process.env, fetchImpl = fetch, timeo
               properties: {
                 language: { type: 'STRING', description: 'ISO 639-1 code of the spoken language' },
                 text: { type: 'STRING', description: 'Transcription in the source language' },
-                translation: { type: 'STRING', description: 'Translation into the other language of the pair' },
+                target: { type: 'STRING', description: 'ISO 639-1 code of the language translated into' },
+                translation: { type: 'STRING', description: 'Translation into the target language' },
+                confidence: { type: 'NUMBER', description: 'Certainty in the detected language, 0 to 1' },
               },
-              required: ['language', 'text', 'translation'],
-              propertyOrdering: ['language', 'text', 'translation'],
+              required: ['language', 'text', 'target', 'translation', 'confidence'],
+              propertyOrdering: ['language', 'text', 'target', 'translation', 'confidence'],
             },
           },
         }),

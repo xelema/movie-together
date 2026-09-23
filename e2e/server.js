@@ -21,7 +21,7 @@ const voiceService = {
   // la réponse arriverait avant que le navigateur n'affiche la transition.
   translate: async () => {
     await new Promise(resolve => setTimeout(resolve, 250));
-    return { language: 'fr', text: 'On se retrouve au générique.', translation: '엔딩 크레딧에서 만나요.' };
+    return { language: 'fr', text: 'On se retrouve au générique.', target: 'ko', translation: '엔딩 크레딧에서 만나요.', confidence: 0.9 };
   },
 };
 const instance = createApplication({ dataDir, origin: 'http://localhost:3100', password: 'browser-test-password', voiceService });
