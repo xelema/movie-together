@@ -59,14 +59,16 @@ export function createVoiceService({ env = process.env, connect } = {}) {
       };
       ws.on('open', () => ws.send(JSON.stringify({ setup: {
         model: `models/${model}`,
-        // La traduction se déclare dans generationConfig sur ce modèle, pas au
-        // niveau de la session (exemple WebSocket officiel).
+        // Nids mélangés, mesurés sur la vraie poignée de main (sans audio) :
+        // la traduction va dans generationConfig, les transcriptions au
+        // niveau setup. generationConfig.inputAudioTranscription et
+        // setup.translationConfig sont tous deux refusés en 1007.
         generationConfig: {
           responseModalities: ['AUDIO'],
-          inputAudioTranscription: {},
-          outputAudioTranscription: {},
           translationConfig: { targetLanguageCode: target, echoTargetLanguage: false },
         },
+        inputAudioTranscription: {},
+        outputAudioTranscription: {},
         systemInstruction: { parts: [{ text: PROMPTS[target] ?? PROMPTS.ko }] },
       } })));
       ws.on('message', data => {

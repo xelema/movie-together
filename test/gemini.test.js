@@ -45,15 +45,15 @@ test('opening a session sends the Live Translate setup once connected', () => {
   assert.equal(socket.sent.length, 1);
   const setup = socket.sent[0].setup;
   assert.equal(setup.model, 'models/gemini-3.5-live-translate-preview');
-  // Transcriptions et sens se déclarent dans generationConfig (exemple
-  // WebSocket officiel), jamais au niveau de la session.
+  // Forme mesurée sur la vraie poignée de main (sans audio) : la traduction
+  // niche dans generationConfig, les transcriptions au niveau setup. Les
+  // deux autres placements sont refusés en 1007 champ inconnu.
   assert.deepEqual(setup.generationConfig, {
     responseModalities: ['AUDIO'],
-    inputAudioTranscription: {},
-    outputAudioTranscription: {},
     translationConfig: { targetLanguageCode: 'ko', echoTargetLanguage: false },
   });
-  assert.equal(setup.inputAudioTranscription, undefined);
+  assert.deepEqual(setup.inputAudioTranscription, {});
+  assert.deepEqual(setup.outputAudioTranscription, {});
   assert.equal(setup.translationConfig, undefined);
   // Consigne sobre : registre familier et fidélité, jamais le contexte du film.
   const prompt = setup.systemInstruction.parts[0].text;
