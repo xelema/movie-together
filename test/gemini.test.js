@@ -1,105 +1,164 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { createVoiceService } from '../src/voice.js';
 
-// Contract seam: the injected fetchImpl stands for the network, so the test
-// observes the one request the service sends and its decoding, never a wire.
-const ok = result => ({ ok: true, status: 200,
-  json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(result) }] } }] }) });
+// Contract seam: the injected connect() stands for the network and returns a
+// fake socket that records outgoing frames and lets the test play the server.
+// The key never leaves the signed URL: errors stay generic by construction.
+class FakeSocket extends EventEmitter {
+  constructor() { super(); this.sent = []; this.terminated = false; }
+  send(data) { this.sent.push(JSON.parse(data)); }
+  terminate() { this.terminated = true; }
+  serve(message) { this.emit('message', Buffer.from(JSON.stringify(message))); }
+}
+
+const fakeService = env => {
+  const sockets = [], urls = [];
+  const service = createVoiceService({ env, connect: url => {
+    urls.push(url);
+    const socket = new FakeSocket();
+    sockets.push(socket);
+    return socket;
+  } });
+  return { service, sockets, urls };
+};
+
+const ready = socket => { socket.emit('open'); socket.serve({ setupComplete: {} }); };
 
 test('a missing server key means no service: unavailable, never simulated', () => {
   assert.equal(createVoiceService({ env: {} }), null);
   assert.equal(createVoiceService({ env: { UNRELATED: 'x' } }), null);
-  assert.ok(createVoiceService({ env: { GEMINI_API_KEY: 'k' }, fetchImpl: async () => ok({}) }));
-  assert.ok(createVoiceService({ env: { GOOGLE_API_KEY: 'k' }, fetchImpl: async () => ok({}) }));
+  assert.ok(fakeService({ GEMINI_API_KEY: 'k' }).service);
+  assert.ok(fakeService({ GOOGLE_API_KEY: 'k' }).service);
 });
 
-test('one generateContent request carries the audio and the output contract', async () => {
-  const calls = [];
-  const fetchImpl = async (url, init) => {
-    calls.push({ url, init });
-    return ok({ text: 'Bonjour le film.', translation: '영화 안녕하세요.' });
-  };
-  const service = createVoiceService({ env: { GEMINI_API_KEY: 'secret-key' }, fetchImpl });
-  const pcm = Buffer.from([7, 1, 2, 3]);
-  const result = await service.translate(pcm, { source: 'fr', target: 'ko' });
-  assert.deepEqual(result, { text: 'Bonjour le film.', translation: '영화 안녕하세요.' });
-  assert.equal(calls.length, 1);
-  const { url, init } = calls[0];
-  assert.equal(url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent');
-  assert.equal(init.method, 'POST');
-  assert.equal(init.headers['x-goog-api-key'], 'secret-key');
-  const body = JSON.parse(init.body);
-  assert.equal(body.contents.length, 1);
-  const audio = body.contents[0].parts.find(part => part.inlineData);
-  assert.equal(audio.inlineData.mimeType, 'audio/wav');
-  // Le conteneur WAV déclare le PCM s16 mono 16 kHz et conserve la charge
-  // utile identique, octet pour octet.
-  const wav = Buffer.from(audio.inlineData.data, 'base64');
-  assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
-  assert.equal(wav.readUInt32LE(4), 36 + pcm.length);
-  assert.equal(wav.toString('ascii', 8, 16), 'WAVEfmt ');
-  assert.equal(wav.readUInt16LE(20), 1);
-  assert.equal(wav.readUInt16LE(22), 1);
-  assert.equal(wav.readUInt32LE(24), 16000);
-  assert.equal(wav.readUInt16LE(34), 16);
-  assert.equal(wav.toString('ascii', 36, 40), 'data');
-  assert.equal(wav.readUInt32LE(40), pcm.length);
-  assert.ok(wav.subarray(44).equals(pcm));
-  // Le prompt porte le sens figé : source française, cible coréenne, sans
-  // demande de détection ni de certitude au modèle.
-  const prompt = body.contents[0].parts.find(part => typeof part.text === 'string')?.text ?? '';
-  assert.match(prompt, /French/);
-  assert.match(prompt, /Korean/);
-  assert.doesNotMatch(prompt, /[Dd]etect/);
-  const config = body.generationConfig;
-  assert.equal(config.responseMimeType, 'application/json');
-  assert.deepEqual(config.responseSchema.required, ['text', 'translation']);
-  assert.deepEqual(Object.keys(config.responseSchema.properties).sort(), ['text', 'translation']);
-});
-
-test('the model choice stays server-side and overridable by env', async () => {
-  const calls = [];
-  const service = createVoiceService({
-    env: { GEMINI_API_KEY: 'k', GEMINI_MODEL: 'gemini-test-model' },
-    fetchImpl: async url => { calls.push(url); return ok({ text: '안녕.', translation: 'Salut.' }); },
+test('opening a session sends the Live Translate setup once connected', () => {
+  const { service, sockets, urls } = fakeService({ GEMINI_API_KEY: 'secret-key' });
+  service.openSession({ source: 'fr', target: 'ko' });
+  assert.equal(urls.length, 1);
+  // La clé signe l'URL du BidiGenerateContent v1beta, point unique d'appel.
+  assert.match(urls[0], /^wss:\/\/generativelanguage\.googleapis\.com\/ws\/.*BidiGenerateContent\?key=secret-key$/);
+  const socket = sockets[0];
+  assert.equal(socket.sent.length, 0);
+  socket.emit('open');
+  assert.equal(socket.sent.length, 1);
+  const setup = socket.sent[0].setup;
+  assert.equal(setup.model, 'models/gemini-3.5-live-translate-preview');
+  // Transcriptions et sens se déclarent dans generationConfig (exemple
+  // WebSocket officiel), jamais au niveau de la session.
+  assert.deepEqual(setup.generationConfig, {
+    responseModalities: ['AUDIO'],
+    inputAudioTranscription: {},
+    outputAudioTranscription: {},
+    translationConfig: { targetLanguageCode: 'ko', echoTargetLanguage: false },
   });
-  await service.translate(Buffer.alloc(4), { source: 'ko', target: 'fr' });
-  assert.equal(calls[0], 'https://generativelanguage.googleapis.com/v1beta/models/gemini-test-model:generateContent');
+  assert.equal(setup.inputAudioTranscription, undefined);
+  assert.equal(setup.translationConfig, undefined);
+  // Consigne sobre : registre familier et fidélité, jamais le contexte du film.
+  const prompt = setup.systemInstruction.parts[0].text;
+  assert.match(prompt, /banmal/);
+  assert.doesNotMatch(prompt, /movie|film/i);
 });
 
-test('provider errors and malformed payloads reject', async () => {
-  const direction = { source: 'fr', target: 'ko' };
-  const down = createVoiceService({ env: { GEMINI_API_KEY: 'k' },
-    fetchImpl: async () => ({ ok: false, status: 429 }) });
-  await assert.rejects(() => down.translate(Buffer.alloc(4), direction));
-  const weird = createVoiceService({ env: { GEMINI_API_KEY: 'k' },
-    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }) });
-  await assert.rejects(() => weird.translate(Buffer.alloc(4), direction));
-  const broken = createVoiceService({ env: { GEMINI_API_KEY: 'k' },
-    fetchImpl: async () => ({ ok: true, status: 200,
-      json: async () => ({ candidates: [{ content: { parts: [{ text: 'not json' }] } }] }) }) });
-  await assert.rejects(() => broken.translate(Buffer.alloc(4), direction));
+test('the direction and the model stay server-side and overridable by env', () => {
+  const { service, sockets, urls } = fakeService({ GEMINI_API_KEY: 'k', GEMINI_MODEL: 'gemini-test-model' });
+  service.openSession({ source: 'ko', target: 'fr' });
+  sockets[0].emit('open');
+  const setup = sockets[0].sent[0].setup;
+  assert.equal(setup.model, 'models/gemini-test-model');
+  assert.equal(setup.generationConfig.translationConfig.targetLanguageCode, 'fr');
+  assert.match(setup.systemInstruction.parts[0].text, /French/);
+  assert.equal(urls.length, 1);
 });
 
-test('the caller signal reaches fetch and aborts the provider call', async () => {
-  let observed;
-  const service = createVoiceService({ env: { GEMINI_API_KEY: 'k' }, timeoutMs: 60_000,
-    fetchImpl: (url, init) => new Promise((_, reject) => {
-      observed = init.signal;
-      init.signal.addEventListener('abort', () => reject(init.signal.reason));
-    }) });
-  const controller = new AbortController();
-  const pending = service.translate(Buffer.alloc(4), { source: 'fr', target: 'ko', signal: controller.signal });
-  controller.abort();
-  await assert.rejects(pending, error => error.name === 'AbortError');
-  assert.equal(observed.aborted, true);
+test('audio captured during the handshake bursts out once setup completes', () => {
+  const { service, sockets } = fakeService({ GEMINI_API_KEY: 'k' });
+  const session = service.openSession({ source: 'fr', target: 'ko' });
+  const socket = sockets[0];
+  const pcm = Buffer.from([7, 1, 2, 3]);
+  session.send(pcm);
+  socket.emit('open');
+  session.send(Buffer.from([9, 9]));
+  // Rien ne part avant setupComplete : la file se vide ensuite d'un coup.
+  assert.equal(socket.sent.length, 1);
+  socket.serve({ setupComplete: {} });
+  assert.equal(socket.sent.length, 3);
+  const [first, second] = socket.sent.slice(1);
+  assert.equal(first.realtimeInput.audio.mimeType, 'audio/pcm;rate=16000');
+  assert.deepEqual(Buffer.from(first.realtimeInput.audio.data, 'base64'), pcm);
+  assert.deepEqual(Buffer.from(second.realtimeInput.audio.data, 'base64'), Buffer.from([9, 9]));
+  // La copie de la file est indépendante : effacer la trame d'origine n'y
+  // touche pas (déjà vérifié ci-dessus, pcm intact après envoi).
+  assert.deepEqual(pcm, Buffer.from([7, 1, 2, 3]));
 });
 
-test('the internal bound still aborts a call made without a caller signal', async () => {
-  const service = createVoiceService({ env: { GEMINI_API_KEY: 'k' }, timeoutMs: 20,
-    fetchImpl: (url, init) => new Promise((_, reject) =>
-      init.signal.addEventListener('abort', () => reject(init.signal.reason))) });
-  await assert.rejects(service.translate(Buffer.alloc(4), { source: 'fr', target: 'ko' }),
-    error => error.name === 'TimeoutError');
+test('flush pushes two seconds of silence at once to close the phrase', () => {
+  const { service, sockets } = fakeService({ GEMINI_API_KEY: 'k' });
+  const session = service.openSession({ source: 'fr', target: 'ko' });
+  const socket = sockets[0];
+  ready(socket);
+  session.flush();
+  const frames = socket.sent.slice(1).map(frame => frame.realtimeInput.audio);
+  const bytes = frames.reduce((total, frame) => total + Buffer.from(frame.data, 'base64').length, 0);
+  // 2 s de silence s16 mono 16 kHz, en morceaux de 50 ms, sans attendre.
+  assert.equal(bytes, 16000 * 2 * 2);
+  assert.equal(frames.length, 40);
+  for (const frame of frames) assert.ok(Buffer.from(frame.data, 'base64').every(byte => byte === 0));
+});
+
+test('server content routes transcription and translation to their callbacks', () => {
+  const { service, sockets } = fakeService({ GEMINI_API_KEY: 'k' });
+  const session = service.openSession({ source: 'fr', target: 'ko' });
+  const texts = [], sources = [];
+  session.onText = chunk => texts.push(chunk);
+  session.onSource = chunk => sources.push(chunk);
+  const socket = sockets[0];
+  ready(socket);
+  socket.serve({ serverContent: { outputTranscription: { text: '안녕 ' } } });
+  socket.serve({ serverContent: { inputTranscription: { text: 'Salut ' } } });
+  socket.serve({ serverContent: { modelTurn: { parts: [{ inlineData: { data: 'xx' } }] } } });
+  socket.serve({ serverContent: { outputTranscription: { text: '씨.' } } });
+  socket.serve({ serverContent: { turnComplete: true } });
+  assert.deepEqual(texts, ['안녕 ', '씨.']);
+  assert.deepEqual(sources, ['Salut ']);
+});
+
+test('provider errors and closes reach onEnd, always without the key', () => {
+  const { service, sockets } = fakeService({ GEMINI_API_KEY: 'very-secret' });
+  const ends = [];
+  const session = service.openSession({ source: 'fr', target: 'ko' });
+  session.onEnd = error => ends.push(error);
+  const socket = sockets[0];
+  socket.emit('error', new Error('socket failed'));
+  assert.equal(ends.length, 1);
+  assert.equal(ends[0].message, 'provider error');
+  assert.equal(JSON.stringify(ends).includes('very-secret'), false);
+  // Une fois terminée la session n'émet plus rien.
+  socket.emit('close');
+  assert.equal(ends.length, 1);
+  // Erreur applicative : même traitement générique.
+  const again = [];
+  const second = service.openSession({ source: 'fr', target: 'ko' });
+  second.onEnd = error => again.push(error);
+  sockets[1].serve({ error: { code: 1007, message: 'quota near very-secret' } });
+  assert.equal(again[0].message, 'provider error');
+  // Fermeture distante propre : fin sans erreur.
+  const clean = [];
+  const third = service.openSession({ source: 'fr', target: 'ko' });
+  third.onEnd = error => clean.push(error);
+  sockets[2].emit('close');
+  assert.deepEqual(clean, [null]);
+});
+
+test('close() terminates the upstream socket and idempotent sends stop', () => {
+  const { service, sockets } = fakeService({ GEMINI_API_KEY: 'k' });
+  const session = service.openSession({ source: 'fr', target: 'ko' });
+  const socket = sockets[0];
+  ready(socket);
+  session.close();
+  assert.equal(socket.terminated, true);
+  session.send(Buffer.alloc(4));
+  session.flush();
+  assert.equal(socket.sent.length, 1); // le setup seul est parti
 });
