@@ -108,6 +108,9 @@ vocabulaire partage.
   les participants en surimpression coloree avec le nom de l'orateur, puis
   effacee apres sa fenetre d'affichage. L'orateur recoit en plus son texte
   compris, visible de lui seul.
+- **Sens de traduction** : fige a la demande de prise par la langue
+  d'interface de l'orateur, francais vers coreen ou l'inverse. Il n'est ni
+  detecte par le fournisseur ni modifiable en cours de prise.
 - **Capacite de seance** : la traduction vocale se choisit a la creation de
   la seance, desactivee par defaut et figee ensuite. L'etat autoritaire
   annonce la paire de langues et la disponibilite du service.
