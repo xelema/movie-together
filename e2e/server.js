@@ -14,7 +14,7 @@ await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavf
   '-c:a', 'aac', '-ac', '2', '-metadata:s:a:0', 'language=fra', '-metadata:s:a:1', 'language=eng', path.join(root, 'fixture.mp4')]);
 const dataDir = path.join(root, randomUUID());
 // Fournisseur factice au niveau de la couture serveur : aucune donnée réseau ni
-// micro réel. Le garde-fou silence/bruit est local au serveur (#45) ; un seul
+// micro réel. Le garde-fou silence/bruit est local au serveur (#45). Un seul
 // appel translate() renvoie transcription et traduction dans le sens figé (#44).
 const voiceService = {
   // Un léger délai rend l'état 'processing' observable côté client : sans lui
