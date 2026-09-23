@@ -176,7 +176,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     const korean = result.language === 'ko';
     if (!pair.includes(result.language) ||
       result.target !== pair.find(code => code !== result.language) ||
-      result.confidence < VOICE_CONFIDENCE_MIN ||
+      result.confidence < VOICE_CONFIDENCE_MIN || result.confidence > 1 ||
       HANGUL.test(result.text) !== korean || HANGUL.test(result.translation) === korean) return 'unclear';
     return null;
   };
