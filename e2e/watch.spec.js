@@ -608,41 +608,28 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await expect(host.locator('#voice-mic')).toBeVisible();
     await expect(host.locator('#voice-mic')).toHaveCSS('color', 'rgb(229, 72, 77)');
     // Pendant la prise de l'hôte, l'invité est refusé localement, en coréen,
-    // et aucun état intermédiaire ne fuite vers l'hôte.
-    // La permission micro est tenue en attente : deux demandes qui se
-    // chevauchent produisent un flux orphelin qui ne doit jamais rester actif.
+    // et aucun état intermédiaire ne fuite vers l'hôte. Sa demande de
+    // permission reste suspendue : c'est elle qui deviendra orpheline pendant
+    // la prise suivante, sans rien ajouter à la fenêtre d'écoute courante.
     await guest.evaluate(() => { window.voiceTest.hold = true; });
     await showControls(guest);
     await guest.locator('#voice-mic').click();
     await expect(guest.locator('#voice-local')).toContainText('다른 참가자가 말하고 있습니다');
     await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
-    await showControls(guest);
-    await guest.locator('#voice-mic').click();
-    await expect.poll(() => guest.evaluate(() => window.voiceTest.micCalls)).toBe(2);
-    await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
-    await guest.evaluate(() => {
-      window.voiceTest.hold = false;
-      window.voiceTest.pending.splice(0).forEach(grant => grant());
-    });
-    // Le micro refusé n'est jamais devenu actif : le flux adopté reste muet et
-    // le flux orphelin est arrêté.
-    await expect.poll(() => guest.evaluate(() =>
-      window.voiceTest.streams.length === 2 &&
-      window.voiceTest.streams[0].getAudioTracks().every(track => track.readyState === 'ended') &&
-      window.voiceTest.streams[1].getAudioTracks().every(track => !track.enabled))).toBe(true);
-    // Une autorisation orpheline est refermée sans toucher l'état ni le micro.
-    await guest.evaluate(() => window.player.onVoice({ type: 'voice', state: 'started', utterance: 'ghost', seq: 99 }));
-    await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
+    expect(await micCalls(guest)).toBe(1);
     await expect(host.locator('#voice-local')).toBeHidden();
     await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
     // Second appui : la prise passe en traitement puis produit le résultat. Le
     // passage par 'processing' est bref : on l'enregistre au lieu de le sonder.
+    // L'écoute est plafonnée à 20 s côté produit : le second appui doit tomber
+    // pendant 'listening', jamais sur une prise que le plafond a déjà refermée.
     await host.evaluate(() => {
       window.voiceTest.states = [];
       new MutationObserver(mutations => {
         for (const mutation of mutations) window.voiceTest.states.push(mutation.target.dataset.state);
       }).observe(document.querySelector('#voice-mic'), { attributes: true, attributeFilter: ['data-state'] });
     });
+    await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
     await host.locator('#voice-mic').click();
     // Texte compris local : italique, sans préfixe « Compris : » (#47).
     await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
@@ -675,6 +662,45 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     // Un événement périmé ne remplace pas un surtitre plus récent.
     await guest.evaluate(() => window.player.onVoice({ type: 'voice', state: 'result', utterance: 'stale', seq: 0, speaker: 'Ghost', text: 'STALE' }));
     await expect(guest.locator('#voice-result')).toContainText('Alex ·');
+    // Les permissions en vol ont leur fenêtre d'écoute dédiée, ouverte par une
+    // seconde prise de l'hôte. Le délai de reprise peut encore courir : l'appui
+    // n'est tenté que hors prise en cours, et un refus en 'cooldown' retente
+    // jusqu'à l'accord, jamais pendant 'listening' où un clic terminerait.
+    await expect(async () => {
+      const state = await host.locator('#voice-mic').evaluate(el => el.dataset.state);
+      if (state !== 'listening' && state !== 'starting') {
+        await showControls(host);
+        await host.locator('#voice-mic').click({ timeout: 5_000 });
+      }
+      await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening', { timeout: 3000 });
+    }).toPass({ timeout: 15_000 });
+    // La nouvelle demande de l'invité se superpose à celle restée suspendue :
+    // deux demandes qui se chevauchent produisent un flux orphelin. L'appui
+    // est synthétique : le micro du refusé peut être sous des contrôles cachés,
+    // c'est la permission en vol qui compte, pas le hit-test.
+    await guest.locator('#voice-mic').evaluate(el => el.click());
+    await expect.poll(() => guest.evaluate(() => window.voiceTest.micCalls)).toBe(2);
+    await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
+    await guest.evaluate(() => {
+      window.voiceTest.hold = false;
+      window.voiceTest.pending.splice(0).forEach(grant => grant());
+    });
+    // Le micro refusé n'est jamais devenu actif : le flux adopté reste muet et
+    // le flux orphelin est arrêté.
+    await expect.poll(() => guest.evaluate(() =>
+      window.voiceTest.streams.length === 2 &&
+      window.voiceTest.streams[0].getAudioTracks().every(track => track.readyState === 'ended') &&
+      window.voiceTest.streams[1].getAudioTracks().every(track => !track.enabled))).toBe(true);
+    // Une autorisation orpheline est refermée sans toucher l'état ni le micro
+    // de l'orateur.
+    await guest.evaluate(() => window.player.onVoice({ type: 'voice', state: 'started', utterance: 'ghost', seq: 99 }));
+    await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
+    // Second appui, même garde : la fenêtre d'écoute est petite et bornée.
+    await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
+    await host.locator('#voice-mic').click();
+    await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
+    await expect(host.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
+    await expect(guest.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
     // Après l'erreur, l'invité reprend la parole : interface coréenne, sens
     // figé ko -> fr. Changer la langue du site pendant l'écoute n'y touche pas.
     await showControls(guest);
