@@ -1,21 +1,18 @@
 // Fournisseur Gemini (#44) : un seul appel generateContent par prise renvoie
-// langue source, transcription, langue cible, traduction et certitude en JSON
-// structuré. La clé et le choix du modèle restent côté serveur ; sans clé
+// la transcription source et la traduction finale en JSON structuré. Le sens
+// est fixé par la langue d'interface de l'orateur, jamais détecté par le
+// modèle. La clé et le choix du modèle restent côté serveur ; sans clé
 // configurée le service est absent et la capacité annonce indisponible,
 // jamais simulée.
 const MODEL = 'gemini-3.1-flash-lite';
 const ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 const NAMES = { fr: 'French', ko: 'Korean' };
 
-const promptFor = pair =>
-  `This audio holds one short spoken utterance in ${NAMES[pair[0]] ?? pair[0]} or ${NAMES[pair[1]] ?? pair[1]}. ` +
-  'Detect the language actually spoken and answer with the JSON fields only: ' +
-  '"language", the ISO 639-1 code of the utterance (it may be neither language of the pair); ' +
-  '"text", the exact transcription in that language; ' +
-  `"target", the ISO 639-1 code of the language translated into (one of the pair: ${pair[0]} or ${pair[1]}); ` +
-  '"translation", the translation into the target language; ' +
-  '"confidence", your certainty in the detected language between 0 and 1. ' +
-  `If the utterance is in neither language, translate into ${NAMES[pair[0]] ?? pair[0]}. No commentary.`;
+const promptFor = (source, target) =>
+  `This audio holds one short spoken utterance in ${NAMES[source] ?? source}. ` +
+  `Transcribe it exactly, then translate it into ${NAMES[target] ?? target}. ` +
+  'Answer with the JSON fields only: "text", the exact transcription in the spoken ' +
+  `language, and "translation", the translation into ${NAMES[target] ?? target}. No commentary.`;
 
 // Le conteneur WAV déclare le format des trames s16 mono 16 kHz sans dépendre
 // des paramètres MIME du PCM brut. La charge utile est copiée telle quelle.
@@ -41,7 +38,7 @@ export function createVoiceService({ env = process.env, fetchImpl = fetch, timeo
   if (!apiKey) return null;
   const model = env.GEMINI_MODEL || MODEL;
   return {
-    async translate(pcm, { pair }) {
+    async translate(pcm, { source, target }) {
       const response = await fetchImpl(`${ENDPOINT}/${model}:generateContent`, {
         method: 'POST',
         signal: AbortSignal.timeout(timeoutMs),
@@ -49,21 +46,18 @@ export function createVoiceService({ env = process.env, fetchImpl = fetch, timeo
         body: JSON.stringify({
           contents: [{ parts: [
             { inlineData: { mimeType: 'audio/wav', data: wavFor(pcm).toString('base64') } },
-            { text: promptFor(pair) },
+            { text: promptFor(source, target) },
           ] }],
           generationConfig: {
             responseMimeType: 'application/json',
             responseSchema: {
               type: 'OBJECT',
               properties: {
-                language: { type: 'STRING', description: 'ISO 639-1 code of the spoken language' },
-                text: { type: 'STRING', description: 'Transcription in the source language' },
-                target: { type: 'STRING', description: 'ISO 639-1 code of the language translated into' },
+                text: { type: 'STRING', description: 'Exact transcription in the source language' },
                 translation: { type: 'STRING', description: 'Translation into the target language' },
-                confidence: { type: 'NUMBER', description: 'Certainty in the detected language, 0 to 1' },
               },
-              required: ['language', 'text', 'target', 'translation', 'confidence'],
-              propertyOrdering: ['language', 'text', 'target', 'translation', 'confidence'],
+              required: ['text', 'translation'],
+              propertyOrdering: ['text', 'translation'],
             },
           },
         }),

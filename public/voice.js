@@ -51,7 +51,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     if (state === 'listening' || state === 'starting') stopCapture();
     clearTimeout(watchdog);
     setState(text ? 'error' : 'idle');
-    if (text) show(local, text);
+    if (text) { delete local.dataset.kind; show(local, text); }
   };
   const abort = text => {
     if (utterance) player.send({ type: 'voice', action: 'cancel' });
@@ -116,7 +116,10 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     if (state === 'listening') return stopSpeaking();
     if (state !== 'idle' && state !== 'error') return;
     hardware = beginCapture(++armSeq);
-    player.send({ type: 'voice', action: 'start' });
+    // La langue d'interface au moment de l'appui fixe le sens de la prise :
+    // le serveur la fige, un changement de langue en cours d'écoute n'y
+    // touche pas.
+    player.send({ type: 'voice', action: 'start', lang: t('fr', 'ko') });
     setState('starting');
   };
   const message = async event => {
@@ -126,6 +129,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       if (state !== 'starting') return player.send({ type: 'voice', action: 'cancel' });
       utterance = event.utterance;
       local.hidden = true;
+      delete local.dataset.kind;
       // L'état a pu changer pendant l'armement du micro : une fermeture ou un
       // échec arrivé entre-temps rend la prise morte, on la referme côté serveur.
       const armed = state === 'starting' && await hardware;
@@ -150,7 +154,8 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       return;
     }
     if (event.state === 'understood') {
-      if (event.utterance === utterance) show(local, `${t('Compris', '이해함')} : ${event.text}`, RESULT_MS);
+      // Le texte compris reste local, en italique et sans préfixe (#47).
+      if (event.utterance === utterance) { local.dataset.kind = 'transcript'; show(local, event.text, RESULT_MS); }
       return;
     }
     if (event.state === 'result') {
