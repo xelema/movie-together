@@ -47,54 +47,43 @@ const goto = (page, url) => expect(async () => {
 const reload = page => expect(async () => {
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 });
 }).toPass({ timeout: 60_000 });
-// A single hover can land inside the same auto-hide window on a loaded box:
-// wake Plyr, then wait for the controls state it actually reached.
-const showControls = page => expect(async () => {
-  const point = await page.locator('.plyr__controls').evaluate(el => {
-    const rect = el.getBoundingClientRect();
-    const hidden = el.closest('.plyr').classList.contains('plyr--hide-controls');
-    return { x: rect.x + rect.width / 2, y: rect.y - (hidden ? rect.height : 0) + rect.height / 2 };
+// Only a real mouseenter latches Plyr's hover flag, the state that keeps its
+// hide timer from dropping the chrome between the wake and the click. Any
+// internal toggleControls pass (loading tick, media event) drops the bar
+// while the flag is off, so the crossing is owned by the poll itself: each
+// pass reads the flag first — a latched pass costs one probe — then parks
+// the pointer over the picture, a container mousemove that re-arms the
+// timer and wakes a dropped bar, and sweeps into the live center once the
+// hit test proves the bar owns it. :hover tells whether the pointer is
+// really inside, so the leave only runs when the crossing needs it; a
+// mid-slide miss retries on fresh geometry instead of a stale point.
+const latchHover = page => expect.poll(async () => {
+  const probe = await page.locator('.plyr__controls').evaluate(el => {
+    const r = el.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+    const plyr = el.closest('.plyr'), hidden = plyr.classList.contains('plyr--hide-controls');
+    const hit = document.elementFromPoint(x, y);
+    return { x, y, out: Math.max(plyr.getBoundingClientRect().top + 8, 4),
+      latched: !hidden && (el.hover === true || document.querySelector('video').paused),
+      over: el.matches(':hover'), ok: !hidden && !!hit && el.contains(hit) };
   });
-  await page.mouse.move(point.x, point.y);
-  await page.mouse.move(point.x + 1, point.y);
-  await expect(page.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/, { timeout: 1000 });
-  // The wake moves can land on the picture while the bar is still sliding and
-  // WebKit never fires mouseenter for an element reaching a parked pointer, so
-  // Plyr's hover flag can stay off: its hide timer then drops the chrome
-  // mid-click and the poster catches the hit test. A locator hover is no help
-  // either: it hit-tests without moving the pointer, so once the bar re-hides
-  // the test can never reach it again. A fresh move onto the live position
-  // fires the mouseenter that latches the flag, and the flag is the observable
-  // guarantee the chrome stays up until the pointer actually leaves it.
-  await page.mouse.move(point.x, point.y);
-  await expect.poll(() => page.locator('.plyr__controls').evaluate(el =>
-    el.hover === true || document.querySelector('video').paused), { timeout: 1000 }).toBe(true);
-}).toPass({ timeout: 10_000 });
-// Point the mouse where the control lands once shown: the move wakes Plyr's controls
-// and the wiggle enters the bar, so its hover flag keeps them open while playing.
+  if (probe.latched) return true;
+  if (probe.over || !probe.ok) await page.mouse.move(probe.x, probe.out);
+  if (!probe.ok) return false;
+  await page.mouse.move(probe.x, probe.y, { steps: 4 });
+  return false;
+}, { timeout: 5000 }).toBe(true);
+
+// Latching hover is also what shows the chrome: each pass re-wakes a dropped
+// bar, so the whole state is one poll wrapped in a retry for loaded boxes.
+const showControls = page => expect(() => latchHover(page)).toPass({ timeout: 10_000 });
 // A click can dispatch its events and still time out on a loaded box, so toggling
 // controls pass a done check: a retry then skips the click instead of flipping back.
 const clickControl = (page, selector, done) => expect(async () => {
   if (done && await done()) return;
-  const point = await page.locator(selector).evaluate(el => {
-    const hidden = el.closest('.plyr').classList.contains('plyr--hide-controls');
-    const r = el.getBoundingClientRect(), bar = el.closest('.plyr__controls').getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y - (hidden ? bar.height : 0) + r.height / 2 };
-  });
-  await page.mouse.move(point.x, point.y);
-  await page.mouse.move(point.x + 1, point.y);
-  // The action a previous click started can land while these moves run:
+  await latchHover(page);
+  // The action a previous click started can land while the latch ran:
   // re-check before clicking or a toggle flips back while it is still landing.
   if (done && await done()) return;
-  // Aimed at a hidden transport, the wake moves land on the picture and never
-  // enter the bar: Plyr's hover flag stays off, so its hide timer can re-hide
-  // the controls mid-click and let the poster catch the hit test. A fresh move
-  // onto the live control fires the mouseenter that pins the flag; a locator
-  // hover cannot, it hit-tests without moving and deadlocks once hidden.
-  await expect(page.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/, { timeout: 1000 });
-  await page.mouse.move(point.x, point.y);
-  await expect.poll(() => page.locator('.plyr__controls').evaluate(el =>
-    el.hover === true || document.querySelector('video').paused), { timeout: 1000 }).toBe(true);
   await page.locator(`.plyr:not(.plyr--hide-controls) ${selector}`).click({ timeout: 3000 });
   // A fullscreen request can take seconds to resolve on a loaded box: give the
   // done state a poll window before deciding the click missed.
