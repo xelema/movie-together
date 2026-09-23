@@ -61,9 +61,14 @@ const showControls = page => expect(async () => {
   // The wake moves can land on the picture while the bar is still sliding and
   // WebKit never fires mouseenter for an element reaching a parked pointer, so
   // Plyr's hover flag can stay off: its hide timer then drops the chrome
-  // mid-click and the poster catches the hit test. A real hover inside the
-  // shown bar latches the flag until the pointer actually leaves it.
-  await page.locator('.plyr__controls').hover();
+  // mid-click and the poster catches the hit test. A locator hover is no help
+  // either: it hit-tests without moving the pointer, so once the bar re-hides
+  // the test can never reach it again. A fresh move onto the live position
+  // fires the mouseenter that latches the flag, and the flag is the observable
+  // guarantee the chrome stays up until the pointer actually leaves it.
+  await page.mouse.move(point.x, point.y);
+  await expect.poll(() => page.locator('.plyr__controls').evaluate(el =>
+    el.hover === true || document.querySelector('video').paused), { timeout: 1000 }).toBe(true);
 }).toPass({ timeout: 10_000 });
 // Point the mouse where the control lands once shown: the move wakes Plyr's controls
 // and the wiggle enters the bar, so its hover flag keeps them open while playing.
@@ -83,9 +88,13 @@ const clickControl = (page, selector, done) => expect(async () => {
   if (done && await done()) return;
   // Aimed at a hidden transport, the wake moves land on the picture and never
   // enter the bar: Plyr's hover flag stays off, so its hide timer can re-hide
-  // the controls mid-click and let the poster catch the hit test. Hovering the
-  // shown control waits out the slide and keeps the bar pinned.
-  await page.locator(`.plyr:not(.plyr--hide-controls) ${selector}`).hover({ timeout: 3000 });
+  // the controls mid-click and let the poster catch the hit test. A fresh move
+  // onto the live control fires the mouseenter that pins the flag; a locator
+  // hover cannot, it hit-tests without moving and deadlocks once hidden.
+  await expect(page.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/, { timeout: 1000 });
+  await page.mouse.move(point.x, point.y);
+  await expect.poll(() => page.locator('.plyr__controls').evaluate(el =>
+    el.hover === true || document.querySelector('video').paused), { timeout: 1000 }).toBe(true);
   await page.locator(`.plyr:not(.plyr--hide-controls) ${selector}`).click({ timeout: 3000 });
   // A fullscreen request can take seconds to resolve on a loaded box: give the
   // done state a poll window before deciding the click missed.
@@ -495,8 +504,15 @@ test('track and settings choices stay viewer-local while only the transport move
       await expect.poll(() => latest.get(phone)?.state?.phase, { timeout: 15_000 }).toBe('playing');
       await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
       // A tap that starts on the shown transport is a real press and moves the room.
-      await tap(spot);
-      await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+      // On a loaded box the 3 s touch hide can win before the press: the tap then
+      // starts on the picture and its click is spent on the overlay like the wake
+      // tap above. It leaves the sheet shown, so re-tapping lands the real press;
+      // a room already paused skips the tap instead of toggling back.
+      await expect(async () => {
+        if (await guest.locator('video').evaluate(video => video.paused)) return;
+        await tap(spot);
+        await expect.poll(() => guest.locator('video').evaluate(video => video.paused), { timeout: 2000 }).toBe(true);
+      }).toPass({ timeout: 15_000 });
       await tap(spot);
       await expect.poll(() => latest.get(phone)?.state?.phase, { timeout: 15_000 }).toBe('playing');
       await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
@@ -564,6 +580,10 @@ test('the picture layout holds across viewports and fullscreen', async () => {
       }), { timeout: 3000 }).toBe(true);
       await expectSubtitleSize(host);
       await expect(host.locator('#player-settings')).toBeHidden();
+      // Entering fullscreen resets Plyr's hover flag and re-arms its hide
+      // timer at once: the mic follows the chrome, so wake the bar before
+      // asserting its visibility rather than racing the countdown.
+      await showControls(host);
       await expect(host.locator('#voice-mic')).toBeVisible();
       await host.mouse.move(0, 0);
       await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
@@ -618,12 +638,16 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     // permission reste suspendue : c'est elle qui deviendra orpheline pendant
     // la prise suivante, sans rien ajouter à la fenêtre d'écoute courante.
     await guest.evaluate(() => { window.voiceTest.hold = true; });
-    await showControls(guest);
-    await guest.locator('#voice-mic').click();
+    // L'appui est synthétique : la permission retenue et le refus occupé sont
+    // ce qui compte, pas le hit-test. La prise de l'hôte est plafonnée à 20 s
+    // et réveiller la barre de l'invité peut en brûler la moitié.
+    await guest.locator('#voice-mic').evaluate(el => el.click());
     await expect(guest.locator('#voice-local')).toContainText('다른 참가자가 말하고 있습니다');
     await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
     expect(await micCalls(guest)).toBe(1);
-    await expect(host.locator('#voice-local')).toBeHidden();
+    // La carte de l'hôte peut déjà porter sa transcription incrémentale :
+    // l'invariant est que le refus de l'invité n'y apparaît jamais.
+    await expect(host.locator('#voice-local')).not.toContainText('다른 참가자가 말하고 있습니다');
     await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
     // Second appui : la prise passe en traitement puis produit le résultat. Le
     // passage par 'processing' est bref : on l'enregistre au lieu de le sonder.
