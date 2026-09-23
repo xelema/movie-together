@@ -12,7 +12,7 @@ const VOICE_FRAME = 960, VOICE_TEXT_MAX = 2000, VOICE_FRAME_RATE = 100;
 const VOICE_MESSAGES = {
   'no-speech': 'Aucune parole détectée.',
   'inconsistent': 'Traduction incohérente, réessayez.',
-  'provider': 'Traduction temporairement indisponible.',
+  'provider': 'Service de traduction indisponible.',
   'invalid-response': 'Réponse de traduction invalide.',
   'timeout': 'La traduction a expiré.',
 };
