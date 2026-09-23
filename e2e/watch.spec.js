@@ -76,6 +76,11 @@ const latchHover = page => expect.poll(async () => {
 // Latching hover is also what shows the chrome: each pass re-wakes a dropped
 // bar, so the whole state is one poll wrapped in a retry for loaded boxes.
 const showControls = page => expect(() => latchHover(page)).toPass({ timeout: 10_000 });
+// A prise closed before its first frame reaches the room ends 'no-speech',
+// correctly: the heard marker is the only proof the gate saw audio and the
+// live session is open. It is re-armed per utterance at 'started', so it
+// cannot pass on a stale card.
+const heardSpeech = page => expect(page.locator('#voice-local')).toHaveAttribute('data-kind', 'transcript');
 // A click can dispatch its events and still time out on a loaded box, so toggling
 // controls pass a done check: a retry then skips the click instead of flipping back.
 const clickControl = (page, selector, done) => expect(async () => {
@@ -716,6 +721,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
     // Second appui, même garde : la fenêtre d'écoute est petite et bornée.
     await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
+    await heardSpeech(host);
     await host.locator('#voice-mic').click();
     await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
     await expect(host.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
@@ -727,6 +733,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
     await guest.locator('#language').selectOption('fr');
     await expect(guest.locator('html')).toHaveAttribute('lang', 'fr');
+    await heardSpeech(guest);
     await guest.locator('#voice-mic').click();
     await expect(guest.locator('#voice-local')).toHaveText('엔딩 크레딧에서 만나요.');
     await expect(guest.locator('#voice-local')).toHaveCSS('font-style', 'italic');
@@ -747,6 +754,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
       }
       await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening', { timeout: 3000 });
     }).toPass({ timeout: 15_000 });
+    await heardSpeech(host);
     await host.keyboard.press('Enter');
     await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
     await expect(host.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
@@ -773,6 +781,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
       }).toPass({ timeout: 10_000 });
       await phone.locator('#voice-mic').tap();
       await expect(phone.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
+      await heardSpeech(phone);
       await phone.locator('#voice-mic').tap();
       await expect(phone.locator('#voice-local')).toHaveText('On se retrouve au générique.');
       await expect(phone.locator('#voice-result')).toContainText('Sam · 엔딩 크레딧에서 만나요.');
