@@ -103,12 +103,14 @@ vocabulaire partage.
 
 - **Prise de parole** (utterance) : une phrase courte prononcee par un
   participant, une seule active a la fois dans la seance. Le serveur lui
-  attribue un identifiant et une sequence. Son cycle passe par des etats
-  prives puis un resultat final ou un echec, sans rien persister.
-- **Surtitre traduit** : la traduction finale d'une prise, diffusee a tous
-  les participants en surimpression coloree avec le nom de l'orateur, puis
-  effacee apres sa fenetre d'affichage. L'orateur recoit en plus son texte
-  compris, visible de lui seul.
+  attribue un identifiant, une sequence et des revisions. Son cycle passe
+  par des etats prives puis un resultat final ou un echec, sans rien
+  persister.
+- **Surtitre traduit** : la traduction d'une prise, diffusee a tous les
+  participants en surimpression coloree avec le nom de l'orateur. Elle
+  s'affiche au fil de l'eau (fragments revises), est figee par le resultat
+  final ou retiree sur echec, puis effacee apres sa fenetre d'affichage.
+  L'orateur recoit en plus son texte compris, visible de lui seul.
 - **Sens de traduction** : fige a la demande de prise par la langue
   d'interface de l'orateur, francais vers coreen ou l'inverse. Il n'est ni
   detecte par le fournisseur ni modifiable en cours de prise.
