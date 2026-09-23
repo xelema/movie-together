@@ -14,19 +14,14 @@ await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavf
   '-c:a', 'aac', '-ac', '2', '-metadata:s:a:0', 'language=fra', '-metadata:s:a:1', 'language=eng', path.join(root, 'fixture.mp4')]);
 const dataDir = path.join(root, randomUUID());
 // Fournisseur factice au niveau de la couture serveur : aucune donnée réseau ni
-// micro réel. detect() juge la parole sur l'énergie PCM pour que le garde-fou
-// silence soit exercé ; translate() renvoie un couple fixe.
+// micro réel. Le garde-fou silence/bruit est local au serveur (#45) ; un seul
+// appel translate() renvoie langue, transcription et traduction (#44).
 const voiceService = {
-  detect: async pcm => {
-    let energy = 0;
-    for (let i = 0; i + 1 < pcm.length; i += 2) energy += Math.abs(pcm.readInt16LE(i));
-    return { speech: pcm.length > 1 && energy / (pcm.length / 2) / 32768 > 0.01, language: 'fr' };
-  },
   // Un léger délai rend l'état 'processing' observable côté client : sans lui
   // la réponse arriverait avant que le navigateur n'affiche la transition.
   translate: async () => {
     await new Promise(resolve => setTimeout(resolve, 250));
-    return { text: 'On se retrouve au générique.', translation: '엔딩 크레딧에서 만나요.' };
+    return { language: 'fr', text: 'On se retrouve au générique.', translation: '엔딩 크레딧에서 만나요.' };
   },
 };
 const instance = createApplication({ dataDir, origin: 'http://localhost:3100', password: 'browser-test-password', voiceService });
