@@ -96,7 +96,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     console.log(`[room ${room.tag}] voix ${category}`);
   };
   const voiceStart = (room, ws) => {
-    if (!room.voice?.enabled || typeof voiceService?.detect !== 'function' || typeof voiceService?.translate !== 'function') {
+    if (!room.voice?.enabled || typeof voiceService?.translate !== 'function') {
       return refuse(room, ws, 'unavailable', 'Traduction vocale indisponible.');
     }
     if (room.utterance) return refuse(room, ws, 'busy', 'Un participant parle déjà.');
@@ -143,8 +143,38 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     if (message.action === 'cancel') return voiceCancel(room, ws);
     throw new Error('Message inconnu.');
   };
-  // La phrase complète passe le garde-fou de parole et la détection de langue
-  // avant tout appel facturé ; chaque sortie d'erreur libère le verrou.
+  // Garde-fou local avant tout appel facturé (#45) : le silence a une énergie
+  // nulle, un offset continu un taux de passage par zéro nul malgré l'énergie
+  // et un bruit large bande un taux proche de 0,5. La parole reste entre les
+  // deux ; rien d'autre ne doit atteindre le fournisseur.
+  const hasSpeech = pcm => {
+    let energy = 0, crossings = 0, previous = pcm.length > 1 ? pcm.readInt16LE(0) : 0;
+    for (let i = 2; i + 1 < pcm.length; i += 2) {
+      const sample = pcm.readInt16LE(i);
+      energy += Math.abs(sample);
+      if (sample < 0 !== previous < 0) crossings++;
+      previous = sample;
+    }
+    const samples = pcm.length >> 1, zcr = samples > 1 ? crossings / (samples - 1) : 0;
+    return samples > 1 && energy / samples / 32768 > 0.01 && zcr > 0.005 && zcr < 0.4;
+  };
+  // Validation stricte du résultat (#44) : champs présents et bornés, langue
+  // dans la paire. Le Hangul trahit une langue ou une direction fausse (#45) :
+  // rejetée comme incertaine plutôt que diffusée en surtitre trompeur.
+  const HANGUL = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/;
+  const voiceResultError = (result, pair) => {
+    if (!result || typeof result.text !== 'string' || typeof result.translation !== 'string' ||
+      !result.text.length || !result.translation.length ||
+      result.text.length > VOICE_TEXT_MAX || result.translation.length > VOICE_TEXT_MAX) {
+      return 'invalid-response';
+    }
+    const korean = result.language === 'ko';
+    if (!pair.includes(result.language) ||
+      HANGUL.test(result.text) !== korean || HANGUL.test(result.translation) === korean) return 'unclear';
+    return null;
+  };
+  // Un seul appel fournisseur par prise (#44) : langue, transcription et
+  // traduction reviennent ensemble ; chaque sortie d'erreur libère le verrou.
   const finishUtterance = (room, utterance) => {
     if (room.utterance !== utterance || utterance.state !== 'listening') return;
     utterance.state = 'processing';
@@ -157,26 +187,22 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       voiceSend(utterance.ws, { state: 'failed', utterance: utterance.id, seq: utterance.seq, error, message });
     };
     const pipeline = (async () => {
-      const detected = await voiceService.detect(pcm);
-      if (!detected?.speech) throw Object.assign(new Error('no speech'), { code: 'no-speech' });
-      if (!room.voice.pair.includes(detected.language)) throw Object.assign(new Error('unclear'), { code: 'unclear' });
+      // Silence et bruit sont écartés localement : aucun appel, aucun quota.
+      if (!hasSpeech(pcm)) throw Object.assign(new Error('no speech'), { code: 'no-speech' });
       // Seul l'appel réellement envoyé au fournisseur consomme le quota (#39).
       const calls = room.voiceCalls.get(utterance.session) ?? [];
       calls.push(Date.now());
       room.voiceCalls.set(utterance.session, calls);
-      const result = await voiceService.translate(pcm, { language: detected.language, pair: room.voice.pair });
-      if (!result || typeof result.text !== 'string' || typeof result.translation !== 'string' ||
-        !result.text.length || !result.translation.length ||
-        result.text.length > VOICE_TEXT_MAX || result.translation.length > VOICE_TEXT_MAX) {
-        throw Object.assign(new Error('invalid'), { code: 'invalid-response' });
-      }
-      return { language: detected.language, result };
+      const result = await voiceService.translate(pcm, { pair: room.voice.pair });
+      const rejected = voiceResultError(result, room.voice.pair);
+      if (rejected) throw Object.assign(new Error(rejected), { code: rejected });
+      return result;
     })();
     let expire;
     const expired = new Promise((_, reject) => {
       expire = setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'timeout' })), timing.processMs);
     });
-    Promise.race([pipeline, expired]).then(({ language, result }) => {
+    Promise.race([pipeline, expired]).then(result => {
       // L'audio est effacé à l'état terminal ; une réponse arrivée après la
       // libération de la prise est ignorée, son buffer déjà réduit à zéro.
       clearTimeout(expire);
@@ -184,7 +210,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       if (room.utterance !== utterance) return;
       releaseUtterance(room, utterance, `completed ${audioMs}ms`);
       voiceSend(utterance.ws, { state: 'understood', utterance: utterance.id, seq: utterance.seq,
-        text: result.text, language });
+        text: result.text, language: result.language });
       const resultMessage = JSON.stringify({ type: 'voice', state: 'result',
         utterance: utterance.id, seq: utterance.seq, speaker: utterance.speaker, text: result.translation });
       for (const client of room.clients) {
