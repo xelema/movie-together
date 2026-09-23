@@ -602,6 +602,11 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await host.locator('#voice-mic').click();
     expect(await micCalls(host)).toBe(1);
     await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
+    // Surtitre incrémental : la traduction s'affiche chez tous pendant la
+    // prise, attribuée à l'orateur, avant même l'arrêt.
+    await expect(host.locator('#voice-result')).toContainText('Alex · 엔딩');
+    await expect(guest.locator('#voice-result')).toContainText('Alex · 엔딩');
+    await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
     // Pendant l'enregistrement le micro reste visible et rouge même quand
     // l'overlay se cache.
     await host.mouse.move(0, 0);
