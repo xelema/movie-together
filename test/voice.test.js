@@ -6,15 +6,17 @@ import path from 'node:path';
 import { WebSocket } from 'ws';
 import { createApplication } from '../src/app.js';
 
-// Fake translation provider: one call per prise decides language, transcript
-// and translation together (#44). `nextTranslate` steers the answer, calls
-// are counted in `translated`.
+// Fake translation provider: one call per prise returns the source transcript
+// and the final translation together (#44). `nextTranslate` steers the answer,
+// calls are counted in `translated` with the frozen direction they received.
 const fakeService = () => {
   const service = { translated: [] };
   service.translate = async (pcm, options) => {
     service.translated.push({ bytes: pcm.length, pcm, ...options });
     if (service.nextTranslate) return service.nextTranslate();
-    return { language: 'fr', text: 'Bonjour le film.', target: 'ko', translation: '영화 안녕하세요.', confidence: 0.9 };
+    return options.source === 'ko'
+      ? { text: '엔딩에서 만나요.', translation: 'On se retrouve au générique.' }
+      : { text: 'Bonjour le film.', translation: '영화 안녕하세요.' };
   };
   return service;
 };
@@ -91,30 +93,34 @@ async function boot(t, { service = fakeService(), timing, patch } = {}) {
     socket.on('open', () => { if (name) socket.send(JSON.stringify({ type: 'identify', name })); });
   });
   const voice = client => client.messages.filter(message => message.type === 'voice');
-  const send = (client, action) => client.socket.send(JSON.stringify({ type: 'voice', action }));
+  // La langue d'interface accompagne chaque demande de prise, comme le client
+  // réel ; le serveur la fige en sens source -> cible (#44).
+  const send = (client, action, lang) => client.socket.send(JSON.stringify({ type: 'voice', action, ...(lang === undefined ? {} : { lang }) }));
   return { request, admin, createRoom, join, open, voice, send, service, dataDir, hub: instance.hub };
 }
 
 test('a prise is private to the speaker, exclusive and server-ordered', async t => {
-  const { admin, createRoom, join, open, voice, send } = await boot(t, { patch: { voiceCooldown: 0 } });
+  const { admin, createRoom, join, open, voice, send, service } = await boot(t, { patch: { voiceCooldown: 0 } });
   const room = await createRoom({ code: 'prise-room', voice: true });
   const guest = await join(room.code);
   const a = await open(room.id, admin, 'Alex');
   const b = await open(room.id, guest, 'Minji');
-  send(a, 'start');
+  send(a, 'start', 'fr');
   const started = await a.waitFor(m => m.type === 'voice' && m.state === 'started');
   assert.ok(started.utterance);
   assert.equal(started.seq, 1);
   // The second participant only learns the phrase exists at the final result.
-  send(b, 'start');
+  send(b, 'start', 'ko');
   const refused = await b.waitFor(m => m.type === 'voice' && m.state === 'failed');
   assert.equal(refused.error, 'busy');
   a.socket.send(tone());
   send(a, 'stop');
   const understood = await a.waitFor(m => m.type === 'voice' && m.state === 'understood');
   assert.equal(understood.text, 'Bonjour le film.');
-  assert.equal(understood.language, 'fr');
   assert.equal(understood.utterance, started.utterance);
+  // Le fournisseur a reçu le sens figé par la langue d'interface d'Alex.
+  assert.equal(service.translated[0].source, 'fr');
+  assert.equal(service.translated[0].target, 'ko');
   const [aResult, bResult] = await Promise.all([
     a.waitFor(m => m.type === 'voice' && m.state === 'result'),
     b.waitFor(m => m.type === 'voice' && m.state === 'result'),
@@ -127,9 +133,23 @@ test('a prise is private to the speaker, exclusive and server-ordered', async t 
   assert.equal(voice(b).filter(m => ['started', 'understood', 'failed'].includes(m.state)).length, 1);
   assert.equal(voice(b)[0].state, 'failed');
   // A second prise gets a fresh identifier and a higher sequence.
-  send(a, 'start');
+  send(a, 'start', 'fr');
   const second = await a.waitFor(m => m.type === 'voice' && m.state === 'started' && m.utterance !== started.utterance);
   assert.ok(second.seq > started.seq);
+  send(a, 'stop');
+  await a.waitFor(m => m.state === 'failed');
+  // Sens inverse : Minji a l'interface coréenne, sa prise va du coréen vers le
+  // français. Transcription locale coréenne, surtitre français pour tous.
+  send(b, 'start', 'ko');
+  await b.waitFor(m => m.state === 'started');
+  b.socket.send(tone());
+  send(b, 'stop');
+  const understoodKo = await b.waitFor(m => m.state === 'understood');
+  assert.equal(understoodKo.text, '엔딩에서 만나요.');
+  const koResult = await a.waitFor(m => m.type === 'voice' && m.state === 'result' && m.speaker === 'Minji');
+  assert.equal(koResult.text, 'On se retrouve au générique.');
+  assert.equal(service.translated.at(-1).source, 'ko');
+  assert.equal(service.translated.at(-1).target, 'fr');
 });
 
 test('cancel, disconnect and the listening limit always release the room lock', async t => {
@@ -139,25 +159,25 @@ test('cancel, disconnect and the listening limit always release the room lock', 
   const guest = await join(room.code);
   const a = await open(room.id, admin, 'Alex');
   const b = await open(room.id, guest, 'Minji');
-  send(a, 'start');
+  send(a, 'start', 'fr');
   await a.waitFor(m => m.state === 'started');
   send(a, 'cancel');
   await a.settle();
-  send(b, 'start');
+  send(b, 'start', 'fr');
   await b.waitFor(m => m.state === 'started');
   // A disconnected speaker frees the séance for everyone else.
   const at = b.messages.length - 1 >= 0 ? a.messages.length : 0;
   b.socket.close();
   await new Promise(resolve => b.socket.on('close', resolve));
   await a.waitFor(m => m.type === 'state' && m.members.length === 1, at);
-  send(a, 'start');
+  send(a, 'start', 'fr');
   await a.waitFor(m => m.state === 'started');
   a.socket.send(tone());
   // No stop: the 350 ms cap ends the prise by itself and still produces a result.
   const result = await a.waitFor(m => m.type === 'voice' && m.state === 'result');
   assert.equal(result.text, '영화 안녕하세요.');
   assert.equal(service.translated.length, 1);
-  send(b, 'start');
+  send(b, 'start', 'fr');
   const again = await b.waitFor(m => m.type === 'voice' && m.state === 'started');
   assert.ok(again);
 });
@@ -168,13 +188,13 @@ test('a cancelled prise frees the lock and never reaches the room', async t => {
   const guest = await join(room.code);
   const a = await open(room.id, admin, 'Alex');
   const b = await open(room.id, guest, 'Minji');
-  send(a, 'start');
+  send(a, 'start', 'fr');
   const started = await a.waitFor(m => m.state === 'started');
   a.socket.send(tone());
   send(a, 'cancel');
   // The pong settles after the cancel on the same socket: the lock is free.
   await a.settle();
-  send(b, 'start');
+  send(b, 'start', 'fr');
   const granted = await b.waitFor(m => m.state === 'started');
   assert.notEqual(granted.utterance, started.utterance);
   // The aborted phrase produced nothing: no result, no failure echo, and the
@@ -186,85 +206,97 @@ test('a cancelled prise frees the lock and never reaches the room', async t => {
 
 test('silence and noise are refused locally before any provider call', async t => {
   const { admin, createRoom, join, open, send, service } = await boot(t, {
-    patch: { voiceCooldown: 0, voiceQuota: 1 } });
+    patch: { voiceCooldown: 0, voiceQuota: 2 } });
   const room = await createRoom({ code: 'guard-room', voice: true });
   const guest = await join(room.code);
   const a = await open(room.id, admin, 'Alex');
   const b = await open(room.id, guest, 'Minji');
-  const prise = async pcm => {
+  const prise = async (pcm, terminal = 'failed') => {
     const since = a.messages.length;
-    send(a, 'start');
+    send(a, 'start', 'fr');
     await a.waitFor(m => m.state === 'started', since);
     a.socket.send(pcm);
     send(a, 'stop');
-    return a.waitFor(m => m.state === 'failed', since);
+    return a.waitFor(m => m.state === terminal, since);
   };
   assert.equal((await prise(silence())).error, 'no-speech');
   assert.equal((await prise(noise())).error, 'no-speech');
-  // Neither prise reached the provider nor leaked to the room. A real phrase
-  // still gets through on a quota of one: the rejected prises consumed none.
+  // Neither prise reached the provider nor leaked to the room, so the quota
+  // is intact for real phrases.
   assert.equal(service.translated.length, 0);
   assert.equal(b.messages.filter(m => m.type === 'voice').length, 0);
-  const since = a.messages.length;
-  send(a, 'start');
-  await a.waitFor(m => m.state === 'started', since);
-  a.socket.send(tone());
-  send(a, 'stop');
-  await a.waitFor(m => m.state === 'result', since);
+  // Une phrase courte n'est pas bloquée par le garde-fou (#45) : deux trames
+  // de 30 ms suffisent à déclencher l'appel.
+  await prise(tone(300, 2), 'result');
   assert.equal(service.translated.length, 1);
+  await prise(tone(), 'result');
+  assert.equal(service.translated.length, 2);
 });
 
-test('uncertain, unsupported or contradictory language is rejected after the provider call', async t => {
+test('malformed or direction-inconsistent answers fail locally after the call', async t => {
   const { admin, createRoom, join, open, send, service } = await boot(t, {
-    patch: { voiceCooldown: 0, voiceQuota: 10 } });
-  const room = await createRoom({ code: 'unclear-room', voice: true });
+    patch: { voiceCooldown: 0, voiceQuota: 20 } });
+  const room = await createRoom({ code: 'reject-room', voice: true });
   const guest = await join(room.code);
   const a = await open(room.id, admin, 'Alex');
   const b = await open(room.id, guest, 'Minji');
-  const prise = async () => {
+  const prise = async (lang = 'fr') => {
     const since = a.messages.length;
-    send(a, 'start');
+    send(a, 'start', lang);
     await a.waitFor(m => m.state === 'started', since);
     a.socket.send(tone());
     send(a, 'stop');
     return a.waitFor(m => m.state === 'failed' || m.state === 'understood', since);
   };
-  // Langue hors paire ou absente, script contredit par la transcription puis
-  // par la traduction, direction déclarée fausse et certitude insuffisante :
-  // chaque rejet est une erreur locale 'unclear', jamais un surtitre trompeur.
+  // Champ absent, vide, non textuel ou hors borne : faute fournisseur, jamais
+  // de langue, de cible ni de certitude déclarées à valider.
   for (const result of [
-    { language: 'en', text: 'Hi there.', target: 'fr', translation: 'Salut.', confidence: 0.9 },
-    { language: null, text: 'Bonjour.', target: 'ko', translation: '안녕.', confidence: 0.9 },
-    { language: 'fr', text: '안녕하세요.', target: 'ko', translation: 'Bonjour.', confidence: 0.9 },
-    { language: 'ko', text: '안녕하세요.', target: 'fr', translation: '안녕하세요.', confidence: 0.9 },
-    { language: 'fr', text: 'Bonjour.', target: 'fr', translation: 'Bonjour.', confidence: 0.9 },
-    { language: 'ko', text: '안녕하세요.', target: 'ko', translation: 'Bonjour.', confidence: 0.9 },
-    { language: 'fr', text: 'Bonjour.', target: 'ko', translation: '안녕.', confidence: 0.2 },
-    { language: 'fr', text: 'Bonjour.', target: 'ko', translation: '안녕.', confidence: 1.2 },
+    null,
+    { text: 'Bonjour.' },
+    { translation: '안녕.' },
+    { text: '', translation: '안녕.' },
+    { text: 'Bonjour.', translation: '' },
+    { text: 'x'.repeat(2001), translation: '안녕.' },
+    { text: 42, translation: '안녕.' },
   ]) {
     service.nextTranslate = () => result;
     const failed = await prise();
     assert.equal(failed.state, 'failed', JSON.stringify(result));
-    assert.equal(failed.error, 'unclear', JSON.stringify(result));
+    assert.equal(failed.error, 'invalid-response', JSON.stringify(result));
   }
-  // Une réponse sans direction ni certitude déclarées est une faute fournisseur.
-  service.nextTranslate = () => ({ language: 'fr', text: 'Bonjour.', translation: '안녕.' });
-  const malformed = await prise();
-  assert.equal(malformed.state, 'failed');
-  assert.equal(malformed.error, 'invalid-response');
+  // Sens figé fr -> ko : une traduction sans Hangul ou une transcription en
+  // Hangul contredit le sens choisi (#45), sans prétendre lire le français.
+  for (const result of [
+    { text: 'Bonjour.', translation: 'Bonjour.' },
+    { text: '안녕하세요.', translation: '안녕.' },
+  ]) {
+    service.nextTranslate = () => result;
+    const failed = await prise();
+    assert.equal(failed.state, 'failed', JSON.stringify(result));
+    assert.equal(failed.error, 'inconsistent', JSON.stringify(result));
+  }
+  // Sens inverse ko -> fr : le même contrôle de script dans l'autre sens.
+  for (const result of [
+    { text: 'Bonjour.', translation: 'On se retrouve.' },
+    { text: '안녕.', translation: '안녕하세요.' },
+  ]) {
+    service.nextTranslate = () => result;
+    const failed = await prise('ko');
+    assert.equal(failed.state, 'failed', JSON.stringify(result));
+    assert.equal(failed.error, 'inconsistent', JSON.stringify(result));
+  }
   // Every call actually sent consumed quota (#45); nothing reached the room.
-  assert.equal(service.translated.length, 9);
+  assert.equal(service.translated.length, 11);
   assert.equal(b.messages.filter(m => m.type === 'voice').length, 0);
-  // Une réponse coréenne cohérente passe : transcription à l'orateur,
-  // traduction française à tous.
-  service.nextTranslate = () => ({ language: 'ko', text: '엔딩에서 만나요.', target: 'fr', translation: 'On se retrouve au générique.', confidence: 0.9 });
+  // Une réponse cohérente dans le sens figé passe : transcription coréenne à
+  // l'orateur, traduction française à tous.
+  delete service.nextTranslate;
   const last = a.messages.length;
-  send(a, 'start');
+  send(a, 'start', 'ko');
   await a.waitFor(m => m.state === 'started', last);
   a.socket.send(tone());
   send(a, 'stop');
   const understood = await a.waitFor(m => m.state === 'understood', last);
-  assert.equal(understood.language, 'ko');
   assert.equal(understood.text, '엔딩에서 만나요.');
   await b.waitFor(m => m.type === 'voice' && m.state === 'result' && m.text === 'On se retrouve au générique.');
 });
@@ -277,7 +309,7 @@ test('provider failures are local and release the lock for the next prise', asyn
   const a = await open(room.id, admin, 'Alex');
   const b = await open(room.id, guest, 'Minji');
   const prise = async () => {
-    send(a, 'start');
+    send(a, 'start', 'fr');
     await a.waitFor(m => m.state === 'started');
     a.socket.send(tone());
     send(a, 'stop');
@@ -290,7 +322,7 @@ test('provider failures are local and release the lock for the next prise', asyn
   await prise();
   const malformed = await a.waitFor(m => m.state === 'failed' && m.error === 'invalid-response');
   assert.ok(malformed);
-  service.nextTranslate = () => new Promise(resolve => setTimeout(() => resolve({ language: 'fr', text: 'tard', target: 'ko', translation: 'tard', confidence: 0.9 }), 500));
+  service.nextTranslate = () => new Promise(resolve => setTimeout(() => resolve({ text: 'tard', translation: 'tard' }), 500));
   await prise();
   const late = await a.waitFor(m => m.state === 'failed' && m.error === 'timeout');
   assert.ok(late);
@@ -312,23 +344,23 @@ test('quota and cooldown gate new prises per participant', async t => {
   const guest = await join(room.code);
   const a = await open(room.id, admin, 'Alex');
   const b = await open(room.id, guest, 'Minji');
-  send(a, 'start');
+  send(a, 'start', 'fr');
   await a.waitFor(m => m.state === 'started');
   a.socket.send(tone());
   send(a, 'stop');
   await a.waitFor(m => m.state === 'result');
   assert.equal(service.translated.length, 1);
   // The cooldown follows every release, before quota is even checked.
-  send(a, 'start');
+  send(a, 'start', 'fr');
   const cooled = await a.waitFor(m => m.state === 'failed');
   assert.equal(cooled.error, 'cooldown');
   assert.ok(cooled.retryAfter > 0 && cooled.retryAfter <= 1);
   await new Promise(resolve => setTimeout(resolve, cooled.retryAfter * 1000 + 60));
-  send(a, 'start');
+  send(a, 'start', 'fr');
   const exhausted = await a.waitFor(m => m.state === 'failed' && m.error === 'quota');
   assert.ok(exhausted.retryAfter > 0 && exhausted.retryAfter <= 60);
   // The quota belongs to the participant: the other member can still speak.
-  send(b, 'start');
+  send(b, 'start', 'ko');
   await b.waitFor(m => m.state === 'started');
 });
 
@@ -342,19 +374,26 @@ test('malformed voice input is refused at the boundary', async t => {
   const c = await open(plain.id, guest);
   // Audio on a room without the capability is dropped, not played back anywhere.
   c.socket.send(tone());
-  send(c, 'start');
+  send(c, 'start', 'fr');
   const unavailable = await c.waitFor(m => m.type === 'voice' && m.state === 'failed');
   assert.equal(unavailable.error, 'unavailable');
+  // A direction outside the pair, or none, is refused before any lock or call.
+  let since = a.messages.length;
+  send(a, 'start', 'en');
+  assert.equal((await a.waitFor(m => m.state === 'failed', since)).error, 'invalid');
+  since = a.messages.length;
+  send(a, 'start');
+  assert.equal((await a.waitFor(m => m.state === 'failed', since)).error, 'invalid');
   // Frames without an active prise are dropped; a wrong-size frame aborts.
   a.socket.send(tone());
-  send(a, 'start');
-  await a.waitFor(m => m.state === 'started');
+  send(a, 'start', 'fr');
+  await a.waitFor(m => m.state === 'started', since);
   a.socket.send(Buffer.alloc(500));
-  const invalid = await a.waitFor(m => m.state === 'failed');
+  const invalid = await a.waitFor(m => m.state === 'failed', since);
   assert.equal(invalid.error, 'invalid');
   send(a, 'stop');
-  send(a, 'start');
-  await a.waitFor(m => m.state === 'started' && m.utterance !== undefined);
+  send(a, 'start', 'fr');
+  await a.waitFor(m => m.state === 'started' && m.utterance !== undefined, a.messages.length);
   assert.ok(true);
 });
 
@@ -373,7 +412,7 @@ test('an active prise stays out of room state and nothing is persisted', async t
   const { request, admin, createRoom, open, send, dataDir } = await boot(t);
   const room = await createRoom({ code: 'state-room', voice: true });
   const a = await open(room.id, admin, 'Alex');
-  send(a, 'start');
+  send(a, 'start', 'fr');
   await a.waitFor(m => m.state === 'started');
   const during = await (await request(`/api/rooms/${room.id}`, { cookie: admin })).json();
   assert.deepEqual(during.voice, { enabled: true, pair: ['fr', 'ko'], available: true });
@@ -399,9 +438,9 @@ test('voice logs stay metadata-only: pseudonymized room, no code or names', asyn
   const guest = await join(room.code);
   const a = await open(room.id, admin, 'Alex');
   const b = await open(room.id, guest, 'Minji');
-  send(a, 'start');
+  send(a, 'start', 'fr');
   await a.waitFor(m => m.state === 'started');
-  send(b, 'start');
+  send(b, 'start', 'ko');
   await b.waitFor(m => m.state === 'failed' && m.error === 'busy');
   a.socket.send(tone());
   send(a, 'stop');
@@ -428,7 +467,7 @@ test('audio buffers are zeroed on terminal states, including late results', asyn
   // Le pong confirme la trame rangée : les buffers d'origine sont observables
   // par référence avant que la prise ne passe en traitement.
   const prise = async () => {
-    send(a, 'start');
+    send(a, 'start', 'fr');
     await a.waitFor(m => m.state === 'started');
     a.socket.send(tone());
     await a.settle();
@@ -444,7 +483,7 @@ test('audio buffers are zeroed on terminal states, including late results', asyn
   assert.ok(first.every(chunk => chunk.every(byte => byte === 0)));
   // A provider answer past the processing cap finds an already-zeroed buffer
   // and its result is dropped, never broadcast.
-  service.nextTranslate = () => new Promise(resolve => setTimeout(() => resolve({ language: 'fr', text: 'tard', target: 'ko', translation: 'tard', confidence: 0.9 }), 400));
+  service.nextTranslate = () => new Promise(resolve => setTimeout(() => resolve({ text: 'tard', translation: 'tard' }), 400));
   const late = await prise();
   await a.waitFor(m => m.state === 'failed' && m.error === 'timeout');
   assert.ok(service.translated[1].pcm.every(byte => byte === 0));

@@ -18,12 +18,12 @@ test('one generateContent request carries the audio and the output contract', as
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
-    return ok({ language: 'fr', text: 'Bonjour le film.', target: 'ko', translation: '영화 안녕하세요.', confidence: 0.9 });
+    return ok({ text: 'Bonjour le film.', translation: '영화 안녕하세요.' });
   };
   const service = createVoiceService({ env: { GEMINI_API_KEY: 'secret-key' }, fetchImpl });
   const pcm = Buffer.from([7, 1, 2, 3]);
-  const result = await service.translate(pcm, { pair: ['fr', 'ko'] });
-  assert.deepEqual(result, { language: 'fr', text: 'Bonjour le film.', target: 'ko', translation: '영화 안녕하세요.', confidence: 0.9 });
+  const result = await service.translate(pcm, { source: 'fr', target: 'ko' });
+  assert.deepEqual(result, { text: 'Bonjour le film.', translation: '영화 안녕하세요.' });
   assert.equal(calls.length, 1);
   const { url, init } = calls[0];
   assert.equal(url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent');
@@ -46,32 +46,38 @@ test('one generateContent request carries the audio and the output contract', as
   assert.equal(wav.toString('ascii', 36, 40), 'data');
   assert.equal(wav.readUInt32LE(40), pcm.length);
   assert.ok(wav.subarray(44).equals(pcm));
-  assert.ok(body.contents[0].parts.some(part => typeof part.text === 'string' && part.text.length));
+  // Le prompt porte le sens figé : source française, cible coréenne, sans
+  // demande de détection ni de certitude au modèle.
+  const prompt = body.contents[0].parts.find(part => typeof part.text === 'string')?.text ?? '';
+  assert.match(prompt, /French/);
+  assert.match(prompt, /Korean/);
+  assert.doesNotMatch(prompt, /[Dd]etect/);
   const config = body.generationConfig;
   assert.equal(config.responseMimeType, 'application/json');
-  assert.deepEqual(config.responseSchema.required, ['language', 'text', 'target', 'translation', 'confidence']);
+  assert.deepEqual(config.responseSchema.required, ['text', 'translation']);
+  assert.deepEqual(Object.keys(config.responseSchema.properties).sort(), ['text', 'translation']);
 });
 
 test('the model choice stays server-side and overridable by env', async () => {
   const calls = [];
   const service = createVoiceService({
     env: { GEMINI_API_KEY: 'k', GEMINI_MODEL: 'gemini-test-model' },
-    fetchImpl: async url => { calls.push(url); return ok({ language: 'ko', text: '안녕.', target: 'fr', translation: 'Salut.', confidence: 0.9 }); },
+    fetchImpl: async url => { calls.push(url); return ok({ text: '안녕.', translation: 'Salut.' }); },
   });
-  await service.translate(Buffer.alloc(4), { pair: ['fr', 'ko'] });
+  await service.translate(Buffer.alloc(4), { source: 'ko', target: 'fr' });
   assert.equal(calls[0], 'https://generativelanguage.googleapis.com/v1beta/models/gemini-test-model:generateContent');
 });
 
 test('provider errors and malformed payloads reject', async () => {
-  const pair = { pair: ['fr', 'ko'] };
+  const direction = { source: 'fr', target: 'ko' };
   const down = createVoiceService({ env: { GEMINI_API_KEY: 'k' },
     fetchImpl: async () => ({ ok: false, status: 429 }) });
-  await assert.rejects(() => down.translate(Buffer.alloc(4), pair));
+  await assert.rejects(() => down.translate(Buffer.alloc(4), direction));
   const weird = createVoiceService({ env: { GEMINI_API_KEY: 'k' },
     fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }) });
-  await assert.rejects(() => weird.translate(Buffer.alloc(4), pair));
+  await assert.rejects(() => weird.translate(Buffer.alloc(4), direction));
   const broken = createVoiceService({ env: { GEMINI_API_KEY: 'k' },
     fetchImpl: async () => ({ ok: true, status: 200,
       json: async () => ({ candidates: [{ content: { parts: [{ text: 'not json' }] } }] }) }) });
-  await assert.rejects(() => broken.translate(Buffer.alloc(4), pair));
+  await assert.rejects(() => broken.translate(Buffer.alloc(4), direction));
 });

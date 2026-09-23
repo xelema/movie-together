@@ -103,10 +103,10 @@ export class SyncPlayer {
     const visible = !fullscreen && (!container?.classList.contains('plyr--hide-controls') || this.video.closest('#screen')?.classList.contains('settings-open'));
     // object-fit: contain letterboxes inside the element; the glyph size follows
     // the painted picture, which a --subtitle-size custom property carries to
-    // both native ::cue rendering and the colour renderer's caption overlay.
+    // ::cue, the colour renderer's captions and the translated supertitle.
     const aspect = this.video.videoWidth / this.video.videoHeight || 16 / 9;
     const pictureHeight = Math.min(rect.height, rect.width / aspect);
-    if (pictureHeight > 0) this.video.parentElement?.style.setProperty('--subtitle-size', `${subtitleFontSize(pictureHeight)}px`);
+    if (pictureHeight > 0) this.video.closest('.video-stage')?.style.setProperty('--subtitle-size', `${subtitleFontSize(pictureHeight)}px`);
     const line = visible && height ? Math.max(35, Math.min(84, 100 - ((controls?.getBoundingClientRect().height || 64) + 12) / height * 100)) : 84;
     const keep = this.subtitleChoice < 0 ? null : shownSubtitleTrack(Array.from(this.video.textTracks), this.subtitleChoice);
     for (const track of this.video.textTracks) {

@@ -234,7 +234,7 @@ test('admin manages a film and two named viewers join in their language with one
     await host.getByRole('button', { name: 'Créer', exact: true }).click();
     await expect(host.locator('#name-dialog')).toBeVisible(); await host.locator('#room-name').fill('Alex'); await host.locator('#name-dialog button').click();
     await expect(host.locator('#movie-title')).toHaveText('fixture');
-    await expect(host.locator('#voice-badge')).toBeHidden(); await expect(host.locator('#voice-mic')).toBeHidden();
+    await expect(host.locator('#voice-badge')).toHaveCount(0); await expect(host.locator('#voice-mic')).toBeHidden();
     await host.locator('#leave').click();
     await host.getByRole('button', { name: 'Créer une séance', exact: true }).click();
     await expect(host.locator('#create-voice')).not.toBeChecked();
@@ -243,7 +243,7 @@ test('admin manages a film and two named viewers join in their language with one
     await host.getByRole('button', { name: 'Créer', exact: true }).click();
     await expect(host.locator('#name-dialog')).toBeVisible(); await host.locator('#name-dialog button').click();
     await expect(host.locator('#movie-title')).toHaveText('fixture');
-    await expect(host.locator('#voice-badge')).toContainText('Traduction vocale');
+    await expect(host.locator('#voice-badge')).toHaveCount(0);
     await expect(host.locator('#voice-mic')).toBeVisible(); await expect(host.locator('#voice-mic')).toBeEnabled();
     const gate = new Promise(resolve => { releaseMedia = resolve; });
     await guest.route('**/*.m4s', async route => { await gate; await route.continue().catch(() => {}); });
@@ -253,7 +253,6 @@ test('admin manages a film and two named viewers join in their language with one
     // La capacité arrive dans l'état autoritatif et affiche le contrôle chez l'invité aussi.
     await expect.poll(() => latest.get(guest)?.voice).toMatchObject({ enabled: true, pair: ['fr', 'ko'] });
     expect(typeof latest.get(guest)?.voice?.available).toBe('boolean');
-    await expect(guest.locator('#voice-badge')).toContainText('음성 번역');
     await expect(guest.locator('#voice-mic')).toBeVisible();
     await expect(host.locator('video')).toHaveCSS('filter', 'none');
     await expect(guest.locator('video')).toHaveCSS('filter', 'none');
@@ -578,17 +577,32 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await ensurePlaying();
     const micCalls = page => page.evaluate(() => window.voiceTest.micCalls);
     expect(await micCalls(host)).toBe(0); expect(await micCalls(guest)).toBe(0);
+    // Le micro suit la visibilité des contrôles Plyr hors enregistrement (#47) :
+    // overlay caché, micro caché ; l'overlay revient, le micro revient.
+    await host.mouse.move(0, 0);
+    await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
+    await expect(host.locator('#voice-mic')).toBeHidden();
+    await showControls(host);
+    await expect(host.locator('#voice-mic')).toBeVisible();
     await host.locator('#voice-mic').click();
     expect(await micCalls(host)).toBe(1);
     await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
+    // Pendant l'enregistrement le micro reste visible et rouge même quand
+    // l'overlay se cache.
+    await host.mouse.move(0, 0);
+    await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
+    await expect(host.locator('#voice-mic')).toBeVisible();
+    await expect(host.locator('#voice-mic')).toHaveCSS('color', 'rgb(229, 72, 77)');
     // Pendant la prise de l'hôte, l'invité est refusé localement, en coréen,
     // et aucun état intermédiaire ne fuite vers l'hôte.
     // La permission micro est tenue en attente : deux demandes qui se
     // chevauchent produisent un flux orphelin qui ne doit jamais rester actif.
     await guest.evaluate(() => { window.voiceTest.hold = true; });
+    await showControls(guest);
     await guest.locator('#voice-mic').click();
     await expect(guest.locator('#voice-local')).toContainText('다른 참가자가 말하고 있습니다');
     await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
+    await showControls(guest);
     await guest.locator('#voice-mic').click();
     await expect.poll(() => guest.evaluate(() => window.voiceTest.micCalls)).toBe(2);
     await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
@@ -616,7 +630,9 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
       }).observe(document.querySelector('#voice-mic'), { attributes: true, attributeFilter: ['data-state'] });
     });
     await host.locator('#voice-mic').click();
-    await expect(host.locator('#voice-local')).toContainText('Compris : On se retrouve au générique.');
+    // Texte compris local : italique, sans préfixe « Compris : » (#47).
+    await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
+    await expect(host.locator('#voice-local')).toHaveCSS('font-style', 'italic');
     expect(await host.evaluate(() => window.voiceTest.states)).toContain('processing');
     await expect(host.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
     await expect(guest.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
@@ -631,6 +647,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await expect(guest.locator('#voice-result')).toContainText('Alex ·');
     // Placement variante B : micro sur le bord droit, carte locale en bas à
     // gauche, surtitre centré en haut de l'image.
+    await showControls(host);
     const stage = await host.locator('.video-stage').boundingBox();
     const micBox = await host.locator('#voice-mic').boundingBox();
     const cardBox = await host.locator('#voice-local').boundingBox();
@@ -640,13 +657,20 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     expect(cardBox.y - stage.y).toBeGreaterThan(stage.height * .6);
     expect(Math.abs(resultBox.x + resultBox.width / 2 - stage.x - stage.width / 2)).toBeLessThan(stage.width * .15);
     expect(resultBox.y - stage.y).toBeLessThan(stage.height * .3);
-    // Après l'erreur, l'invité reprend la parole : même résultat partagé.
+    // Après l'erreur, l'invité reprend la parole : interface coréenne, sens
+    // figé ko -> fr. Changer la langue du site pendant l'écoute n'y touche pas.
+    await showControls(guest);
     await guest.locator('#voice-mic').click();
     await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
+    await guest.locator('#language').selectOption('fr');
+    await expect(guest.locator('html')).toHaveAttribute('lang', 'fr');
     await guest.locator('#voice-mic').click();
-    await expect(guest.locator('#voice-local')).toContainText('이해함 : On se retrouve au générique.');
-    await expect(guest.locator('#voice-result')).toContainText('민지 · 엔딩 크레딧에서 만나요.');
-    await expect(host.locator('#voice-result')).toContainText('민지 · 엔딩 크레딧에서 만나요.');
+    await expect(guest.locator('#voice-local')).toHaveText('엔딩 크레딧에서 만나요.');
+    await expect(guest.locator('#voice-local')).toHaveCSS('font-style', 'italic');
+    await expect(guest.locator('#voice-result')).toContainText('민지 · On se retrouve au générique.');
+    await expect(host.locator('#voice-result')).toContainText('민지 · On se retrouve au générique.');
+    await guest.locator('#language').selectOption('ko');
+    await expect(guest.locator('html')).toHaveAttribute('lang', 'ko');
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     // A member that loses its network pauses itself on the offline event; the room
     // freezes as soon as its pause command lands or its report goes stale

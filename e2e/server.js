@@ -15,13 +15,15 @@ await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavf
 const dataDir = path.join(root, randomUUID());
 // Fournisseur factice au niveau de la couture serveur : aucune donnée réseau ni
 // micro réel. Le garde-fou silence/bruit est local au serveur (#45) ; un seul
-// appel translate() renvoie langue, transcription et traduction (#44).
+// appel translate() renvoie transcription et traduction dans le sens figé (#44).
 const voiceService = {
   // Un léger délai rend l'état 'processing' observable côté client : sans lui
   // la réponse arriverait avant que le navigateur n'affiche la transition.
-  translate: async () => {
+  translate: async (pcm, { source }) => {
     await new Promise(resolve => setTimeout(resolve, 250));
-    return { language: 'fr', text: 'On se retrouve au générique.', target: 'ko', translation: '엔딩 크레딧에서 만나요.', confidence: 0.9 };
+    return source === 'ko'
+      ? { text: '엔딩 크레딧에서 만나요.', translation: 'On se retrouve au générique.' }
+      : { text: 'On se retrouve au générique.', translation: '엔딩 크레딧에서 만나요.' };
   },
 };
 const instance = createApplication({ dataDir, origin: 'http://localhost:3100', password: 'browser-test-password', voiceService });

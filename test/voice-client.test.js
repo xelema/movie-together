@@ -68,7 +68,7 @@ const stubCapture = t => {
 
 test('a saturated socket aborts the prise: local error, clean teardown, retry works', async t => {
   const { streams, track } = stubCapture(t);
-  const mic = fakeButton(), local = { textContent: '', hidden: true }, supertitle = { textContent: '', hidden: true };
+  const mic = fakeButton(), local = { textContent: '', hidden: true, dataset: {} }, supertitle = { textContent: '', hidden: true, dataset: {} };
   const player = { sent: [], send(message) { this.sent.push(message); }, sendFrame: () => false };
   const voice = attachVoice({ mic, local, supertitle, player, t: fr => fr, label: message => message });
   mic.click();
@@ -83,7 +83,7 @@ test('a saturated socket aborts the prise: local error, clean teardown, retry wo
   // The room is told to release the lock; nothing else ever left the page:
   // no stop, no command, no result and the supertitle stays untouched.
   assert.deepEqual(player.sent, [
-    { type: 'voice', action: 'start' },
+    { type: 'voice', action: 'start', lang: 'fr' },
     { type: 'voice', action: 'cancel' },
   ]);
   assert.equal(FakeWorkletNode.instances.at(-1).connected, false);
@@ -99,8 +99,25 @@ test('a saturated socket aborts the prise: local error, clean teardown, retry wo
   assert.equal(local.hidden, true);
   assert.equal(track.enabled, true);
   assert.equal(streams.length, 1);
-  assert.deepEqual(player.sent.at(-1), { type: 'voice', action: 'start' });
+  assert.deepEqual(player.sent.at(-1), { type: 'voice', action: 'start', lang: 'fr' });
+  // Le texte compris reste local, sans préfixe et marqué pour l'italique (#47).
+  await voice.message({ state: 'understood', utterance: 'u2', seq: 2, text: 'Bonjour le film.' });
+  assert.equal(local.textContent, 'Bonjour le film.');
+  assert.equal(local.dataset.kind, 'transcript');
+  clearTimeout(local.hideTimer);
   voice.dispose();
   assert.equal(mic.dataset.state, 'idle');
   assert.equal(track.stopped, true);
+});
+
+// La langue d'interface au premier appui fixe le sens (#44) : une interface
+// coréenne demande une prise coréen -> français.
+test('the start request carries the interface language of the speaker', async t => {
+  stubCapture(t);
+  const mic = fakeButton(), local = { textContent: '', hidden: true, dataset: {} }, supertitle = { textContent: '', hidden: true, dataset: {} };
+  const player = { sent: [], send(message) { this.sent.push(message); }, sendFrame: () => true };
+  const voice = attachVoice({ mic, local, supertitle, player, t: (fr, ko) => ko, label: message => message });
+  mic.click();
+  assert.deepEqual(player.sent, [{ type: 'voice', action: 'start', lang: 'ko' }]);
+  voice.dispose();
 });

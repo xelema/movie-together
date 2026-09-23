@@ -460,7 +460,7 @@ async function enterRoom(id, name, context = {}) {
   sessionStorage.setItem('nickname', name); showSettings(false);
   await api(`/api/rooms/${id}`); session = await api('/api/session');
   disposePlayer(); activeRoom = id; roomMessage = null;
-  $('voice-badge').hidden = $('voice-mic').hidden = $('voice-local').hidden = $('voice-result').hidden = true;
+  $('voice-mic').hidden = $('voice-local').hidden = $('voice-result').hidden = true;
   $('entry').hidden = true; $('library').hidden = true; $('watch').hidden = false; $('choose-film').hidden = !session.admin;
   history.replaceState(null, '', `${adminPage ? '/admin' : '/'}#room=${id}`);
   player = window.player = new SyncPlayer({ video: $('video'), roomId: id, name,
@@ -478,7 +478,7 @@ async function enterRoom(id, name, context = {}) {
       if (message.probe && !telemetry) telemetry = attachTelemetry(controller, $('video'), id);
       roomMessage = message; updatePlayback(controller);
       const voice = message.voice;
-      $('voice-badge').hidden = $('voice-mic').hidden = !voice?.enabled;
+      $('voice-mic').hidden = !voice?.enabled;
       if (voice) {
         $('voice-mic').disabled = !voice.available;
         $('voice-mic').title = voice.available ? '' : t('Traduction vocale indisponible', '음성 번역을 사용할 수 없습니다');
