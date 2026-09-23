@@ -6,8 +6,9 @@ import { createSettings } from '../settings.js';
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Bornes du protocole voix décidées dans #39 : trames PCM s16 mono 16 kHz de
 // 30 ms (960 octets), 20 s d'écoute, 10 s de traitement et 2 000 caractères par
-// texte produit. Les durées restent injectables pour les tests.
-const VOICE_FRAME = 960, VOICE_TEXT_MAX = 2000;
+// texte produit. Les durées restent injectables pour les tests. Le débit des
+// trames est borné par socket à trois fois le rythme nominal (~33/s).
+const VOICE_FRAME = 960, VOICE_TEXT_MAX = 2000, VOICE_FRAME_RATE = 100;
 const VOICE_MESSAGES = {
   'no-speech': 'Aucune parole détectée.',
   'inconsistent': 'Traduction incohérente, réessayez.',
@@ -89,6 +90,8 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
   // Toute sortie détruit l'audio en mémoire : rien n'est persisté ni journalisé.
   const releaseUtterance = (room, utterance, category) => {
     clearTimeout(utterance.timer);
+    // Un appel fournisseur encore en vol est réellement interrompu (#46).
+    utterance.controller?.abort();
     if (utterance.chunks) for (const chunk of utterance.chunks) chunk.fill(0);
     utterance.chunks = null;
     if (utterance.pcm) utterance.pcm.fill(0);
@@ -126,7 +129,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
   const voiceFrame = (room, ws, data) => {
     const utterance = room.utterance;
     if (!utterance || utterance.ws !== ws || utterance.state !== 'listening') return;
-    // Le transport est une suite de trames de 30 ms ; toute autre taille est rejetée.
+    // Le transport est une suite de trames de 30 ms. Toute autre taille est rejetée.
     if (!data.length || data.length % VOICE_FRAME ||
       utterance.bytes + data.length > Math.ceil(timing.listenMs / 30 + 10) * VOICE_FRAME) {
       releaseUtterance(room, utterance, 'aborted:invalid');
@@ -153,7 +156,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
   // Garde-fou local avant tout appel facturé (#45) : le silence a une énergie
   // nulle, un offset continu un taux de passage par zéro nul malgré l'énergie
   // et un bruit large bande un taux proche de 0,5. La parole reste entre les
-  // deux ; rien d'autre ne doit atteindre le fournisseur.
+  // deux. Rien d'autre ne doit atteindre le fournisseur.
   const hasSpeech = pcm => {
     let energy = 0, crossings = 0, previous = pcm.length > 1 ? pcm.readInt16LE(0) : 0;
     for (let i = 2; i + 1 < pcm.length; i += 2) {
@@ -181,7 +184,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     return null;
   };
   // Un seul appel fournisseur par prise (#44) : transcription et traduction
-  // reviennent ensemble ; chaque sortie d'erreur libère le verrou.
+  // reviennent ensemble. Chaque sortie d'erreur libère le verrou.
   const finishUtterance = (room, utterance) => {
     if (room.utterance !== utterance || utterance.state !== 'listening') return;
     utterance.state = 'processing';
@@ -192,6 +195,9 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     for (const chunk of utterance.chunks) chunk.fill(0);
     utterance.chunks = null;
     const audioMs = Math.round(pcm.length / 32);
+    // Le traitement fournisseur est interrompu à l'échéance comme sur toute
+    // sortie de prise (#46) : le signal atteint le fetch, pas seulement la course.
+    const controller = utterance.controller = new AbortController();
     const fail = (error, message) => {
       releaseUtterance(room, utterance, `failed:${error}`);
       voiceSend(utterance.ws, { state: 'failed', utterance: utterance.id, seq: utterance.seq, error, message });
@@ -203,17 +209,20 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       const calls = room.voiceCalls.get(utterance.session) ?? [];
       calls.push(Date.now());
       room.voiceCalls.set(utterance.session, calls);
-      const result = await voiceService.translate(pcm, { source: utterance.source, target: utterance.target });
+      const result = await voiceService.translate(pcm, { source: utterance.source, target: utterance.target, signal: controller.signal });
       const rejected = voiceResultError(result, utterance.source, utterance.target);
       if (rejected) throw Object.assign(new Error(rejected), { code: rejected });
       return result;
     })();
     let expire;
     const expired = new Promise((_, reject) => {
-      expire = setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'timeout' })), timing.processMs);
+      expire = setTimeout(() => {
+        controller.abort();
+        reject(Object.assign(new Error('timeout'), { code: 'timeout' }));
+      }, timing.processMs);
     });
     Promise.race([pipeline, expired]).then(result => {
-      // L'audio est effacé à l'état terminal ; une réponse arrivée après la
+      // L'audio est effacé à l'état terminal. Une réponse arrivée après la
       // libération de la prise est ignorée, son buffer déjà réduit à zéro.
       clearTimeout(expire);
       pcm.fill(0);
@@ -289,7 +298,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
     }
     wss.handleUpgrade(request, socket, head, ws => {
-      const id = randomUUID(); let messages = 0, windowAt = Date.now();
+      const id = randomUUID(); let messages = 0, frames = 0, windowAt = Date.now();
       ws.session = session; ws.alive = true; ws.memberId = id;
       ws.displayName = session.admin ? 'Hôte / 호스트' : 'Invité / 게스트';
       room.clients.add(ws); room.engine.join(id);
@@ -302,10 +311,14 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       ws.on('pong', () => { ws.alive = true; });
       ws.on('error', () => {});
       ws.on('message', (data, isBinary) => {
-        // Les trames PCM sont bornées par la prise elle-même (taille, total
-        // d'octets, verrou de séance) : hors budget des messages JSON.
-        if (isBinary) return voiceFrame(room, ws, data);
-        if (Date.now() - windowAt >= 1000) { windowAt = Date.now(); messages = 0; }
+        if (Date.now() - windowAt >= 1000) { windowAt = Date.now(); messages = 0; frames = 0; }
+        // Les trames PCM ont un budget propre, trois fois le rythme nominal
+        // d'une écoute : une rafale est bornée sans toucher le compteur JSON.
+        // La prise borne en plus taille de trame et total d'octets.
+        if (isBinary) {
+          if (++frames > VOICE_FRAME_RATE) return ws.close(1008, 'Trafic invalide');
+          return voiceFrame(room, ws, data);
+        }
         if (++messages > 40 || session.expires <= Date.now()) return ws.close(1008, 'Session invalide');
         try {
           const message = JSON.parse(data);

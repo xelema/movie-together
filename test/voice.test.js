@@ -94,7 +94,7 @@ async function boot(t, { service = fakeService(), timing, patch } = {}) {
   });
   const voice = client => client.messages.filter(message => message.type === 'voice');
   // La langue d'interface accompagne chaque demande de prise, comme le client
-  // réel ; le serveur la fige en sens source -> cible (#44).
+  // réel. Le serveur la fige en sens source -> cible (#44).
   const send = (client, action, lang) => client.socket.send(JSON.stringify({ type: 'voice', action, ...(lang === undefined ? {} : { lang }) }));
   return { request, admin, createRoom, join, open, voice, send, service, dataDir, hub: instance.hub };
 }
@@ -285,7 +285,7 @@ test('malformed or direction-inconsistent answers fail locally after the call', 
     assert.equal(failed.state, 'failed', JSON.stringify(result));
     assert.equal(failed.error, 'inconsistent', JSON.stringify(result));
   }
-  // Every call actually sent consumed quota (#45); nothing reached the room.
+  // Every call actually sent consumed quota (#45). Nothing reached the room.
   assert.equal(service.translated.length, 11);
   assert.equal(b.messages.filter(m => m.type === 'voice').length, 0);
   // Une réponse cohérente dans le sens figé passe : transcription coréenne à
@@ -326,7 +326,10 @@ test('provider failures are local and release the lock for the next prise', asyn
   await prise();
   const late = await a.waitFor(m => m.state === 'failed' && m.error === 'timeout');
   assert.ok(late);
-  // A late provider answer is dropped: the lock is free and the room sees no result.
+  // The cap aborts the provider call itself, not only the local race (#46):
+  // the signal the prise was sent with is already aborted, the call still
+  // consumed quota, and a late answer is dropped without reaching the room.
+  assert.equal(service.translated[2].signal.aborted, true);
   delete service.nextTranslate;
   await prise();
   const [fresh, shared] = await Promise.all([
@@ -384,7 +387,7 @@ test('malformed voice input is refused at the boundary', async t => {
   since = a.messages.length;
   send(a, 'start');
   assert.equal((await a.waitFor(m => m.state === 'failed', since)).error, 'invalid');
-  // Frames without an active prise are dropped; a wrong-size frame aborts.
+  // Frames without an active prise are dropped. A wrong-size frame aborts.
   a.socket.send(tone());
   send(a, 'start', 'fr');
   await a.waitFor(m => m.state === 'started', since);
@@ -488,6 +491,7 @@ test('audio buffers are zeroed on terminal states, including late results', asyn
   await a.waitFor(m => m.state === 'failed' && m.error === 'timeout');
   assert.ok(service.translated[1].pcm.every(byte => byte === 0));
   assert.ok(late.every(chunk => chunk.every(byte => byte === 0)));
+  assert.equal(service.translated[1].signal.aborted, true);
   // Une prise libérée pendant le traitement perd aussi sa copie concaténée.
   const third = await prise();
   const since = b.messages.length;
@@ -495,4 +499,40 @@ test('audio buffers are zeroed on terminal states, including late results', asyn
   await b.waitFor(m => m.type === 'state' && m.members.length === 1, since);
   assert.ok(service.translated[2].pcm.every(byte => byte === 0));
   assert.ok(third.every(chunk => chunk.every(byte => byte === 0)));
+  // A disconnect during processing aborts the call still in flight (#46).
+  assert.equal(service.translated[2].signal.aborted, true);
+});
+
+test('binary traffic is bounded per socket while healthy frames and JSON flow', async t => {
+  const { admin, createRoom, join, open, send, service, hub } = await boot(t, { patch: { voiceCooldown: 0 } });
+  const room = await createRoom({ code: 'flood-room', voice: true });
+  const guest = await join(room.code);
+  const a = await open(room.id, admin, 'Alex');
+  const b = await open(room.id, guest, 'Minji');
+  // Un flux sain : une rafale de 60 trames de 30 ms bien formées reste sous
+  // le budget de 100/s et la prise produit son résultat.
+  send(a, 'start', 'fr');
+  await a.waitFor(m => m.state === 'started');
+  for (let i = 0; i < 60; i++) a.socket.send(tone(300, 1));
+  send(a, 'stop');
+  await a.waitFor(m => m.state === 'result');
+  assert.equal(service.translated.length, 1);
+  // Un JSON invalide reste une erreur locale sans fermer le socket.
+  a.socket.send('not json');
+  await a.waitFor(m => m.type === 'error');
+  await a.settle();
+  // Une rafale binaire hors écoute dépasse le budget : fermeture propre 1008.
+  const flooded = new Promise(resolve => b.socket.on('close', code => resolve(code)));
+  for (let i = 0; i < 120; i++) b.socket.send(tone(300, 1));
+  assert.equal(await flooded, 1008);
+  // Le socket de l'autre participant et la séance ne bougent pas.
+  await a.settle();
+  // Une trame au-delà du maxPayload (8 Kio) est refermée par le transport.
+  const oversized = new Promise(resolve => a.socket.on('close', code => resolve(code)));
+  a.socket.send(Buffer.alloc(8193));
+  assert.equal(await oversized, 1009);
+  // La séance est intacte : un nouveau socket la rejoint normalement.
+  const c = await open(room.id, guest);
+  assert.ok(c.messages.find(m => m.type === 'welcome'));
+  assert.ok(hub.get(room.id));
 });

@@ -63,9 +63,10 @@ vocabulaire partage.
   aussi fixes en dur par choix, comme constantes de protocole ou de
   securite : la taille maximale d'un message websocket (8 Kio), les
   fenetres des limites de debit (15 min pour le login, 1 min pour les
-  invitations), le budget de messages par socket (40/s), le seuil de
-  bufferedAmount (64 Kio) et la marge disque exigee a la creation d'un
-  envoi (x2,2).
+  invitations), le budget de messages JSON par socket (40/s), le budget
+  de trames PCM par socket (100/s, trois fois le rythme normal d'une
+  prise a 30 ms par trame), le seuil de bufferedAmount (64 Kio) et la
+  marge disque exigee a la creation d'un envoi (x2,2).
 
 ## Films
 
@@ -102,7 +103,7 @@ vocabulaire partage.
 
 - **Prise de parole** (utterance) : une phrase courte prononcee par un
   participant, une seule active a la fois dans la seance. Le serveur lui
-  attribue un identifiant et une sequence ; son cycle passe par des etats
+  attribue un identifiant et une sequence. Son cycle passe par des etats
   prives puis un resultat final ou un echec, sans rien persister.
 - **Surtitre traduit** : la traduction finale d'une prise, diffusee a tous
   les participants en surimpression coloree avec le nom de l'orateur, puis
