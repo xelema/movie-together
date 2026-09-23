@@ -14,7 +14,7 @@ const STATE_NAMES = {
 };
 
 export function attachVoice({ mic, local, supertitle, player, t, label }) {
-  let state = 'idle', utterance = null, lastResultSeq = 0;
+  let state = 'idle', utterance = null, shownSeq = 0, shownRev = 0, shownFinal = false;
   let stream = null, audioContext = null, source = null, worklet = null;
   let listenTimer = null, watchdog = null, hardware = null, armSeq = 0;
 
@@ -153,15 +153,32 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       fail(event.message ? label(event.message) + suffix : undefined);
       return;
     }
-    if (event.state === 'understood') {
-      // Le texte compris reste local, en italique et sans préfixe (#47).
+    if (event.state === 'heard' || event.state === 'understood') {
+      // Le texte compris reste local, en italique et sans préfixe (#47). Il
+      // arrive au fil de l'eau ('heard') puis en version finale ('understood').
       if (event.utterance === utterance) { local.dataset.kind = 'transcript'; show(local, event.text, RESULT_MS); }
       return;
     }
+    if (event.state === 'partial') {
+      // Surtitre partagé incrémental : la séquence et la révision du serveur
+      // ordonnent les fragments, un message périmé ne réécrit jamais l'affiché.
+      if (event.seq < shownSeq || (event.seq === shownSeq && (shownFinal || event.rev <= shownRev))) return;
+      if (event.seq > shownSeq) shownFinal = false;
+      shownSeq = event.seq; shownRev = event.rev;
+      show(supertitle, `${event.speaker} · ${event.text}`, RESULT_MS);
+      return;
+    }
+    if (event.state === 'withdrawn') {
+      // Une phrase en échec est retirée chez tous tant qu'aucun résultat
+      // définitif ne l'a remplacée.
+      if (event.seq === shownSeq && !shownFinal) { clearTimeout(supertitle.hideTimer); supertitle.hidden = true; }
+      return;
+    }
     if (event.state === 'result') {
-      // Un résultat périmé ou réordonné ne remplace jamais un surtitre plus récent.
-      if (event.seq <= lastResultSeq) return;
-      lastResultSeq = event.seq;
+      // Le résultat fige le surtitre : un fragment plus ancien ni un résultat
+      // périmé ne le remplacent ensuite.
+      if (event.seq < shownSeq || (event.seq === shownSeq && shownFinal)) return;
+      shownSeq = event.seq; shownFinal = true;
       fail();
       show(supertitle, `${event.speaker} · ${event.text}`, RESULT_MS);
     }

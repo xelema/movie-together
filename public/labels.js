@@ -77,7 +77,7 @@ const korean = {
   'Aucune parole détectée.': '음성이 감지되지 않았습니다.',
   'Traduction incohérente, réessayez.': '번역이 어긋납니다. 다시 말하세요.',
   'Sens de traduction invalide.': '번역 방향이 올바르지 않습니다.',
-  'Traduction indisponible.': '번역을 사용할 수 없습니다.',
+  'Traduction temporairement indisponible.': '지금은 번역을 사용할 수 없습니다.',
   'Réponse de traduction invalide.': '번역 응답이 올바르지 않습니다.',
   'La traduction a expiré.': '번역 시간이 초과되었습니다.',
 };
