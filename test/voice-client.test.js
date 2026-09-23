@@ -121,3 +121,41 @@ test('the start request carries the interface language of the speaker', async t 
   assert.deepEqual(player.sent, [{ type: 'voice', action: 'start', lang: 'ko' }]);
   voice.dispose();
 });
+
+// Surtitres incrémentaux : les fragments partagés se réécrivent sous
+// séquence + révision, les périmés sont ignorés et l'échec les retire.
+test('partials update the shared supertitle in order and stale ones drop', async t => {
+  stubCapture(t);
+  const mic = fakeButton(), local = { textContent: '', hidden: true, dataset: {} }, supertitle = { textContent: '', hidden: true, dataset: {} };
+  const player = { sent: [], send(message) { this.sent.push(message); }, sendFrame: () => true };
+  const voice = attachVoice({ mic, local, supertitle, player, t: fr => fr, label: message => message });
+  await voice.message({ state: 'partial', utterance: 'u9', seq: 5, rev: 1, speaker: 'Alex', text: '짧은' });
+  assert.equal(supertitle.textContent, 'Alex · 짧은');
+  assert.equal(supertitle.hidden, false);
+  await voice.message({ state: 'partial', utterance: 'u9', seq: 5, rev: 2, speaker: 'Alex', text: '짧은 문장' });
+  assert.equal(supertitle.textContent, 'Alex · 짧은 문장');
+  // Révision réordonnée ou séquence passée : l'affiché ne recule jamais.
+  await voice.message({ state: 'partial', utterance: 'u9', seq: 5, rev: 2, speaker: 'Alex', text: 'stale' });
+  await voice.message({ state: 'partial', utterance: 'u8', seq: 4, rev: 9, speaker: 'Alex', text: 'stale' });
+  assert.equal(supertitle.textContent, 'Alex · 짧은 문장');
+  // La prise échoue côté serveur : le surtitre partiel est retiré chez tous.
+  await voice.message({ state: 'withdrawn', utterance: 'u9', seq: 5 });
+  assert.equal(supertitle.hidden, true);
+  // Un résultat fige le surtitre : les fragments de la même prise comme les
+  // résultats plus anciens ne le remplacent plus.
+  await voice.message({ state: 'result', utterance: 'u9', seq: 6, speaker: 'Minji', text: 'On se voit.' });
+  assert.equal(supertitle.textContent, 'Minji · On se voit.');
+  await voice.message({ state: 'partial', utterance: 'u9', seq: 6, rev: 4, speaker: 'Minji', text: 'stale' });
+  await voice.message({ state: 'result', utterance: 'u9', seq: 6, speaker: 'Minji', text: 'stale' });
+  await voice.message({ state: 'result', utterance: 'u7', seq: 5, speaker: 'Ghost', text: 'stale' });
+  assert.equal(supertitle.textContent, 'Minji · On se voit.');
+  // La prise suivante repart en partiels : le verrou 'final' est par
+  // séquence, pas définitif.
+  await voice.message({ state: 'partial', utterance: 'u10', seq: 7, rev: 1, speaker: 'Alex', text: '다시' });
+  await voice.message({ state: 'partial', utterance: 'u10', seq: 7, rev: 2, speaker: 'Alex', text: '다시 들어' });
+  assert.equal(supertitle.textContent, 'Alex · 다시 들어');
+  // Le texte compris en direct reste réservé à l'orateur de la prise.
+  await voice.message({ state: 'heard', utterance: 'someone-else', seq: 9, text: 'not mine' });
+  assert.equal(local.hidden, true);
+  voice.dispose();
+});
