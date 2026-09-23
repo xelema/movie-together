@@ -120,7 +120,7 @@ const ensurePlaying = () => expect.poll(async () => {
   if (!hostReady) return false;
   const [hostTime, guestTime] = await Promise.all([host, guest].map(page =>
     page.locator('video').evaluate(video => video.paused || video.seeking || video.currentTime >= 20 ? -1 : video.currentTime)));
-  // The sync loop converges members well under a second; a wider gap is a
+  // The sync loop converges members well under a second. A wider gap is a
   // member still realigning after a seek, not a settled room.
   return hostTime >= 0 && guestTime >= 0 && Math.abs(hostTime - guestTime) < 1;
 }, { timeout: 15_000 }).toBe(true);
@@ -581,9 +581,10 @@ test('the picture layout holds across viewports and fullscreen', async () => {
   }
 });
 
-test('a voice prise is exclusive to one speaker and member failures pause the room', async () => {
+test('a voice prise is exclusive to one speaker and member failures pause the room', async ({ browser }) => {
   test.skip(!joined, 'the séance setup pass did not complete');
-  test.setTimeout(90_000);
+  // Chromium alone pays the trusted-touch pass on top of the prise journey.
+  test.setTimeout(120_000);
   try {
     // Traduction vocale : la permission micro n'est demandée qu'au premier
     // appui, une seule prise est acceptée, le texte compris reste local et le
@@ -592,7 +593,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     const micCalls = page => page.evaluate(() => window.voiceTest.micCalls);
     expect(await micCalls(host)).toBe(0); expect(await micCalls(guest)).toBe(0);
     // Le micro suit la visibilité des contrôles Plyr hors enregistrement (#47) :
-    // overlay caché, micro caché ; l'overlay revient, le micro revient.
+    // overlay caché, micro caché. L'overlay revient, le micro revient.
     await host.mouse.move(0, 0);
     await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
     await expect(host.locator('#voice-mic')).toBeHidden();
@@ -639,12 +640,12 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await expect(guest.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
     // Placement variante B : micro sur le bord droit, carte locale en bas à
     // gauche, surtitre centré en haut de l'image. Carte et surtitre s'effacent
-    // après RESULT_MS : les mesures se prennent tant qu'ils sont visibles.
-    await showControls(host);
+    // après RESULT_MS : leurs mesures précèdent la sortie de veille du micro.
     const stage = await host.locator('.video-stage').boundingBox();
-    const micBox = await host.locator('#voice-mic').boundingBox();
     const cardBox = await host.locator('#voice-local').boundingBox();
     const resultBox = await host.locator('#voice-result').boundingBox();
+    await showControls(host);
+    const micBox = await host.locator('#voice-mic').boundingBox();
     expect(micBox.x + micBox.width / 2).toBeGreaterThan(stage.x + stage.width * .7);
     expect(cardBox.x - stage.x).toBeLessThan(stage.width * .2);
     expect(cardBox.y - stage.y).toBeGreaterThan(stage.height * .6);
@@ -716,6 +717,58 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await guest.locator('#language').selectOption('ko');
     await expect(guest.locator('html')).toHaveAttribute('lang', 'ko');
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    // Clavier (#47) : le micro est un vrai bouton, Entrée tient lieu d'appui
+    // pour démarrer comme pour clore. Le délai de reprise peut encore courir,
+    // la pression est retentée tant que la prise n'est pas accordée.
+    await expect(async () => {
+      const state = await host.locator('#voice-mic').evaluate(el => el.dataset.state);
+      if (state !== 'listening' && state !== 'starting') {
+        await showControls(host);
+        await host.locator('#voice-mic').focus();
+        await host.keyboard.press('Enter');
+      }
+      await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening', { timeout: 3000 });
+    }).toPass({ timeout: 15_000 });
+    await host.keyboard.press('Enter');
+    await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
+    await expect(host.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
+    await expect(guest.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
+    // Tactile (#47) : un vrai tap sur le micro démarre puis clôt la prise.
+    // Comme le tap CDP plus haut, l'entrée tactile de confiance est un
+    // passage Chromium.
+    if (browser.browserType().name() === 'chromium') {
+      const touchContext = await browser.newContext({ hasTouch: true });
+      const phone = await touchContext.newPage();
+      phone.setDefaultTimeout(10_000); phone.setDefaultNavigationTimeout(30_000);
+      phone.on('pageerror', error => errors.push(error.message));
+      await phone.addInitScript(fakeMic);
+      await goto(phone, '/');
+      await phone.locator('#join-form input').fill('cine-soir'); await phone.locator('#join-form button').click();
+      await expect(phone.locator('#name-dialog')).toBeVisible(); await phone.locator('#room-name').fill('Sam'); await phone.locator('#name-dialog button').click();
+      await expect(phone.locator('#movie-title')).toHaveText('fixture');
+      // La permission sonore peut encore bloquer la lecture. La prise n'en
+      // dépend pas, seulement du micro visible.
+      if (await phone.locator('#allow-sound').isVisible()) await phone.locator('#allow-sound').tap();
+      await expect(async () => {
+        if (await phone.locator('#voice-mic').isHidden()) await phone.locator('.plyr__video-wrapper').tap();
+        await expect(phone.locator('#voice-mic')).toBeVisible({ timeout: 2000 });
+      }).toPass({ timeout: 10_000 });
+      await phone.locator('#voice-mic').tap();
+      await expect(phone.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
+      await phone.locator('#voice-mic').tap();
+      await expect(phone.locator('#voice-local')).toHaveText('On se retrouve au générique.');
+      await expect(phone.locator('#voice-result')).toContainText('Sam · 엔딩 크레딧에서 만나요.');
+      await expect(host.locator('#voice-result')).toContainText('Sam · 엔딩 크레딧에서 만나요.');
+      await touchContext.close();
+      // Le départ du membre fige la séance ou la laisse reprendre seule :
+      // attendre la phase, jouer si nécessaire, jamais un délai.
+      await expect.poll(async () => {
+        if (latest.get(host)?.state?.phase === 'paused') await host.evaluate(() => window.player.command('play'));
+        return latest.get(host)?.state?.phase;
+      }, { timeout: 15_000 }).toBe('playing');
+    } else {
+      test.info().annotations.push({ type: 'skip', description: 'trusted-touch mic activation needs CDP-grade input, chromium-only pass' });
+    }
     // A member that loses its network pauses itself on the offline event; the room
     // freezes as soon as its pause command lands or its report goes stale
     // (reportTimeout), and the host follows. Both directions are the contract.
