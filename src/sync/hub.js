@@ -91,6 +91,8 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     clearTimeout(utterance.timer);
     if (utterance.chunks) for (const chunk of utterance.chunks) chunk.fill(0);
     utterance.chunks = null;
+    if (utterance.pcm) utterance.pcm.fill(0);
+    utterance.pcm = null;
     if (room.utterance === utterance) room.utterance = null;
     room.voiceReleased?.set(utterance.session, Date.now());
     console.log(`[room ${room.tag}] voix ${category}`);
@@ -158,18 +160,23 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     const samples = pcm.length >> 1, zcr = samples > 1 ? crossings / (samples - 1) : 0;
     return samples > 1 && energy / samples / 32768 > 0.01 && zcr > 0.005 && zcr < 0.4;
   };
-  // Validation stricte du résultat (#44) : champs présents et bornés, langue
-  // dans la paire. Le Hangul trahit une langue ou une direction fausse (#45) :
-  // rejetée comme incertaine plutôt que diffusée en surtitre trompeur.
+  // Validation stricte du résultat (#44) : champs présents et bornés. Langue
+  // hors paire, cible qui n'est pas l'autre langue ou certitude insuffisante
+  // sont rejetées comme incertaines (#45) ; le Hangul reste un contrôle de
+  // script pour le coréen, il ne distingue pas le français de l'anglais.
   const HANGUL = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/;
+  const VOICE_CONFIDENCE_MIN = 0.5;
   const voiceResultError = (result, pair) => {
     if (!result || typeof result.text !== 'string' || typeof result.translation !== 'string' ||
       !result.text.length || !result.translation.length ||
-      result.text.length > VOICE_TEXT_MAX || result.translation.length > VOICE_TEXT_MAX) {
+      result.text.length > VOICE_TEXT_MAX || result.translation.length > VOICE_TEXT_MAX ||
+      typeof result.target !== 'string' || !Number.isFinite(result.confidence)) {
       return 'invalid-response';
     }
     const korean = result.language === 'ko';
     if (!pair.includes(result.language) ||
+      result.target !== pair.find(code => code !== result.language) ||
+      result.confidence < VOICE_CONFIDENCE_MIN ||
       HANGUL.test(result.text) !== korean || HANGUL.test(result.translation) === korean) return 'unclear';
     return null;
   };
@@ -179,7 +186,10 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     if (room.utterance !== utterance || utterance.state !== 'listening') return;
     utterance.state = 'processing';
     clearTimeout(utterance.timer);
-    const pcm = Buffer.concat(utterance.chunks);
+    // La concaténation copie : les trames d'origine sont effacées tout de suite
+    // et la copie part seule au fournisseur, effaçable pendant le traitement.
+    const pcm = utterance.pcm = Buffer.concat(utterance.chunks);
+    for (const chunk of utterance.chunks) chunk.fill(0);
     utterance.chunks = null;
     const audioMs = Math.round(pcm.length / 32);
     const fail = (error, message) => {

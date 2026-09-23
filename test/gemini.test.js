@@ -18,12 +18,12 @@ test('one generateContent request carries the audio and the output contract', as
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
-    return ok({ language: 'fr', text: 'Bonjour le film.', translation: '영화 안녕하세요.' });
+    return ok({ language: 'fr', text: 'Bonjour le film.', target: 'ko', translation: '영화 안녕하세요.', confidence: 0.9 });
   };
   const service = createVoiceService({ env: { GEMINI_API_KEY: 'secret-key' }, fetchImpl });
   const pcm = Buffer.from([7, 1, 2, 3]);
   const result = await service.translate(pcm, { pair: ['fr', 'ko'] });
-  assert.deepEqual(result, { language: 'fr', text: 'Bonjour le film.', translation: '영화 안녕하세요.' });
+  assert.deepEqual(result, { language: 'fr', text: 'Bonjour le film.', target: 'ko', translation: '영화 안녕하세요.', confidence: 0.9 });
   assert.equal(calls.length, 1);
   const { url, init } = calls[0];
   assert.equal(url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent');
@@ -32,19 +32,31 @@ test('one generateContent request carries the audio and the output contract', as
   const body = JSON.parse(init.body);
   assert.equal(body.contents.length, 1);
   const audio = body.contents[0].parts.find(part => part.inlineData);
-  assert.equal(audio.inlineData.mimeType, 'audio/L16;codec=pcm;rate=16000');
-  assert.ok(Buffer.from(audio.inlineData.data, 'base64').equals(pcm));
+  assert.equal(audio.inlineData.mimeType, 'audio/wav');
+  // Le PCM nu n'a pas de type accepte : il part dans un conteneur WAV s16 mono
+  // 16 kHz dont la charge utile reste identique, octet pour octet.
+  const wav = Buffer.from(audio.inlineData.data, 'base64');
+  assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
+  assert.equal(wav.readUInt32LE(4), 36 + pcm.length);
+  assert.equal(wav.toString('ascii', 8, 16), 'WAVEfmt ');
+  assert.equal(wav.readUInt16LE(20), 1);
+  assert.equal(wav.readUInt16LE(22), 1);
+  assert.equal(wav.readUInt32LE(24), 16000);
+  assert.equal(wav.readUInt16LE(34), 16);
+  assert.equal(wav.toString('ascii', 36, 40), 'data');
+  assert.equal(wav.readUInt32LE(40), pcm.length);
+  assert.ok(wav.subarray(44).equals(pcm));
   assert.ok(body.contents[0].parts.some(part => typeof part.text === 'string' && part.text.length));
   const config = body.generationConfig;
   assert.equal(config.responseMimeType, 'application/json');
-  assert.deepEqual(config.responseSchema.required, ['language', 'text', 'translation']);
+  assert.deepEqual(config.responseSchema.required, ['language', 'text', 'target', 'translation', 'confidence']);
 });
 
 test('the model choice stays server-side and overridable by env', async () => {
   const calls = [];
   const service = createVoiceService({
     env: { GEMINI_API_KEY: 'k', GEMINI_MODEL: 'gemini-test-model' },
-    fetchImpl: async url => { calls.push(url); return ok({ language: 'ko', text: '안녕.', translation: 'Salut.' }); },
+    fetchImpl: async url => { calls.push(url); return ok({ language: 'ko', text: '안녕.', target: 'fr', translation: 'Salut.', confidence: 0.9 }); },
   });
   await service.translate(Buffer.alloc(4), { pair: ['fr', 'ko'] });
   assert.equal(calls[0], 'https://generativelanguage.googleapis.com/v1beta/models/gemini-test-model:generateContent');

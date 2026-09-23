@@ -14,7 +14,7 @@ const fakeService = () => {
   service.translate = async (pcm, options) => {
     service.translated.push({ bytes: pcm.length, pcm, ...options });
     if (service.nextTranslate) return service.nextTranslate();
-    return { language: 'fr', text: 'Bonjour le film.', translation: '영화 안녕하세요.' };
+    return { language: 'fr', text: 'Bonjour le film.', target: 'ko', translation: '영화 안녕하세요.', confidence: 0.9 };
   };
   return service;
 };
@@ -92,7 +92,7 @@ async function boot(t, { service = fakeService(), timing, patch } = {}) {
   });
   const voice = client => client.messages.filter(message => message.type === 'voice');
   const send = (client, action) => client.socket.send(JSON.stringify({ type: 'voice', action }));
-  return { request, admin, createRoom, join, open, voice, send, service, dataDir };
+  return { request, admin, createRoom, join, open, voice, send, service, dataDir, hub: instance.hub };
 }
 
 test('a prise is private to the speaker, exclusive and server-ordered', async t => {
@@ -229,26 +229,34 @@ test('uncertain, unsupported or contradictory language is rejected after the pro
     send(a, 'stop');
     return a.waitFor(m => m.state === 'failed' || m.state === 'understood', since);
   };
-  // Langue hors paire, indéterminée, contredite par la transcription puis par
-  // la direction : chaque rejet est une erreur locale 'unclear', jamais un
-  // surtitre trompeur.
+  // Langue hors paire ou absente, script contredit par la transcription puis
+  // par la traduction, direction déclarée fausse et certitude insuffisante :
+  // chaque rejet est une erreur locale 'unclear', jamais un surtitre trompeur.
   for (const result of [
-    { language: 'en', text: 'Hi there.', translation: 'Salut.' },
-    { language: null, text: 'Bonjour.', translation: '안녕.' },
-    { language: 'fr', text: '안녕하세요.', translation: 'Bonjour.' },
-    { language: 'ko', text: '안녕하세요.', translation: '안녕하세요.' },
+    { language: 'en', text: 'Hi there.', target: 'fr', translation: 'Salut.', confidence: 0.9 },
+    { language: null, text: 'Bonjour.', target: 'ko', translation: '안녕.', confidence: 0.9 },
+    { language: 'fr', text: '안녕하세요.', target: 'ko', translation: 'Bonjour.', confidence: 0.9 },
+    { language: 'ko', text: '안녕하세요.', target: 'fr', translation: '안녕하세요.', confidence: 0.9 },
+    { language: 'fr', text: 'Bonjour.', target: 'fr', translation: 'Bonjour.', confidence: 0.9 },
+    { language: 'ko', text: '안녕하세요.', target: 'ko', translation: 'Bonjour.', confidence: 0.9 },
+    { language: 'fr', text: 'Bonjour.', target: 'ko', translation: '안녕.', confidence: 0.2 },
   ]) {
     service.nextTranslate = () => result;
     const failed = await prise();
     assert.equal(failed.state, 'failed', JSON.stringify(result));
     assert.equal(failed.error, 'unclear', JSON.stringify(result));
   }
+  // Une réponse sans direction ni certitude déclarées est une faute fournisseur.
+  service.nextTranslate = () => ({ language: 'fr', text: 'Bonjour.', translation: '안녕.' });
+  const malformed = await prise();
+  assert.equal(malformed.state, 'failed');
+  assert.equal(malformed.error, 'invalid-response');
   // Every call actually sent consumed quota (#45); nothing reached the room.
-  assert.equal(service.translated.length, 4);
+  assert.equal(service.translated.length, 8);
   assert.equal(b.messages.filter(m => m.type === 'voice').length, 0);
   // Une réponse coréenne cohérente passe : transcription à l'orateur,
   // traduction française à tous.
-  service.nextTranslate = () => ({ language: 'ko', text: '엔딩에서 만나요.', translation: 'On se retrouve au générique.' });
+  service.nextTranslate = () => ({ language: 'ko', text: '엔딩에서 만나요.', target: 'fr', translation: 'On se retrouve au générique.', confidence: 0.9 });
   const last = a.messages.length;
   send(a, 'start');
   await a.waitFor(m => m.state === 'started', last);
@@ -281,7 +289,7 @@ test('provider failures are local and release the lock for the next prise', asyn
   await prise();
   const malformed = await a.waitFor(m => m.state === 'failed' && m.error === 'invalid-response');
   assert.ok(malformed);
-  service.nextTranslate = () => new Promise(resolve => setTimeout(() => resolve({ language: 'fr', text: 'tard', translation: 'tard' }), 500));
+  service.nextTranslate = () => new Promise(resolve => setTimeout(() => resolve({ language: 'fr', text: 'tard', target: 'ko', translation: 'tard', confidence: 0.9 }), 500));
   await prise();
   const late = await a.waitFor(m => m.state === 'failed' && m.error === 'timeout');
   assert.ok(late);
@@ -410,23 +418,41 @@ test('voice logs stay metadata-only: pseudonymized room, no code or names', asyn
 });
 
 test('audio buffers are zeroed on terminal states, including late results', async t => {
-  const { admin, createRoom, open, send, service } = await boot(t, {
+  const { admin, createRoom, join, open, send, service, hub } = await boot(t, {
     timing: { processMs: 120 }, patch: { voiceCooldown: 0 } });
   const room = await createRoom({ code: 'wipe-room', voice: true });
+  const guest = await join(room.code);
   const a = await open(room.id, admin, 'Alex');
+  const b = await open(room.id, guest, 'Minji');
+  // Le pong confirme la trame rangée : les buffers d'origine sont observables
+  // par référence avant que la prise ne passe en traitement.
   const prise = async () => {
     send(a, 'start');
     await a.waitFor(m => m.state === 'started');
     a.socket.send(tone());
+    await a.settle();
+    const chunks = [...(hub.get(room.id).utterance?.chunks ?? [])];
     send(a, 'stop');
+    return chunks;
   };
-  await prise();
+  const first = await prise();
   await a.waitFor(m => m.state === 'result');
   assert.ok(service.translated[0].pcm.every(byte => byte === 0));
+  // Les trames reçues sont elles-mêmes réduites à zéro dès la concaténation.
+  assert.ok(first.length > 0);
+  assert.ok(first.every(chunk => chunk.every(byte => byte === 0)));
   // A provider answer past the processing cap finds an already-zeroed buffer
   // and its result is dropped, never broadcast.
-  service.nextTranslate = () => new Promise(resolve => setTimeout(() => resolve({ language: 'fr', text: 'tard', translation: 'tard' }), 400));
-  await prise();
+  service.nextTranslate = () => new Promise(resolve => setTimeout(() => resolve({ language: 'fr', text: 'tard', target: 'ko', translation: 'tard', confidence: 0.9 }), 400));
+  const late = await prise();
   await a.waitFor(m => m.state === 'failed' && m.error === 'timeout');
   assert.ok(service.translated[1].pcm.every(byte => byte === 0));
+  assert.ok(late.every(chunk => chunk.every(byte => byte === 0)));
+  // Une prise libérée pendant le traitement perd aussi sa copie concaténée.
+  const third = await prise();
+  const since = b.messages.length;
+  a.socket.close();
+  await b.waitFor(m => m.type === 'state' && m.members.length === 1, since);
+  assert.ok(service.translated[2].pcm.every(byte => byte === 0));
+  assert.ok(third.every(chunk => chunk.every(byte => byte === 0)));
 });
