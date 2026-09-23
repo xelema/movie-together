@@ -58,7 +58,12 @@ const showControls = page => expect(async () => {
   await page.mouse.move(point.x, point.y);
   await page.mouse.move(point.x + 1, point.y);
   await expect(page.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/, { timeout: 1000 });
-  await page.mouse.move(point.x + 2, point.y);
+  // The wake moves can land on the picture while the bar is still sliding and
+  // WebKit never fires mouseenter for an element reaching a parked pointer, so
+  // Plyr's hover flag can stay off: its hide timer then drops the chrome
+  // mid-click and the poster catches the hit test. A real hover inside the
+  // shown bar latches the flag until the pointer actually leaves it.
+  await page.locator('.plyr__controls').hover();
 }).toPass({ timeout: 10_000 });
 // Point the mouse where the control lands once shown: the move wakes Plyr's controls
 // and the wiggle enters the bar, so its hover flag keeps them open while playing.
