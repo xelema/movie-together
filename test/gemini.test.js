@@ -55,6 +55,10 @@ test('opening a session sends the Live Translate setup once connected', () => {
   assert.deepEqual(setup.inputAudioTranscription, {});
   assert.deepEqual(setup.outputAudioTranscription, {});
   assert.equal(setup.translationConfig, undefined);
+  // La poignée de main acceptée n'a que ces cinq clés : toute clé en plus
+  // au niveau setup est une régression (cf. translationConfig refusé).
+  assert.deepEqual(Object.keys(setup).sort(),
+    ['generationConfig', 'inputAudioTranscription', 'model', 'outputAudioTranscription', 'systemInstruction']);
   // Consigne sobre : registre familier et fidélité, jamais le contexte du film.
   const prompt = setup.systemInstruction.parts[0].text;
   assert.match(prompt, /banmal/);
