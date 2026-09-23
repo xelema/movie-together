@@ -76,6 +76,11 @@ const clickControl = (page, selector, done) => expect(async () => {
   // The action a previous click started can land while these moves run:
   // re-check before clicking or a toggle flips back while it is still landing.
   if (done && await done()) return;
+  // Aimed at a hidden transport, the wake moves land on the picture and never
+  // enter the bar: Plyr's hover flag stays off, so its hide timer can re-hide
+  // the controls mid-click and let the poster catch the hit test. Hovering the
+  // shown control waits out the slide and keeps the bar pinned.
+  await page.locator(`.plyr:not(.plyr--hide-controls) ${selector}`).hover({ timeout: 3000 });
   await page.locator(`.plyr:not(.plyr--hide-controls) ${selector}`).click({ timeout: 3000 });
   // A fullscreen request can take seconds to resolve on a loaded box: give the
   // done state a poll window before deciding the click missed.
@@ -480,11 +485,15 @@ test('track and settings choices stay viewer-local while only the transport move
       await expect(phone.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
       // A wrongly delivered press pauses the room within a frame or two.
       await phone.waitForTimeout(500);
+      // A resume only lands once the phone's own buffer passes the room gate:
+      // the phase leaves 'buffering' when every member reports enough ahead.
+      await expect.poll(() => latest.get(phone)?.state?.phase, { timeout: 15_000 }).toBe('playing');
       await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
       // A tap that starts on the shown transport is a real press and moves the room.
       await tap(spot);
       await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
       await tap(spot);
+      await expect.poll(() => latest.get(phone)?.state?.phase, { timeout: 15_000 }).toBe('playing');
       await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
       await touchContext.close();
       // A member leaving pauses the room: wait for it, then resume.
@@ -636,17 +645,9 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     expect(await host.evaluate(() => window.voiceTest.states)).toContain('processing');
     await expect(host.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
     await expect(guest.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
-    // Hors écoute, la piste est muette : pas de micro actif au repos.
-    await expect.poll(() => host.evaluate(() =>
-      window.voiceTest.stream?.getAudioTracks().every(track => !track.enabled) ?? false)).toBe(true);
-    // Le texte compris n'atteint jamais l'invité et le film continue.
-    await expect(guest.locator('#voice-local')).not.toContainText('On se retrouve');
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
-    // Un événement périmé ne remplace pas un surtitre plus récent.
-    await guest.evaluate(() => window.player.onVoice({ type: 'voice', state: 'result', utterance: 'stale', seq: 0, speaker: 'Ghost', text: 'STALE' }));
-    await expect(guest.locator('#voice-result')).toContainText('Alex ·');
     // Placement variante B : micro sur le bord droit, carte locale en bas à
-    // gauche, surtitre centré en haut de l'image.
+    // gauche, surtitre centré en haut de l'image. Carte et surtitre s'effacent
+    // après RESULT_MS : les mesures se prennent tant qu'ils sont visibles.
     await showControls(host);
     const stage = await host.locator('.video-stage').boundingBox();
     const micBox = await host.locator('#voice-mic').boundingBox();
@@ -657,6 +658,18 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     expect(cardBox.y - stage.y).toBeGreaterThan(stage.height * .6);
     expect(Math.abs(resultBox.x + resultBox.width / 2 - stage.x - stage.width / 2)).toBeLessThan(stage.width * .15);
     expect(resultBox.y - stage.y).toBeLessThan(stage.height * .3);
+    // Le fixture de 50 s peut finir pendant la prise : position fraîche avant
+    // la suite, comme en tête de passe.
+    await ensurePlaying();
+    // Hors écoute, la piste est muette : pas de micro actif au repos.
+    await expect.poll(() => host.evaluate(() =>
+      window.voiceTest.stream?.getAudioTracks().every(track => !track.enabled) ?? false)).toBe(true);
+    // Le texte compris n'atteint jamais l'invité et le film continue.
+    await expect(guest.locator('#voice-local')).not.toContainText('On se retrouve');
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    // Un événement périmé ne remplace pas un surtitre plus récent.
+    await guest.evaluate(() => window.player.onVoice({ type: 'voice', state: 'result', utterance: 'stale', seq: 0, speaker: 'Ghost', text: 'STALE' }));
+    await expect(guest.locator('#voice-result')).toContainText('Alex ·');
     // Après l'erreur, l'invité reprend la parole : interface coréenne, sens
     // figé ko -> fr. Changer la langue du site pendant l'écoute n'y touche pas.
     await showControls(guest);
