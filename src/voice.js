@@ -1,9 +1,10 @@
 // Fournisseur Gemini (#44) : un seul appel generateContent par prise renvoie
 // la transcription source et la traduction finale en JSON structuré. Le sens
 // est fixé par la langue d'interface de l'orateur, jamais détecté par le
-// modèle. La clé et le choix du modèle restent côté serveur ; sans clé
+// modèle. La clé et le choix du modèle restent côté serveur. Sans clé
 // configurée le service est absent et la capacité annonce indisponible,
-// jamais simulée.
+// jamais simulée. La séance interrompt un appel encore en vol via le signal
+// passé à translate (#46).
 const MODEL = 'gemini-3.1-flash-lite';
 const ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 const NAMES = { fr: 'French', ko: 'Korean' };
@@ -38,10 +39,10 @@ export function createVoiceService({ env = process.env, fetchImpl = fetch, timeo
   if (!apiKey) return null;
   const model = env.GEMINI_MODEL || MODEL;
   return {
-    async translate(pcm, { source, target }) {
+    async translate(pcm, { source, target, signal }) {
       const response = await fetchImpl(`${ENDPOINT}/${model}:generateContent`, {
         method: 'POST',
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)].filter(Boolean)),
         headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({
           contents: [{ parts: [

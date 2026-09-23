@@ -46,7 +46,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     utterance = null;
     // Une prise armée mais non branchée (starting) est démontée aussi : le
     // graphe est libéré et la piste rendue muette. Fermer le contexte peut
-    // faire échouer un armement encore en vol ; son erreur, plus tardive,
+    // faire échouer un armement encore en vol. Son erreur, plus tardive,
     // n'écrase pas celle affichée ici.
     if (state === 'listening' || state === 'starting') stopCapture();
     clearTimeout(watchdog);
@@ -146,7 +146,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       return;
     }
     if (event.state === 'failed') {
-      // Un échec identifié ne vaut que pour la prise courante ; un refus sans
+      // Un échec identifié ne vaut que pour la prise courante. Un refus sans
       // identifiant ne s'applique qu'à une demande en attente d'accord.
       if (event.utterance ? event.utterance !== utterance : state !== 'starting') return;
       const suffix = event.retryAfter ? t(` · ${Math.ceil(event.retryAfter)} s`, ` · ${Math.ceil(event.retryAfter)}초`) : '';

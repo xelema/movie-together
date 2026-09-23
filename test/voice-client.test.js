@@ -80,7 +80,7 @@ test('a saturated socket aborts the prise: local error, clean teardown, retry wo
   assert.equal(mic.dataset.state, 'error');
   assert.equal(local.hidden, false);
   assert.match(local.textContent, /Connexion lente/);
-  // The room is told to release the lock; nothing else ever left the page:
+  // The room is told to release the lock. Nothing else ever left the page:
   // no stop, no command, no result and the supertitle stays untouched.
   assert.deepEqual(player.sent, [
     { type: 'voice', action: 'start', lang: 'fr' },

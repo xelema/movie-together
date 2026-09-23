@@ -122,7 +122,7 @@ export class SyncPlayer {
   position() { return Math.max(0, this.video.currentTime - this.offset); }
   target() { return roomTarget(this.state, this.serverTime()); }
   send(message) { if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(message)); }
-  // PCM frames ride the same socket; the 64 Kio bufferedAmount bound from #39
+  // PCM frames ride the same socket. The 64 Kio bufferedAmount bound from #39
   // aborts the prise rather than dropping audio silently or stalling the page.
   sendFrame(bytes) {
     if (this.ws?.readyState !== WebSocket.OPEN || this.ws.bufferedAmount >= 65536) return false;

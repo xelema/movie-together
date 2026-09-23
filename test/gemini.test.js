@@ -81,3 +81,25 @@ test('provider errors and malformed payloads reject', async () => {
       json: async () => ({ candidates: [{ content: { parts: [{ text: 'not json' }] } }] }) }) });
   await assert.rejects(() => broken.translate(Buffer.alloc(4), direction));
 });
+
+test('the caller signal reaches fetch and aborts the provider call', async () => {
+  let observed;
+  const service = createVoiceService({ env: { GEMINI_API_KEY: 'k' }, timeoutMs: 60_000,
+    fetchImpl: (url, init) => new Promise((_, reject) => {
+      observed = init.signal;
+      init.signal.addEventListener('abort', () => reject(init.signal.reason));
+    }) });
+  const controller = new AbortController();
+  const pending = service.translate(Buffer.alloc(4), { source: 'fr', target: 'ko', signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, error => error.name === 'AbortError');
+  assert.equal(observed.aborted, true);
+});
+
+test('the internal bound still aborts a call made without a caller signal', async () => {
+  const service = createVoiceService({ env: { GEMINI_API_KEY: 'k' }, timeoutMs: 20,
+    fetchImpl: (url, init) => new Promise((_, reject) =>
+      init.signal.addEventListener('abort', () => reject(init.signal.reason))) });
+  await assert.rejects(service.translate(Buffer.alloc(4), { source: 'fr', target: 'ko' }),
+    error => error.name === 'TimeoutError');
+});
