@@ -29,10 +29,13 @@ jobs:
             aarch64) asset=ffmpeg-n8.1.2-52-g5a03dfa0f6-linuxarm64-gpl-8.1; sha=077a3a11f41e38b2d54c905157d6bcb86e6ea6d027a0c0a582582e470149458d ;;
             *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
           esac
-          curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-11-13-20/$asset.tar.xz" -o /tmp/ffmpeg.tar.xz
-          echo "$sha  /tmp/ffmpeg.tar.xz" | sha256sum -c -
-          tar -xJf /tmp/ffmpeg.tar.xz -C /tmp
-          sudo install -m 755 "/tmp/$asset/bin/ffmpeg" "/tmp/$asset/bin/ffprobe" /usr/local/bin/
+          # /tmp is shared and survives across runs on a self-hosted runner.
+          tmp=$(mktemp -d)
+          curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-11-13-20/$asset.tar.xz" -o "$tmp/ffmpeg.tar.xz"
+          echo "$sha  $tmp/ffmpeg.tar.xz" | sha256sum -c -
+          tar -xJf "$tmp/ffmpeg.tar.xz" -C "$tmp"
+          sudo install -m 755 "$tmp/$asset/bin/ffmpeg" "$tmp/$asset/bin/ffprobe" /usr/local/bin/
+          rm -rf "$tmp"
       - run: npm ci
       - run: npm test
       - run: npx playwright install --with-deps chromium firefox webkit
