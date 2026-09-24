@@ -128,6 +128,14 @@ const ensurePlaying = () => expect.poll(async () => {
   return hostTime >= 0 && guestTime >= 0 && Math.abs(hostTime - guestTime) < 1;
 }, { timeout: 15_000 }).toBe(true);
 
+// Plyr only auto-hides while the room plays: a fixture that ends mid-pass
+// freezes the séance and pins the bar, a room state rather than a hiding
+// defect. Re-arm a paused room, then the hide still has to prove itself.
+const controlsAutoHide = page => expect(async () => {
+  if (await page.evaluate(() => window.player?.state?.phase === 'paused')) await ensurePlaying();
+  await expect(page.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
+}).toPass({ timeout: 30_000 });
+
 const dump = async (page, role) => `${role}: ` + JSON.stringify({
   state: latest.get(page)?.state,
   media: await page.locator('video').evaluate(video => ({ ready: video.readyState, error: video.error?.message,
@@ -474,7 +482,7 @@ test('track and settings choices stay viewer-local while only the transport move
       await expect.poll(() => latest.get(phone)?.state?.phase, { timeout: 15_000 }).toBe('playing');
       await expect.poll(() => phone.locator('video').evaluate(video => video.paused), { timeout: 10_000 }).toBe(false);
       await expect(phone.locator('#buffering-overlay')).toBeHidden();
-      await expect(phone.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 10_000 });
+      await controlsAutoHide(phone);
       const cdp = await touchContext.newCDPSession(phone);
       const tap = async (point, hold = 0) => {
         await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: point.x, y: point.y, id: 1 }] });
@@ -580,7 +588,7 @@ test('the picture layout holds across viewports and fullscreen', async () => {
       await showControls(host);
       await expect(host.locator('#voice-mic')).toBeVisible();
       await host.mouse.move(0, 0);
-      await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
+      await controlsAutoHide(host);
       await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '0', { timeout: 1000 });
       await expect(host.locator('video')).toHaveCSS('cursor', 'none', { timeout: 1000 });
     }).toPass({ timeout: 60_000 });
@@ -609,7 +617,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     // Le micro suit la visibilité des contrôles Plyr hors enregistrement (#47) :
     // overlay caché, micro caché. L'overlay revient, le micro revient.
     await host.mouse.move(0, 0);
-    await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
+    await controlsAutoHide(host);
     await expect(host.locator('#voice-mic')).toBeHidden();
     await showControls(host);
     await expect(host.locator('#voice-mic')).toBeVisible();
@@ -650,7 +658,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     expect(await host.evaluate(() => window.chromeDrops)).toBe(0);
     // Le départ du micro sans focus rend l'auto-masquage immédiat.
     await host.mouse.move(0, 0);
-    await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
+    await controlsAutoHide(host);
     await expect(host.locator('#voice-mic')).toBeHidden();
     await showControls(host);
     await expect(host.locator('#voice-mic')).toBeVisible();
@@ -664,7 +672,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await host.waitForFunction(at => performance.now() - at > 2600, focusedAt);
     await expect(host.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
     await host.evaluate(() => document.querySelector('#voice-mic').blur());
-    await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
+    await controlsAutoHide(host);
     await expect(host.locator('#watch')).toHaveAttribute('data-chrome', 'false');
     await showControls(host);
     await expect(host.locator('#voice-mic')).toBeVisible();
@@ -681,7 +689,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     // Pendant l'enregistrement le micro reste visible et rouge même quand
     // l'overlay se cache.
     await host.mouse.move(0, 0);
-    await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
+    await controlsAutoHide(host);
     await expect(host.locator('#voice-mic')).toBeVisible();
     await expect(host.locator('#voice-mic')).toHaveCSS('color', 'rgb(229, 72, 77)');
     // Pendant la prise de l'hôte, l'invité est refusé localement, en coréen,
@@ -863,7 +871,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
       await expect(phone.locator('#voice-result')).not.toContainText('Sam');
       // Après les taps aucun :hover ne reste accroché au micro : la barre et
       // le micro repartent en auto-masquage tactile.
-      await expect(phone.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 5000 });
+      await controlsAutoHide(phone);
       await expect(phone.locator('#voice-mic')).toBeHidden();
       await touchContext.close();
       // Le départ du membre fige la séance ou la laisse reprendre seule :
