@@ -150,6 +150,8 @@ html[lang=ko] #screen .track-controls strong,html[lang=ko] #participants span:no
 .watch-top .eyebrow{flex-shrink:0}
 #room-code{font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #leave{margin-left:auto}
+#copy-invite{flex-shrink:0;min-height:34px;padding:5px 12px;font-size:13px}
+#room-code:empty+#copy-invite{display:none}
 .watch-top,.watch-info,#playback-status{transition:opacity .4s var(--ease),transform .4s var(--ease)}
 #watch[data-chrome=false] .watch-top,#watch[data-chrome=false] .watch-info,#watch[data-chrome=false] #playback-status{opacity:0;transform:translateY(5px);pointer-events:none}
 

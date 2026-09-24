@@ -322,11 +322,7 @@ async function refresh() {
   $('rooms').replaceChildren(...rooms.map(room => {
     const card = el('div', undefined, 'card');
     card.append(el('p', `${movies.find(movie => movie.id === room.movieId)?.title ?? ''} · ${room.participants} ${t('personne(s)', '명')} · ${t('jusqu’à', '까지')} ${new Date(room.expires).toTimeString().slice(0, 5)}`), el('code', room.code),
-      button(t('Ouvrir', '열기'), () => enterRoom(room.id, undefined, { code: room.code, title: movies.find(movie => movie.id === room.movieId)?.title })), button(t('Copier le lien', '링크 복사'), async () => {
-        // Clipboard needs a secure context; on plain HTTP show the link instead.
-        if (!navigator.clipboard) { notice(`${t('Lien', '링크')} : ${room.link}`); return; }
-        await navigator.clipboard.writeText(room.link); notice(t('Lien copié.', '링크를 복사했습니다.'));
-      }),
+      button(t('Ouvrir', '열기'), () => enterRoom(room.id, undefined, { code: room.code, title: movies.find(movie => movie.id === room.movieId)?.title })), button(t('Copier le lien', '링크 복사'), () => copyLink(room.link)),
       button(t('Fermer la séance', '시청방 닫기'), async () => { await api(`/api/rooms/${room.id}`, { method: 'DELETE' }); await refresh(); }, 'danger'));
     return card;
   }));
@@ -337,6 +333,11 @@ async function refresh() {
     const card = el('div', undefined, 'card'); card.append(el('p', `${upload.name} · ${Math.round(upload.offset / upload.size * 100)} %`), el('p', t('Choisissez à nouveau le même fichier pour reprendre.', '같은 파일을 선택하면 이어서 업로드합니다.')),
       button(t('Supprimer cet envoi', '업로드 삭제'), async () => { await api(`/api/uploads/${upload.id}`, { method: 'DELETE' }); await refresh(); }, 'danger')); return card;
   }));
+}
+async function copyLink(link) {
+  // Clipboard needs a secure context; on plain HTTP show the link instead.
+  if (!navigator.clipboard) { notice(`${t('Lien', '링크')} : ${link}`); return; }
+  await navigator.clipboard.writeText(link); notice(t('Lien copié.', '링크를 복사했습니다.'));
 }
 function movieCard(movie) {
   const card = el('article', undefined, 'card'); card.append(el('h2', movie.title));
@@ -549,6 +550,7 @@ $('join-form').elements.code.addEventListener('paste', event => {
 $('logout').addEventListener('click', handle(async () => { disposePlayer(); $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await api('/api/logout', { method: 'POST', body: {} }); await refresh(); }));
 $('refresh').addEventListener('click', handle(refresh));
 $('allow-sound').addEventListener('click', handle(() => player?.activate()));
+$('copy-invite').addEventListener('click', handle(() => copyLink(`${location.origin}/#invite=${encodeURIComponent($('room-code').textContent)}`)));
 $('upload-form').addEventListener('submit', handle(() => upload($('upload-file').files[0])));
 $('upload-file').addEventListener('change', renderDisk);
 $('audio').addEventListener('change', () => player?.changeTrack('audio', Number($('audio').value)));
