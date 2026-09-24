@@ -120,3 +120,88 @@ test('a permanent decoder error stays visible when play is pressed again', async
   });
   await player.activate(); assert.equal(player.failure, 'Unsupported decoder');
 });
+
+test('a pause event delivered after a stalled loop stays local', () => {
+  const recorded = () => {
+    const events = {};
+    return { events, addEventListener: (name, handler) => (events[name] ??= []).push(handler), removeEventListener() {} };
+  };
+  const video = recorded(), doc = recorded(), win = recorded(), textTracks = recorded();
+  Object.assign(video, { textTracks, paused: true, pause() { this.paused = true; }, load() {}, removeAttribute() {} });
+  const globals = ['document', 'window', 'location', 'matchMedia', 'ResizeObserver', 'WebSocket', 'requestAnimationFrame'];
+  const saved = Object.fromEntries(globals.map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, {
+    document: Object.assign(doc, { hidden: false }),
+    window: win,
+    location: { protocol: 'https:', host: 'example.test' },
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    ResizeObserver: class { observe() {} disconnect() {} },
+    WebSocket: class { static OPEN = 1; constructor() { this.readyState = 0; } send() {} close() {} },
+    requestAnimationFrame: () => {},
+  });
+  try {
+    const player = new SyncPlayer({ video, roomId: 'room', onStatus() {}, onState() {}, onTracks() {}, onActivation() {} });
+    const commands = [];
+    player.command = (...args) => commands.push(args);
+    player.state = { epoch: 3, phase: 'playing', position: 10, startsAt: 0, duration: 50 };
+    // pause() only queues its event: a stalled main thread can deliver it after
+    // the self-caused window expired, and it must still not reach the room.
+    video.paused = false;
+    player.pauseLocal();
+    player.internalUntil = 0;
+    video.events['pause'][0]();
+    assert.deepEqual(commands, []);
+    // A pause we did not cause while the room plays still reaches it.
+    video.paused = false;
+    video.pause();
+    video.events['pause'][0]();
+    assert.deepEqual(commands, [['pause']]);
+    player.disposed = true;
+    clearInterval(player.interval); clearInterval(player.pinger); clearInterval(player.initialPings);
+  } finally {
+    for (const key of globals) saved[key] === undefined ? delete globalThis[key] : globalThis[key] = saved[key];
+  }
+});
+
+test('a pause counted before a source reload cannot swallow the next real pause', () => {
+  const recorded = () => {
+    const events = {};
+    return { events, addEventListener: (name, handler) => (events[name] ??= []).push(handler), removeEventListener() {} };
+  };
+  const video = recorded(), doc = recorded(), win = recorded(), textTracks = recorded();
+  Object.assign(video, { textTracks, paused: true, pause() { this.paused = true; }, load() {}, removeAttribute() {} });
+  const globals = ['document', 'window', 'location', 'matchMedia', 'ResizeObserver', 'WebSocket', 'requestAnimationFrame'];
+  const saved = Object.fromEntries(globals.map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, {
+    document: Object.assign(doc, { hidden: false }),
+    window: win,
+    location: { protocol: 'https:', host: 'example.test' },
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    ResizeObserver: class { observe() {} disconnect() {} },
+    WebSocket: class { static OPEN = 1; constructor() { this.readyState = 0; } send() {} close() {} },
+    requestAnimationFrame: () => {},
+  });
+  let player;
+  try {
+    player = new SyncPlayer({ video, roomId: 'room', onStatus() {}, onState() {}, onTracks() {}, onActivation() {} });
+    const commands = [];
+    player.command = (...args) => commands.push(args);
+    player.state = { epoch: 3, phase: 'playing', position: 10, startsAt: 0, duration: 50 };
+    // load() pauses a playing element, then video.load() drops the queued
+    // pause event: the counted pause must not outlive the reload.
+    video.paused = false;
+    player.load(null);
+    video.paused = false;
+    video.pause();
+    video.events['pause'][0]();
+    assert.deepEqual(commands, [['pause']]);
+    // A pause we cause after the reload is still spent by its own event.
+    video.paused = false;
+    player.pauseLocal();
+    video.events['pause'][0]();
+    assert.deepEqual(commands, [['pause']]);
+  } finally {
+    player?.dispose();
+    for (const key of globals) saved[key] === undefined ? delete globalThis[key] : globalThis[key] = saved[key];
+  }
+});

@@ -23,12 +23,13 @@ export function bufferEnd(video) {
 }
 
 export class SyncPlayer {
-  constructor({ video, roomId, name = '', forceShader = false, onStatus, onState, onTracks, onActivation }) {
-    Object.assign(this, { video, roomId, forceShader, onStatus, onState, onTracks, onActivation });
+  constructor({ video, roomId, name = '', forceShader = false, onStatus, onState, onTracks, onActivation, onVoice }) {
+    Object.assign(this, { video, roomId, forceShader, onStatus, onState, onTracks, onActivation, onVoice });
     this.offset = 0; this.audioChoice = 0; this.subtitleChoice = -1;
     this.name = name;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
-    this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.retries = 0; this.listeners = [];
+    this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.pendingPauses = 0;
+    this.retries = 0; this.listeners = [];
     // Defaults until the room publishes its sync policy in welcome.
     this.sync = { minBuffer: 8, tickMs: 200, startDelay: 1000 };
     this.silenceMs = 1500; this.bufferSeconds = 30; this.reportEveryMs = 200;
@@ -71,8 +72,11 @@ export class SyncPlayer {
       if (this.state?.phase !== 'playing') { this.pauseLocal(); this.command('play'); }
       else if (this.serverTime() < this.state.startsAt) this.pauseLocal();
     });
+    // pause() only queues its event: a stalled main thread can deliver it
+    // past the self-caused window, so count our pauses and spend one per event.
     this.listen(video, 'pause', () => {
-      if (!selfCaused(performance.now(), this.internalUntil) && this.state?.phase === 'playing' && this.serverTime() > this.state.startsAt) this.command('pause');
+      if (this.pendingPauses) { this.pendingPauses--; return; }
+      if (this.state?.phase === 'playing' && this.serverTime() > this.state.startsAt) this.command('pause');
     });
     this.listen(video, 'seeking', () => {
       if (!selfCaused(performance.now(), this.internalUntil) && this.state) this.command('seek', this.position());
@@ -103,10 +107,10 @@ export class SyncPlayer {
     const visible = !fullscreen && (!container?.classList.contains('plyr--hide-controls') || this.video.closest('#screen')?.classList.contains('settings-open'));
     // object-fit: contain letterboxes inside the element; the glyph size follows
     // the painted picture, which a --subtitle-size custom property carries to
-    // both native ::cue rendering and the colour renderer's caption overlay.
+    // ::cue, the colour renderer's captions and the translated supertitle.
     const aspect = this.video.videoWidth / this.video.videoHeight || 16 / 9;
     const pictureHeight = Math.min(rect.height, rect.width / aspect);
-    if (pictureHeight > 0) this.video.parentElement?.style.setProperty('--subtitle-size', `${subtitleFontSize(pictureHeight)}px`);
+    if (pictureHeight > 0) this.video.closest('.video-stage')?.style.setProperty('--subtitle-size', `${subtitleFontSize(pictureHeight)}px`);
     const line = visible && height ? Math.max(35, Math.min(84, 100 - ((controls?.getBoundingClientRect().height || 64) + 12) / height * 100)) : 84;
     const keep = this.subtitleChoice < 0 ? null : shownSubtitleTrack(Array.from(this.video.textTracks), this.subtitleChoice);
     for (const track of this.video.textTracks) {
@@ -122,6 +126,13 @@ export class SyncPlayer {
   position() { return Math.max(0, this.video.currentTime - this.offset); }
   target() { return roomTarget(this.state, this.serverTime()); }
   send(message) { if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(message)); }
+  // PCM frames ride the same socket. The 64 Kio bufferedAmount bound from #39
+  // aborts the prise rather than dropping audio silently or stalling the page.
+  sendFrame(bytes) {
+    if (this.ws?.readyState !== WebSocket.OPEN || this.ws.bufferedAmount >= 65536) return false;
+    this.ws.send(bytes);
+    return true;
+  }
   ping() { this.send({ type: 'ping', sentAt: performance.now() }); }
   connect() {
     if (this.disposed) return;
@@ -138,6 +149,7 @@ export class SyncPlayer {
       const message = JSON.parse(event.data);
       this.lastMessage = performance.now();
       if (message.type === 'pong') this.clock.sample(message.sentAt, performance.now(), message.serverNow);
+      if (message.type === 'voice') this.onVoice?.(message);
       if (message.type === 'welcome') {
         this.memberId = message.id;
         this.applySync(message.sync);
@@ -155,6 +167,7 @@ export class SyncPlayer {
     };
     this.ws.onclose = event => {
       if (this.disposed) return;
+      this.onVoice?.(null);
       clearInterval(this.initialPings); this.pauseLocal(); clearTimeout(this.startTimer); this.state = null;
       if ([1000, 1008].includes(event.code)) this.failure = 'Room fermée ou session expirée.';
       this.onStatus(event.code === 1000 || event.code === 1008 ? 'Room fermée ou session expirée.' : 'Connexion perdue. Séance en pause, reconnexion…');
@@ -163,7 +176,7 @@ export class SyncPlayer {
     };
     this.ws.onerror = () => this.onStatus('Connexion à la room impossible. Vérifier l’invitation.');
   }
-  pauseLocal() { this.internalUntil = performance.now() + INTERNAL_EVENT_MS; this.video.pause(); this.video.playbackRate = 1; }
+  pauseLocal() { this.internalUntil = performance.now() + INTERNAL_EVENT_MS; if (!this.video.paused) this.pendingPauses++; this.video.pause(); this.video.playbackRate = 1; }
   // The room's thresholds arrive with welcome and can change mid-session via state.
   applySync(sync) {
     const retune = sync.minBuffer !== undefined && sync.minBuffer !== this.sync.minBuffer;
@@ -200,7 +213,9 @@ export class SyncPlayer {
     this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.backend?.destroy(); this.backend = null;
     this.loadToken = (this.loadToken || 0) + 1; this.activating = false; this.recovering = false;
     this.movie = movie; this.failure = null; this.activated = activated; this.autoActivationTried = false; this.activationBlocked = false; this.onActivation(activated);
-    this.video.removeAttribute('src'); this.video.load();
+    // video.load() drops media events still queued on the element, so pauses
+    // counted but never delivered must not outlive the reload.
+    this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
     if (!movie) return;
     const versions = movie.renditions?.length ? movie.renditions : [{ id: 'original', manifest: 'master.m3u8', timelineOffset: 0 }];
     this.rendition = versions[0];
@@ -351,7 +366,7 @@ export class SyncPlayer {
   dispose() {
     this.disposed = true; clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings);
     clearTimeout(this.startTimer); clearTimeout(this.retry); this.subtitleObserver?.disconnect(); this.listeners.forEach(remove => remove());
-    this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load();
+    this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
     this.releaseWakeLock();
   }
 }
