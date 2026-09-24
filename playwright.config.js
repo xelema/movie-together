@@ -1,4 +1,10 @@
 import { defineConfig } from '@playwright/test';
+import { execSync } from 'node:child_process';
+
+// Headless Firefox on Linux needs an audio sink (PulseAudio auto_null) for WebAudio/cubeb.
+if (process.platform === 'linux') {
+  try { execSync('pulseaudio --start --exit-idle-time=-1', { stdio: 'ignore' }); } catch {}
+}
 
 export default defineConfig({
   // Playwright empties outputDir on start: keep it away from the colour report and the screenshots.

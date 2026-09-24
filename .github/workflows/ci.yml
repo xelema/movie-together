@@ -11,7 +11,7 @@ permissions:
 jobs:
   test:
     runs-on: self-hosted
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,7 +22,7 @@ jobs:
         run: |
           # The apt build ships the codec libraries browsers dlopen for playback; the pinned
           # static build shadows it on PATH and is what the application and tests exercise.
-          sudo apt-get update && sudo apt-get install -y ffmpeg xvfb libgl1-mesa-dri libegl-mesa0 libglx-mesa0
+          sudo apt-get update && sudo apt-get install -y ffmpeg xvfb libgl1-mesa-dri libegl-mesa0 libglx-mesa0 pulseaudio
           # Same pinned build as the Dockerfile, picked per runner architecture.
           case "$(uname -m)" in
             x86_64)  asset=ffmpeg-n8.1.2-52-g5a03dfa0f6-linux64-gpl-8.1;    sha=6fc8d0a3ac9e3956bef486655fbc0a049fb3dacb74ea2e44cc2fc62eeb80a182 ;;
@@ -39,7 +39,9 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npx playwright install --with-deps chromium firefox webkit
-      - run: xvfb-run -a npm run test:e2e
+      - run: |
+          pulseaudio --start --exit-idle-time=-1 || true
+          xvfb-run -a npm run test:e2e
       - run: docker build -t movie-night:test .
       - uses: actions/upload-artifact@v4
         if: failure()
