@@ -224,7 +224,7 @@ test('admin manages a film and two named viewers join in their language with one
     await host.locator('#settings-reset').click();
     await expect(host.locator('#set-maxRooms')).toHaveValue('20');
     await host.getByRole('tab', { name: 'Films' }).click();
-    await host.locator('#upload-file').setInputFiles({ name: 'fixture.mp4', mimeType: 'video/mp4', buffer: await readFile('data/e2e/fixture.mp4') }); await host.locator('#upload-button').click();
+    await host.locator('#upload-file').setInputFiles({ name: 'fixture.mp4', mimeType: 'video/mp4', buffer: await readFile('data/e2e/fixture.mp4') });
     await expect(host.locator('#movies')).toContainText('À préparer');
     await openDetails();
     await host.locator('#movies input[type=file]').setInputFiles({ name: 'dialogue.srt', mimeType: 'text/plain', buffer: Buffer.from('1\n00:00:00,000 --> 00:00:49,000\nUn sous-titre lisible.\n') });
