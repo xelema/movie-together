@@ -1,12 +1,16 @@
 name: Checks
 on:
   push:
+    branches: [main]
   pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -19,9 +23,14 @@ jobs:
           # The apt build ships the codec libraries browsers dlopen for playback; the pinned
           # static build shadows it on PATH and is what the application and tests exercise.
           sudo apt-get update && sudo apt-get install -y ffmpeg xvfb libgl1-mesa-dri libegl-mesa0 libglx-mesa0
-          asset=ffmpeg-n8.1.2-52-g5a03dfa0f6-linux64-gpl-8.1
+          # Same pinned build as the Dockerfile, picked per runner architecture.
+          case "$(uname -m)" in
+            x86_64)  asset=ffmpeg-n8.1.2-52-g5a03dfa0f6-linux64-gpl-8.1;    sha=6fc8d0a3ac9e3956bef486655fbc0a049fb3dacb74ea2e44cc2fc62eeb80a182 ;;
+            aarch64) asset=ffmpeg-n8.1.2-52-g5a03dfa0f6-linuxarm64-gpl-8.1; sha=077a3a11f41e38b2d54c905157d6bcb86e6ea6d027a0c0a582582e470149458d ;;
+            *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
           curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-11-13-20/$asset.tar.xz" -o /tmp/ffmpeg.tar.xz
-          echo "6fc8d0a3ac9e3956bef486655fbc0a049fb3dacb74ea2e44cc2fc62eeb80a182  /tmp/ffmpeg.tar.xz" | sha256sum -c -
+          echo "$sha  /tmp/ffmpeg.tar.xz" | sha256sum -c -
           tar -xJf /tmp/ffmpeg.tar.xz -C /tmp
           sudo install -m 755 "/tmp/$asset/bin/ffmpeg" "/tmp/$asset/bin/ffprobe" /usr/local/bin/
       - run: npm ci
