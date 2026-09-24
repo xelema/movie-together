@@ -384,7 +384,7 @@ test('track and settings choices stay viewer-local while only the transport move
     await guest.screenshot({ path: 'test-results/watch-settings.png', fullPage: true });
     await expect(guest.locator('#bandwidth-row')).toBeHidden();
     await guest.locator('#close-settings').click();
-    await expect(guest.locator('#player-settings select')).toHaveCount(2);
+    await expect(guest.locator('#player-settings select')).toHaveCount(3);
     // Live bandwidth is admin-only: the host gets the toggle and the badge, the guest neither.
     await clickControl(host, '#open-settings', () => host.locator('#player-settings').isVisible());
     await expect(host.locator('#bandwidth-row')).toBeVisible();
