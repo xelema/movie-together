@@ -565,6 +565,11 @@ $('upload-form').addEventListener('submit', handle(() => upload($('upload-file')
 $('upload-file').addEventListener('change', renderDisk);
 $('audio').addEventListener('change', () => player?.changeTrack('audio', Number($('audio').value)));
 $('subtitles').addEventListener('change', () => player?.changeTrack('subtitles', Number($('subtitles').value)));
+// A per-viewer multiplier on the picture-based size, shared by subtitles and the translated supertitle.
+const subtitleScale = () => { $('screen').style.setProperty('--subtitle-scale', $('subtitle-size').value); localStorage.setItem('subtitle-scale', $('subtitle-size').value); };
+if ([...$('subtitle-size').options].some(option => option.value === localStorage.getItem('subtitle-scale'))) $('subtitle-size').value = localStorage.getItem('subtitle-scale');
+subtitleScale();
+$('subtitle-size').addEventListener('change', subtitleScale);
 $('leave').addEventListener('click', handle(async () => { disposePlayer(); activeRoom = null; $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await refresh(); }));
 $('choose-film').addEventListener('submit', handle(() => api(`/api/rooms/${activeRoom}/movie`, { method: 'POST', body: { movieId: $('room-movie').value } })));
 const SETTING_LABELS = {
