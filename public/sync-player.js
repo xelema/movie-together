@@ -28,7 +28,8 @@ export class SyncPlayer {
     this.offset = 0; this.audioChoice = 0; this.subtitleChoice = -1;
     this.name = name;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
-    this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.retries = 0; this.listeners = [];
+    this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.pendingPauses = 0;
+    this.retries = 0; this.listeners = [];
     // Defaults until the room publishes its sync policy in welcome.
     this.sync = { minBuffer: 8, tickMs: 200, startDelay: 1000 };
     this.silenceMs = 1500; this.bufferSeconds = 30; this.reportEveryMs = 200;
@@ -71,8 +72,11 @@ export class SyncPlayer {
       if (this.state?.phase !== 'playing') { this.pauseLocal(); this.command('play'); }
       else if (this.serverTime() < this.state.startsAt) this.pauseLocal();
     });
+    // pause() only queues its event: a stalled main thread can deliver it
+    // past the self-caused window, so count our pauses and spend one per event.
     this.listen(video, 'pause', () => {
-      if (!selfCaused(performance.now(), this.internalUntil) && this.state?.phase === 'playing' && this.serverTime() > this.state.startsAt) this.command('pause');
+      if (this.pendingPauses) { this.pendingPauses--; return; }
+      if (this.state?.phase === 'playing' && this.serverTime() > this.state.startsAt) this.command('pause');
     });
     this.listen(video, 'seeking', () => {
       if (!selfCaused(performance.now(), this.internalUntil) && this.state) this.command('seek', this.position());
@@ -172,7 +176,7 @@ export class SyncPlayer {
     };
     this.ws.onerror = () => this.onStatus('Connexion à la room impossible. Vérifier l’invitation.');
   }
-  pauseLocal() { this.internalUntil = performance.now() + INTERNAL_EVENT_MS; this.video.pause(); this.video.playbackRate = 1; }
+  pauseLocal() { this.internalUntil = performance.now() + INTERNAL_EVENT_MS; if (!this.video.paused) this.pendingPauses++; this.video.pause(); this.video.playbackRate = 1; }
   // The room's thresholds arrive with welcome and can change mid-session via state.
   applySync(sync) {
     const retune = sync.minBuffer !== undefined && sync.minBuffer !== this.sync.minBuffer;
