@@ -63,9 +63,10 @@ vocabulaire partage.
   aussi fixes en dur par choix, comme constantes de protocole ou de
   securite : la taille maximale d'un message websocket (8 Kio), les
   fenetres des limites de debit (15 min pour le login, 1 min pour les
-  invitations), le budget de messages par socket (40/s), le seuil de
-  bufferedAmount (64 Kio) et la marge disque exigee a la creation d'un
-  envoi (x2,2).
+  invitations), le budget de messages JSON par socket (40/s), le budget
+  de trames PCM par socket (100/s, trois fois le rythme normal d'une
+  prise a 30 ms par trame), le seuil de bufferedAmount (64 Kio) et la
+  marge disque exigee a la creation d'un envoi (x2,2).
 
 ## Films
 
@@ -97,3 +98,23 @@ vocabulaire partage.
   rendue, pas la fenetre.
 - **Choix de piste** : reglage strictement local a un participant (« pour vous
   »). Il ne doit pas changer la position ni la phase de la seance.
+
+## Traduction vocale
+
+- **Prise de parole** (utterance) : une phrase courte prononcee par un
+  participant, une seule active a la fois dans la seance. Le serveur lui
+  attribue un identifiant, une sequence et des revisions. Son cycle passe
+  par des etats prives puis un resultat final ou un echec, sans rien
+  persister.
+- **Surtitre traduit** : la traduction d'une prise, diffusee a tous les
+  participants en surimpression coloree, sans nom ni plaque. Elle
+  s'affiche au fil de l'eau (fragments revises), est figee par le resultat
+  final ou retiree sur echec, puis effacee apres sa fenetre d'affichage.
+  L'orateur recoit en plus son texte compris, visible de lui seul.
+- **Sens de traduction** : la langue d'interface de l'orateur fixe la cible
+  de la prise, coreen ou francais, sans modification en cours de parole.
+  Le fournisseur Live detecte la langue parlee ; la langue d'interface
+  indique celle attendue pour les controles de coherence.
+- **Capacite de seance** : la traduction vocale se choisit a la creation de
+  la seance, desactivee par defaut et figee ensuite. L'etat autoritaire
+  annonce la paire de langues et la disponibilite du service.

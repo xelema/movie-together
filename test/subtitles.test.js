@@ -43,16 +43,16 @@ test('an unavailable selection falls back to live cues then first showing', () =
 // positionSubtitles is exercised on a bare fake: no DOM needed.
 const fakePlayer = (tracks, subtitleChoice, video = {}) => {
   const styles = {};
+  const stage = { style: { setProperty: (name, value) => { styles[name] = value; } } };
   return {
     subtitleChoice,
     styles,
     video: {
       textTracks: tracks,
-      closest: () => null,
+      closest: selector => selector === '.video-stage' ? stage : null,
       getBoundingClientRect: () => ({ width: 1920, height: 1080 }),
       videoWidth: 1920, videoHeight: 1080, currentTime: 0,
       webkitDisplayingFullscreen: false,
-      parentElement: { style: { setProperty: (name, value) => { styles[name] = value; } } },
       ...video,
     },
   };

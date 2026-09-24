@@ -13,7 +13,32 @@ await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavf
   '-color_primaries', 'bt2020', '-color_trc', 'smpte2084', '-colorspace', 'bt2020nc',
   '-c:a', 'aac', '-ac', '2', '-metadata:s:a:0', 'language=fra', '-metadata:s:a:1', 'language=eng', path.join(root, 'fixture.mp4')]);
 const dataDir = path.join(root, randomUUID());
-const instance = createApplication({ dataDir, origin: 'http://localhost:3100', password: 'browser-test-password' });
+// Fournisseur factice au niveau de la couture serveur : aucune donnée réseau ni
+// micro réel. Le garde-fou silence/bruit est local au serveur (#45). La session
+// Live factice émet un fragment puis complète au flush, dans le sens figé (#44).
+const voiceService = {
+  // Un léger délai rend les partiels et l'état 'processing' observables côté
+  // client : sans lui tout arriverait avant que le navigateur n'affiche.
+  openSession({ source }) {
+    const session = { onText: null, onSource: null, onEnd: null, closed: false };
+    const heard = source === 'ko' ? '엔딩 크레딧에서 만나요.' : 'On se retrouve au générique.';
+    const [first, rest] = source === 'ko' ? ['On se retrouve ', 'au générique.'] : ['엔딩 ', '크레딧에서 만나요.'];
+    const timers = [
+      setTimeout(() => session.onText?.(first), 200),
+      setTimeout(() => session.onSource?.(heard), 300),
+    ];
+    session.send = () => {};
+    session.flush = () => {
+      timers.push(
+        setTimeout(() => session.onText?.(rest), 200),
+        setTimeout(() => session.onEnd?.(), 400),
+      );
+    };
+    session.close = () => { session.closed = true; timers.forEach(clearTimeout); };
+    return session;
+  },
+};
+const instance = createApplication({ dataDir, origin: 'http://localhost:3100', password: 'browser-test-password', voiceService });
 instance.server.listen(3100, '127.0.0.1');
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => {
   await instance.close(); await rm(dataDir, { recursive: true, force: true }); process.exit(0);

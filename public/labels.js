@@ -69,6 +69,17 @@ const korean = {
   'Choisir au moins une piste audio.': '음성 트랙을 하나 이상 선택하세요.',
   'Version préparée illisible.': '준비된 버전을 읽을 수 없습니다.',
   'Import interrompu. Relancer la préparation.': '가져오기가 중단되었습니다. 준비를 다시 시작하세요.',
+  'Traduction vocale indisponible.': '음성 번역을 사용할 수 없습니다.',
+  'Un participant parle déjà.': '다른 참가자가 말하고 있습니다.',
+  'Attendre avant de reprendre la parole.': '잠시 후 다시 말하세요.',
+  'Quota de traductions atteint.': '번역 사용량을 초과했습니다.',
+  'Trame vocale invalide.': '음성 데이터가 올바르지 않습니다.',
+  'Aucune parole détectée.': '음성이 감지되지 않았습니다.',
+  'Traduction incohérente, réessayez.': '번역이 어긋납니다. 다시 말하세요.',
+  'Sens de traduction invalide.': '번역 방향이 올바르지 않습니다.',
+  'Service de traduction indisponible.': '번역 서비스를 사용할 수 없습니다.',
+  'Réponse de traduction invalide.': '번역 응답이 올바르지 않습니다.',
+  'La traduction a expiré.': '번역 시간이 초과되었습니다.',
 };
 
 export function label(french) {

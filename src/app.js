@@ -50,7 +50,8 @@ const publicMovie = movie => ({ id: movie.id, title: movie.title, status: movie.
   maxSegmentSeconds: movie.maxSegmentSeconds, bitrate: movie.probe?.bitrate, renditions: movie.renditions, generation: movie.generation });
 
 export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
-  origin = 'http://localhost:3000', secure = false, trustProxy = false, env = process.env } = {}) {
+  origin = 'http://localhost:3000', secure = false, trustProxy = false, env = process.env,
+  voiceService = null, voiceTiming } = {}) {
   if (!password || password.length < 16) throw new Error('ADMIN_PASSWORD doit contenir au moins 16 caractères.');
   if (secure && !origin.startsWith('https://')) throw new Error('APP_ORIGIN doit utiliser HTTPS en production.');
   const app = express();
@@ -103,7 +104,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     sessionActive: session => session.expires > Date.now() && [...sessions.values()].includes(session),
     canAccess: (session, room) => access({ session }, room),
     movieFor: id => publicMovie(getMovie(id)),
-    moviePlayable: id => jobs.playable(store.movies.get(id)) });
+    moviePlayable: id => jobs.playable(store.movies.get(id)), voiceService, voiceTiming });
   // Probe sessions are kept in rooms.json so they survive restarts; they are
   // recreated as long as their film is still playable.
   const persistRoom = room => {
@@ -461,5 +462,5 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     await hub.close();
     await new Promise(resolve => server.close(resolve));
   };
-  return { app, server, store, close };
+  return { app, server, store, hub, close };
 }
