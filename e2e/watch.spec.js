@@ -613,13 +613,40 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await expect(host.locator('#voice-mic')).toBeHidden();
     await showControls(host);
     await expect(host.locator('#voice-mic')).toBeVisible();
+    // Survol du micro : la barre reste levée tant que le pointeur y stationne,
+    // comme sur les contrôles. La fenêtre de masquage de Plyr (2 s) est
+    // dépassée en se synchronisant sur l'horloge de la page, jamais sur un
+    // délai arbitraire ; le départ du pointeur rend l'auto-masquage.
+    const micPoint = await host.locator('#voice-mic').boundingBox()
+      .then(box => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 }));
+    await host.mouse.move(micPoint.x, micPoint.y, { steps: 4 });
+    const hoveredAt = await host.evaluate(() => performance.now());
+    await host.waitForFunction(at => performance.now() - at > 2600, hoveredAt);
+    await expect(host.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
+    await expect(host.locator('#watch')).toHaveAttribute('data-chrome', 'true');
+    // Le focus clavier retient la barre de la même façon (:focus-visible) :
+    // une entrée clavier réelle donne la modalité, le pointeur part, le focus
+    // seul maintient, et le blur rend l'auto-masquage.
+    await host.keyboard.press('Tab');
+    await host.locator('#voice-mic').focus();
+    await host.mouse.move(0, 0);
+    const focusedAt = await host.evaluate(() => performance.now());
+    await host.waitForFunction(at => performance.now() - at > 2600, focusedAt);
+    await expect(host.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
+    await host.evaluate(() => document.querySelector('#voice-mic').blur());
+    await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
+    await expect(host.locator('#watch')).toHaveAttribute('data-chrome', 'false');
+    await showControls(host);
+    await expect(host.locator('#voice-mic')).toBeVisible();
     await host.locator('#voice-mic').click();
     expect(await micCalls(host)).toBe(1);
     await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
-    // Surtitre incrémental : la traduction s'affiche chez tous pendant la
-    // prise, attribuée à l'orateur, avant même l'arrêt.
-    await expect(host.locator('#voice-result')).toContainText('Alex · 엔딩');
-    await expect(guest.locator('#voice-result')).toContainText('Alex · 엔딩');
+    // Surtitre incrémental : la traduction seule s'affiche chez tous pendant
+    // la prise, avant même l'arrêt. Le nom de l'orateur n'y figure plus.
+    await expect(host.locator('#voice-result')).toContainText('엔딩');
+    await expect(guest.locator('#voice-result')).toContainText('엔딩');
+    await expect(host.locator('#voice-result')).not.toContainText('Alex');
+    await expect(guest.locator('#voice-result')).not.toContainText('Alex');
     await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
     // Pendant l'enregistrement le micro reste visible et rouge même quand
     // l'overlay se cache.
@@ -659,8 +686,23 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
     await expect(host.locator('#voice-local')).toHaveCSS('font-style', 'italic');
     expect(await host.evaluate(() => window.voiceTest.states)).toContain('processing');
-    await expect(host.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
-    await expect(guest.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
+    await expect(host.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
+    await expect(guest.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
+    // Le surtitre reprend la typographie des sous-titres (.color-captions,
+    // video::cue) sans plaque sombre ni préfixe : seul le cyan le distingue.
+    const supertitleStyle = await host.locator('#voice-result').evaluate(el => {
+      const style = getComputedStyle(el), captions = document.querySelector('.color-captions');
+      const reference = captions && getComputedStyle(captions);
+      return { background: style.backgroundColor, color: style.color,
+        typography: !!reference && ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'textShadow']
+          .every(key => style[key] === reference[key]) };
+    });
+    expect(supertitleStyle.typography).toBe(true);
+    expect(supertitleStyle.background).toBe('rgba(0, 0, 0, 0)');
+    expect(supertitleStyle.color).toBe('rgb(79, 215, 232)');
+    // La carte de refus de l'invité s'est effacée seule (RESULT_MS), sans
+    // action ni nouveau message.
+    await expect(guest.locator('#voice-local')).toBeHidden({ timeout: 12_000 });
     // Placement variante B : micro sur le bord droit, carte locale en bas à
     // gauche, surtitre centré en haut de l'image. Carte et surtitre s'effacent
     // après RESULT_MS : leurs mesures précèdent la sortie de veille du micro.
@@ -685,7 +727,8 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     // Un événement périmé ne remplace pas un surtitre plus récent.
     await guest.evaluate(() => window.player.onVoice({ type: 'voice', state: 'result', utterance: 'stale', seq: 0, speaker: 'Ghost', text: 'STALE' }));
-    await expect(guest.locator('#voice-result')).toContainText('Alex ·');
+    await expect(guest.locator('#voice-result')).toContainText('엔딩 크레딧');
+    await expect(guest.locator('#voice-result')).not.toContainText('Ghost');
     // Les permissions en vol ont leur fenêtre d'écoute dédiée, ouverte par une
     // seconde prise de l'hôte. Le délai de reprise peut encore courir : l'appui
     // n'est tenté que hors prise en cours, et un refus en 'cooldown' retente
@@ -724,8 +767,8 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await heardSpeech(host);
     await host.locator('#voice-mic').click();
     await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
-    await expect(host.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
-    await expect(guest.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
+    await expect(host.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
+    await expect(guest.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
     // Après l'erreur, l'invité reprend la parole : interface coréenne, sens
     // figé ko -> fr. Changer la langue du site pendant l'écoute n'y touche pas.
     await showControls(guest);
@@ -737,8 +780,9 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await guest.locator('#voice-mic').click();
     await expect(guest.locator('#voice-local')).toHaveText('엔딩 크레딧에서 만나요.');
     await expect(guest.locator('#voice-local')).toHaveCSS('font-style', 'italic');
-    await expect(guest.locator('#voice-result')).toContainText('민지 · On se retrouve au générique.');
-    await expect(host.locator('#voice-result')).toContainText('민지 · On se retrouve au générique.');
+    await expect(guest.locator('#voice-result')).toHaveText('On se retrouve au générique.');
+    await expect(host.locator('#voice-result')).toHaveText('On se retrouve au générique.');
+    await expect(guest.locator('#voice-result')).not.toContainText('민지');
     await guest.locator('#language').selectOption('ko');
     await expect(guest.locator('html')).toHaveAttribute('lang', 'ko');
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
@@ -757,8 +801,8 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await heardSpeech(host);
     await host.keyboard.press('Enter');
     await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
-    await expect(host.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
-    await expect(guest.locator('#voice-result')).toContainText('Alex · 엔딩 크레딧에서 만나요.');
+    await expect(host.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
+    await expect(guest.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
     // Tactile (#47) : un vrai tap sur le micro démarre puis clôt la prise.
     // Comme le tap CDP plus haut, l'entrée tactile de confiance est un
     // passage Chromium.
@@ -784,8 +828,9 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
       await heardSpeech(phone);
       await phone.locator('#voice-mic').tap();
       await expect(phone.locator('#voice-local')).toHaveText('On se retrouve au générique.');
-      await expect(phone.locator('#voice-result')).toContainText('Sam · 엔딩 크레딧에서 만나요.');
-      await expect(host.locator('#voice-result')).toContainText('Sam · 엔딩 크레딧에서 만나요.');
+      await expect(phone.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
+      await expect(host.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
+      await expect(phone.locator('#voice-result')).not.toContainText('Sam');
       await touchContext.close();
       // Le départ du membre fige la séance ou la laisse reprendre seule :
       // attendre la phase, jouer si nécessaire, jamais un délai.

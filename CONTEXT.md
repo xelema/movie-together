@@ -107,7 +107,7 @@ vocabulaire partage.
   par des etats prives puis un resultat final ou un echec, sans rien
   persister.
 - **Surtitre traduit** : la traduction d'une prise, diffusee a tous les
-  participants en surimpression coloree avec le nom de l'orateur. Elle
+  participants en surimpression coloree, sans nom ni plaque. Elle
   s'affiche au fil de l'eau (fragments revises), est figee par le resultat
   final ou retiree sur echec, puis effacee apres sa fenetre d'affichage.
   L'orateur recoit en plus son texte compris, visible de lui seul.

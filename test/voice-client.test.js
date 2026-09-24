@@ -130,32 +130,67 @@ test('partials update the shared supertitle in order and stale ones drop', async
   const player = { sent: [], send(message) { this.sent.push(message); }, sendFrame: () => true };
   const voice = attachVoice({ mic, local, supertitle, player, t: fr => fr, label: message => message });
   await voice.message({ state: 'partial', utterance: 'u9', seq: 5, rev: 1, speaker: 'Alex', text: '짧은' });
-  assert.equal(supertitle.textContent, 'Alex · 짧은');
+  // Le surtitre ne porte que la traduction : le nom de l'orateur reste dans
+  // le protocole sans etre affiche.
+  assert.equal(supertitle.textContent, '짧은');
   assert.equal(supertitle.hidden, false);
   await voice.message({ state: 'partial', utterance: 'u9', seq: 5, rev: 2, speaker: 'Alex', text: '짧은 문장' });
-  assert.equal(supertitle.textContent, 'Alex · 짧은 문장');
+  assert.equal(supertitle.textContent, '짧은 문장');
   // Révision réordonnée ou séquence passée : l'affiché ne recule jamais.
   await voice.message({ state: 'partial', utterance: 'u9', seq: 5, rev: 2, speaker: 'Alex', text: 'stale' });
   await voice.message({ state: 'partial', utterance: 'u8', seq: 4, rev: 9, speaker: 'Alex', text: 'stale' });
-  assert.equal(supertitle.textContent, 'Alex · 짧은 문장');
+  assert.equal(supertitle.textContent, '짧은 문장');
   // La prise échoue côté serveur : le surtitre partiel est retiré chez tous.
   await voice.message({ state: 'withdrawn', utterance: 'u9', seq: 5 });
   assert.equal(supertitle.hidden, true);
   // Un résultat fige le surtitre : les fragments de la même prise comme les
   // résultats plus anciens ne le remplacent plus.
   await voice.message({ state: 'result', utterance: 'u9', seq: 6, speaker: 'Minji', text: 'On se voit.' });
-  assert.equal(supertitle.textContent, 'Minji · On se voit.');
+  assert.equal(supertitle.textContent, 'On se voit.');
   await voice.message({ state: 'partial', utterance: 'u9', seq: 6, rev: 4, speaker: 'Minji', text: 'stale' });
   await voice.message({ state: 'result', utterance: 'u9', seq: 6, speaker: 'Minji', text: 'stale' });
   await voice.message({ state: 'result', utterance: 'u7', seq: 5, speaker: 'Ghost', text: 'stale' });
-  assert.equal(supertitle.textContent, 'Minji · On se voit.');
+  assert.equal(supertitle.textContent, 'On se voit.');
   // La prise suivante repart en partiels : le verrou 'final' est par
   // séquence, pas définitif.
   await voice.message({ state: 'partial', utterance: 'u10', seq: 7, rev: 1, speaker: 'Alex', text: '다시' });
   await voice.message({ state: 'partial', utterance: 'u10', seq: 7, rev: 2, speaker: 'Alex', text: '다시 들어' });
-  assert.equal(supertitle.textContent, 'Alex · 다시 들어');
+  assert.equal(supertitle.textContent, '다시 들어');
   // Le texte compris en direct reste réservé à l'orateur de la prise.
   await voice.message({ state: 'heard', utterance: 'someone-else', seq: 9, text: 'not mine' });
+  assert.equal(local.hidden, true);
+  voice.dispose();
+});
+
+// Une carte d'echec locale (no-speech, fournisseur, micro) s'efface seule
+// apres RESULT_MS : jamais immediatement, jamais en emportant la
+// transcription qui suit.
+test('a failure card clears itself after RESULT_MS without eating the next transcript', async t => {
+  stubCapture(t);
+  t.mock.timers.enable({ apis: ['setTimeout'], now: 0 });
+  const mic = fakeButton(), local = { textContent: '', hidden: true, dataset: {} }, supertitle = { textContent: '', hidden: true, dataset: {} };
+  const player = { sent: [], send(message) { this.sent.push(message); }, sendFrame: () => true };
+  const voice = attachVoice({ mic, local, supertitle, player, t: fr => fr, label: message => message });
+  mic.click();
+  await voice.message({ state: 'failed', error: 'no-speech', message: 'Aucune parole détectée.' });
+  assert.equal(mic.dataset.state, 'error');
+  assert.equal(local.hidden, false);
+  assert.equal(local.textContent, 'Aucune parole détectée.');
+  // La carte ne disparait ni tout de suite ni avant sa fenêtre.
+  t.mock.timers.tick(7999);
+  assert.equal(local.hidden, false);
+  t.mock.timers.tick(1);
+  assert.equal(local.hidden, true);
+  // La prise suivante affiche son texte compris pour sa fenêtre pleine :
+  // le minuteur de l'echec precedent ne l'emporte pas.
+  mic.click();
+  await voice.message({ state: 'started', utterance: 'u2', seq: 2 });
+  t.mock.timers.tick(4000);
+  await voice.message({ state: 'heard', utterance: 'u2', seq: 2, text: 'Bonjour.' });
+  assert.equal(local.textContent, 'Bonjour.');
+  t.mock.timers.tick(7999);
+  assert.equal(local.hidden, false);
+  t.mock.timers.tick(1);
   assert.equal(local.hidden, true);
   voice.dispose();
 });

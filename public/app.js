@@ -100,6 +100,22 @@ playbackUI.elements.container.addEventListener('click', event => {
 });
 playbackUI.on('controlsshown', () => { if (clickHidden) playbackUI.toggleControls(false); });
 $('video').addEventListener('play', () => { clickHidden = false; });
+// The mic lives outside the Plyr container, so hovering or focusing it never
+// reaches the handlers that keep the chrome up. controls.hover is the same
+// latch the transport sets; the synthetic container event routes the release
+// through Plyr's own hide policy: a grace delay while the pointer stays on
+// the player, immediate hide when it leaves.
+const micHold = held => event => {
+  const controls = playbackUI.elements.controls;
+  // The latch stays mouse-and-keyboard only, like Plyr's own: on touch the
+  // :hover sticks after a tap and the bar would never drop again.
+  if (controls) controls.hover = !playbackUI.touch &&
+    (held || $('voice-mic').matches(':hover') || $('voice-mic').matches(':focus-visible'));
+  const container = playbackUI.elements.container, inside = event.relatedTarget && container.contains(event.relatedTarget);
+  container.dispatchEvent(new Event(held || inside ? 'mousemove' : 'mouseleave'));
+};
+for (const [type, held] of [['pointerenter', true], ['focusin', true], ['pointerleave', false], ['focusout', false]])
+  $('voice-mic').addEventListener(type, micHold(held));
 // Route transport shortcuts through the shared clock, not Plyr's local playback.
 $('screen').addEventListener('keydown', event => {
   if (!player || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||

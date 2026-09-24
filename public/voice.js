@@ -51,7 +51,9 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     if (state === 'listening' || state === 'starting') stopCapture();
     clearTimeout(watchdog);
     setState(text ? 'error' : 'idle');
-    if (text) { delete local.dataset.kind; show(local, text); }
+    // Les erreurs locales s'effacent comme les resultats : meme fenetre,
+    // meme minuteur, sans jamais emporter la carte qui les remplace.
+    if (text) { delete local.dataset.kind; show(local, text, RESULT_MS); }
   };
   const abort = text => {
     if (utterance) player.send({ type: 'voice', action: 'cancel' });
@@ -98,7 +100,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       if (state !== 'error') {
         show(local, error.name === 'NotAllowedError'
           ? t('Micro refusé.', '마이크 사용이 거부되었습니다.')
-          : t('Micro indisponible.', '마이크를 사용할 수 없습니다.'));
+          : t('Micro indisponible.', '마이크를 사용할 수 없습니다.'), RESULT_MS);
         setState('error');
       }
       return false;
@@ -165,7 +167,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       if (event.seq < shownSeq || (event.seq === shownSeq && (shownFinal || event.rev <= shownRev))) return;
       if (event.seq > shownSeq) shownFinal = false;
       shownSeq = event.seq; shownRev = event.rev;
-      show(supertitle, `${event.speaker} · ${event.text}`, RESULT_MS);
+      show(supertitle, event.text, RESULT_MS);
       return;
     }
     if (event.state === 'withdrawn') {
@@ -180,7 +182,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       if (event.seq < shownSeq || (event.seq === shownSeq && shownFinal)) return;
       shownSeq = event.seq; shownFinal = true;
       fail();
-      show(supertitle, `${event.speaker} · ${event.text}`, RESULT_MS);
+      show(supertitle, event.text, RESULT_MS);
     }
   };
   mic.addEventListener('click', tap);
