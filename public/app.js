@@ -18,7 +18,7 @@ const playbackUI = new window.Plyr($('video'), {
   iconUrl: '/vendor/plyr.svg', blankVideo: '',
   fullscreen: { enabled: true, fallback: true, iosNative: false, container: '#screen' },
   listeners: {
-    play: () => { player?.togglePlayback().catch(error => notice(error.message)); return false; },
+    play: () => { player?.togglePlayback().catch(error => notice(error)); return false; },
     seek: event => { if (player?.state) player.command('seek', Number(event.target.value) / 100 * player.state.duration); return false; },
   },
 });
@@ -135,7 +135,7 @@ $('screen').addEventListener('keydown', event => {
   if (![' ', 'k', 'arrowleft', 'arrowright', 'm', 'f'].includes(key)) return;
   event.preventDefault();
   if (event.repeat) return;
-  if (key === ' ' || key === 'k') player.togglePlayback().catch(error => notice(error.message));
+  if (key === ' ' || key === 'k') player.togglePlayback().catch(error => notice(error));
   else if (key.startsWith('arrow')) player.command('seek', Math.max(0, Math.min(player.state?.duration || 0, player.position() + (key === 'arrowleft' ? -10 : 10))));
   else if (key === 'm') playbackUI.muted = !playbackUI.muted;
   else playbackUI.fullscreen.toggle();
@@ -170,6 +170,7 @@ function translate() {
   playbackUI.elements.buttons.fullscreen?.setAttribute('aria-label', playbackUI.fullscreen.active ? words.exitFullscreen : words.enterFullscreen);
   settingsButton.setAttribute('aria-label', t('Réglages', '설정'));
   $('player-settings').setAttribute('aria-label', t('Réglages', '설정')); $('close-settings').setAttribute('aria-label', t('Fermer', '닫기'));
+  $('notice-close').setAttribute('aria-label', t('Fermer', '닫기'));
   $('room-name').setAttribute('aria-label', t('Votre pseudo', '닉네임'));
   $('screen').setAttribute('aria-label', t('Lecteur vidéo', '동영상 플레이어'));
   if (voice) voice.rename(); else $('voice-mic').setAttribute('aria-label', t('Parler', '말하기'));
@@ -209,7 +210,16 @@ function updatePlayback(controller) {
     for (const tooltip of control.querySelectorAll('.plyr__tooltip')) tooltip.textContent = text;
   }
 }
-function notice(message = '') { $('notice').textContent = label(message); }
+// Errors and links to read stay until closed, confirmations fade on their own.
+let noticeTimer = null;
+function notice(message = '', sticky = false) {
+  const error = message instanceof Error;
+  $('notice').textContent = label(error ? message.message : message);
+  $('toast').dataset.tone = error ? 'danger' : '';
+  clearTimeout(noticeTimer);
+  if (message && !error && !sticky) noticeTimer = setTimeout(notice, 5000);
+}
+$('notice-close').addEventListener('click', () => notice());
 // Sections are shown by clearing [hidden]; replay the entrance animation whenever that happens.
 new MutationObserver(records => {
   for (const { target } of records) {
@@ -223,7 +233,7 @@ async function api(url, { body, method = 'GET', ...options } = {}) {
   if (!response.ok) throw new Error(label(result.error || t('Une erreur est survenue.', '오류가 발생했습니다.')));
   return result;
 }
-function handle(action) { return async event => { event?.preventDefault(); try { await action(event); } catch (error) { notice(error.message); } }; }
+function handle(action) { return async event => { event?.preventDefault(); try { await action(event); } catch (error) { notice(error); } }; }
 function el(tag, text, className) { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; }
 // Diagnostic codes, kept untranslated so they match the server logs verbatim.
 const why = member => !member.reason ? '' : member.reason + (member.blockers?.length ? `: ${member.blockers.join(', ')}` : '') +
@@ -336,7 +346,7 @@ async function refresh() {
 }
 async function copyLink(link) {
   // Clipboard needs a secure context; on plain HTTP show the link instead.
-  if (!navigator.clipboard) { notice(`${t('Lien', '링크')} : ${link}`); return; }
+  if (!navigator.clipboard) { notice(`${t('Lien', '링크')} : ${link}`, true); return; }
   await navigator.clipboard.writeText(link); notice(t('Lien copié.', '링크를 복사했습니다.'));
 }
 function movieCard(movie) {
@@ -365,7 +375,7 @@ function movieCard(movie) {
       randomCode(); $('create-voice').checked = false;
       const code = await askDialog('create-dialog', 'create-code'); if (!code) return;
       const room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code, voice: $('create-voice').checked } });
-      notice(`${t('Invitation', '초대')}: ${room.link}`);
+      notice(`${t('Invitation', '초대')}: ${room.link}`, true);
       await enterRoom(room.id, undefined, { code: room.code, title: movie.title });
     };
     card.append(button(t('Créer une séance', '시청방 만들기'), create));
@@ -662,7 +672,7 @@ $('settings-form').addEventListener('submit', handle(async () => {
   notice(t('Réglages enregistrés.', '설정을 저장했습니다.'));
 }));
 window.addEventListener('beforeunload', event => { if (uploadBusy) { event.preventDefault(); event.returnValue = ''; } });
-setInterval(() => { if (!player && !uploadBusy && movies.some(movie => ['processing', 'probing'].includes(movie.status))) refresh().catch(error => notice(error.message)); }, 3000);
+setInterval(() => { if (!player && !uploadBusy && movies.some(movie => ['processing', 'probing'].includes(movie.status))) refresh().catch(error => notice(error)); }, 3000);
 translate();
 await handle(async () => {
   await refresh(); const params = new URLSearchParams(location.hash.slice(1));

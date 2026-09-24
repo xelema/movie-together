@@ -57,9 +57,14 @@ input[type=file]:not([type=checkbox]):not([type=range]){font-size:13px;max-width
 input::file-selector-button{border:0;border-radius:6px;padding:7px 12px;background:#22242b;color:var(--text);margin:0 12px 0 0;font-size:13px;cursor:pointer;flex:0 0 auto}
 input::file-selector-button:hover{background:#2b2d35}
 
-#notice:empty{display:none}
-#notice{border:1px solid var(--line);background:var(--raise);padding:13px 16px;border-radius:8px;color:var(--text-2);font-size:14px;
-  white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 28px}
+#toast{position:fixed;z-index:20;right:20px;bottom:max(20px,env(safe-area-inset-bottom));width:max-content;max-width:min(440px,calc(100% - 40px));
+  display:flex;align-items:flex-start;gap:6px;padding:4px 4px 4px 16px;border:1px solid var(--line);border-radius:10px;background:var(--raise);
+  box-shadow:0 12px 32px rgba(0,0,0,.45);animation:rise .3s var(--ease)}
+#toast:has(#notice:empty){display:none}
+#toast[data-tone=danger]{border-color:#3a2a2d}#toast[data-tone=danger] #notice{color:var(--danger)}
+#notice{margin:9px 0;color:var(--text);font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}
+#notice-close{flex-shrink:0;min-height:36px;padding:0 10px;background:transparent;color:var(--text-3);font-size:20px;line-height:1}
+#notice-close:hover{background:var(--hover);color:var(--text)}
 @keyframes rise{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 
 #entry{max-width:360px;margin:0 auto;display:grid;align-content:center;text-align:center;
@@ -143,7 +148,7 @@ details>h3+p{margin:0 0 4px;font-size:12px;color:var(--text-4)}
 #pending-uploads>.card{margin-bottom:14px}
 #choose-film{margin-top:32px;max-width:460px}#choose-film button{margin-top:18px}
 
-section.enter,#notice.enter{animation:rise .45s var(--ease)}
+section.enter{animation:rise .45s var(--ease)}
 html[lang=ko] .eyebrow,html[lang=ko] h3,html[lang=ko] summary,html[lang=ko] #playback-status,
 html[lang=ko] #screen .track-controls strong,html[lang=ko] #participants span:not(.avatar){font-family:var(--sans);letter-spacing:.02em;text-transform:none}
 .watch-top{display:flex;align-items:center;gap:12px;min-height:40px;margin-bottom:24px}
