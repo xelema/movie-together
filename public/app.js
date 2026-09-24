@@ -395,7 +395,6 @@ function movieCard(movie) {
       randomCode(); $('create-voice').checked = false;
       const code = await askDialog('create-dialog', 'create-code'); if (!code) return;
       const room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code, voice: $('create-voice').checked } });
-      notice(`${t('Invitation', '초대')}: ${room.link}`, true);
       await enterRoom(room.id, undefined, { code: room.code, title: movie.title });
     };
     card.append(button(t('Créer une séance', '시청방 만들기'), create));
