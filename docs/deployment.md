@@ -146,7 +146,9 @@ raccourcit pas le trajet international. Aucun CDN ni relais payant n'est créé.
   Prévenir les participants : cela ferme les rooms.
 - Depuis un poste Windows, `bash deploy/deploy.sh` (ou `npm run deploy`) envoie
   le code par SSH vers la VM puis reconstruit et redémarre les conteneurs. Le
-  `.env` du serveur est conservé. Au premier déploiement, créer le `.env` sur la
+  `.env` du serveur est conservé, sauf `GEMINI_API_KEY` et `GOOGLE_API_KEY`
+  propagées depuis le `.env` local à chaque déploiement. Au premier
+  déploiement, créer le `.env` sur la
   VM ou lancer `PUSH_ENV=fichier bash deploy/deploy.sh` pour l'envoyer. Les
   variables `SSH_KEY`, `REMOTE_DIR` et `BBR=1` sont décrites en tête du script.
   `SSH_HOST` est obligatoire : passer la variable ou la noter dans
