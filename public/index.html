@@ -41,15 +41,16 @@
         <button role="tab" type="button" data-tab="settings" aria-controls="tab-settings"><span data-fr="Réglages" data-ko="설정"></span></button>
       </div>
       <section id="tab-films" role="tabpanel">
-      <form id="upload-form">
+      <div id="upload-form">
         <h2 data-fr="Ajouter un film" data-ko="영화 추가"></h2>
-        <div class="upload-row">
-          <label><span id="upload-file-label" data-fr="Fichier du film (20 Go maximum)" data-ko="영화 파일 (최대 20GB)"></span><input id="upload-file" type="file" required></label>
-          <button id="upload-button" data-fr="Envoyer le film" data-ko="영화 업로드"></button>
-        </div>
+        <label id="drop-zone">
+          <strong data-fr="Glissez un film ici ou cliquez pour le choisir" data-ko="영화 파일을 여기로 끌어오거나 클릭해서 선택하세요"></strong>
+          <span id="upload-file-label" data-fr="Fichier du film (20 Go maximum)" data-ko="영화 파일 (최대 20GB)"></span>
+          <input id="upload-file" class="visually-hidden" type="file">
+        </label>
         <p id="disk-space" class="hint"></p>
         <progress id="upload-progress" value="0" max="100"></progress><span id="upload-status"></span>
-      </form>
+      </div>
       <div id="pending-uploads"></div>
       <div id="movies">
         <h2 id="pending-heading" class="section-heading" data-fr="À préparer" data-ko="준비 필요" hidden></h2>

@@ -90,9 +90,13 @@ input::file-selector-button:hover{background:#2b2d35}
 .card code,#room-code,.room-pill code{font-family:var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--text)}
 .card code{display:block;font-size:15px;margin:14px 0;overflow-wrap:anywhere}
 #upload-form{margin:22px 0}
-.upload-row{display:flex;align-items:flex-end;gap:14px}
-.upload-row label{flex:1;min-width:0;max-width:620px;margin:0}
-.upload-row button{flex-shrink:0}
+#drop-zone{display:grid;justify-items:center;gap:4px;margin:0;padding:32px 20px;border:1.5px dashed var(--line-strong);border-radius:10px;
+  text-align:center;cursor:pointer;transition:border-color .2s var(--ease),background .2s var(--ease)}
+#drop-zone:hover,#upload-form.dragging #drop-zone{border-color:var(--text-3);background:var(--hover)}
+#drop-zone:focus-within{outline:1px solid var(--white);outline-offset:3px}
+#drop-zone strong{font-size:15px;font-weight:500;color:var(--text)}
+#drop-zone>span{margin:0;font-size:12px;color:var(--text-4)}
+#upload-form:has(#upload-file:disabled) #drop-zone{cursor:wait;opacity:.55}
 .section-heading{font-family:var(--mono);font-size:11px;font-weight:400;letter-spacing:.18em;text-transform:uppercase;color:var(--label);margin:40px 0 14px}
 progress{width:100%;height:2px;border:0;background:var(--line-soft);display:block;accent-color:var(--text-3)}
 progress::-webkit-progress-bar{background:var(--line-soft)}
@@ -310,8 +314,6 @@ dialog button{width:100%}
   #leave{flex-shrink:0}
   #entry{min-height:calc(100svh - 150px)}
   #join-form input{font-size:17px;letter-spacing:.16em}
-  .upload-row{flex-direction:column;align-items:stretch}
-  .upload-row button{width:100%}
   .panel-actions .danger{margin-left:0}
   .card,#upload-form,#choose-film{padding:18px}
   video{max-height:62vh}

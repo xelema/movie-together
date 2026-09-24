@@ -578,8 +578,25 @@ $('admin-tabs').addEventListener('keydown', event => {
 });
 $('allow-sound').addEventListener('click', handle(() => player?.activate()));
 $('copy-invite').addEventListener('click', handle(() => copyLink(`${location.origin}/#invite=${encodeURIComponent($('room-code').textContent)}`)));
-$('upload-form').addEventListener('submit', handle(() => upload($('upload-file').files[0])));
-$('upload-file').addEventListener('change', renderDisk);
+$('upload-file').addEventListener('change', handle(async () => {
+  renderDisk();
+  if ($('upload-file').files[0] && !$('disk-space').classList.contains('insufficient')) await upload($('upload-file').files[0]);
+}));
+// A film dropped anywhere on the library goes to the upload; a subtitle dropped on its own card input keeps the native path.
+const filesDrag = event => event.dataTransfer?.types.includes('Files') && !$('library').hidden && !uploadBusy &&
+  !(event.target.matches?.('input[type=file]') && event.target !== $('upload-file'));
+document.addEventListener('dragover', event => {
+  if (!filesDrag(event)) return;
+  event.preventDefault(); showTab('films'); $('upload-form').classList.add('dragging');
+});
+document.addEventListener('dragleave', event => { if (!event.relatedTarget) $('upload-form').classList.remove('dragging'); });
+document.addEventListener('drop', event => {
+  $('upload-form').classList.remove('dragging');
+  if (!filesDrag(event) || !event.dataTransfer.files.length) return;
+  event.preventDefault();
+  const transfer = new DataTransfer(); transfer.items.add(event.dataTransfer.files[0]);
+  $('upload-file').files = transfer.files; $('upload-file').dispatchEvent(new Event('change'));
+});
 $('audio').addEventListener('change', () => player?.changeTrack('audio', Number($('audio').value)));
 $('subtitles').addEventListener('change', () => player?.changeTrack('subtitles', Number($('subtitles').value)));
 // A per-viewer multiplier on the picture-based size, shared by subtitles and the translated supertitle.
@@ -719,7 +736,7 @@ async function upload(file, extra = {}) {
   if (!file) throw new Error(t('Choisir un fichier.', '파일을 선택하세요.'));
   // crypto.subtle exists only in a secure context (HTTPS or localhost).
   if (!crypto.subtle) throw new Error(t('L’envoi exige une page servie en HTTPS ou en localhost.', '업로드하려면 HTTPS 또는 localhost 페이지가 필요합니다.'));
-  uploadBusy = true; $('upload-button').disabled = true;
+  uploadBusy = true; $('upload-file').disabled = true;
   try {
     const pending = await api('/api/uploads');
     // Check both ends plus metadata before resuming; never confuse two same-size filenames.
@@ -728,6 +745,7 @@ async function upload(file, extra = {}) {
     let info = pending.find(item => item.name === file.name && item.size === file.size && item.fingerprint === fingerprint && item.movieId === extra.movieId && (item.kind || 'movie') === (extra.kind || 'movie'));
     if (!info) info = await api('/api/uploads', { method: 'POST', body: { name: file.name, size: file.size, fingerprint, ...extra } });
     let offset = info.offset, retries = 0;
+    const started = performance.now(), startOffset = offset;
     while (offset < file.size) {
       try {
         const response = await fetch(`/api/uploads/${info.id}`, { method: 'PUT', headers: {
@@ -738,7 +756,12 @@ async function upload(file, extra = {}) {
         else if (!response.ok) throw new Error(result.error);
         else offset = result.offset;
         retries = 0; $('upload-progress').value = offset / file.size * 100;
-        $('upload-status').textContent = `${(offset / 1024 ** 3).toFixed(2)} / ${(file.size / 1024 ** 3).toFixed(2)} Go`;
+        // Average since this session started: steadier than the last chunk, and a resumed upload does not count what was already there.
+        const rate = (offset - startOffset) / ((performance.now() - started) / 1000);
+        const left = rate > 0 ? Math.round((file.size - offset) / rate) : 0;
+        $('upload-status').textContent = [`${formatSize(offset)} / ${formatSize(file.size)}`,
+          rate > 0 ? t(`${formatSize(rate)}/s`, `${formatSize(rate)}/초`) : '',
+          left ? t(`encore ${left < 60 ? `${left} s` : runtime(left)}`, `${left < 60 ? `${left}초` : runtime(left)} 남음`) : ''].filter(Boolean).join(' · ');
       } catch (error) {
         if (++retries > 5) throw error;
         $('upload-status').textContent = t(`Nouvel essai ${retries}/5…`, `다시 시도 중 ${retries}/5…`);
@@ -750,5 +773,5 @@ async function upload(file, extra = {}) {
     await api(`/api/uploads/${info.id}/complete`, { method: 'POST', body: {} });
     $('upload-status').textContent = t('Fichier ajouté. Préparez le film pour l’utiliser.', '파일이 추가되었습니다. 영화를 준비하면 사용할 수 있습니다.'); $('upload-progress').value = 0;
     await refresh();
-  } finally { uploadBusy = false; $('upload-button').disabled = false; }
+  } finally { uploadBusy = false; $('upload-file').disabled = false; $('upload-file').value = ''; }
 }

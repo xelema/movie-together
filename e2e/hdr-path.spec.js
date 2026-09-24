@@ -53,7 +53,6 @@ test('hdr content follows the screen: shader on sdr, native on hdr, force shader
     for (const movie of await (await page.request.get('/api/movies')).json()) await page.request.delete(`/api/movies/${movie.id}`, { headers });
     await page.locator('#refresh').click();
     await page.locator('#upload-file').setInputFiles({ name: 'fixture.mp4', mimeType: 'video/mp4', buffer: await readFile('data/e2e/fixture.mp4') });
-    await page.locator('#upload-button').click();
     await page.getByRole('button', { name: 'Préparer le film' }).first().click();
     const movieCard = page.locator('#movies article.card').filter({ hasText: 'fixture' }).last();
     await expect(movieCard.getByRole('button', { name: 'Créer une séance', exact: true })).toBeVisible({ timeout: 60_000 });
