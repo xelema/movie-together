@@ -327,7 +327,8 @@ async function refresh() {
   for (const id of [...movieCards.keys()]) if (!movies.some(movie => movie.id === id)) { movieCards.delete(id); openPanels.delete(id); closedPanels.delete(id); }
   $('pending-heading').hidden = !pending.length; $('ready-heading').hidden = !ready.length;
   const rooms = await api('/api/rooms');
-  $('rooms-section').hidden = !rooms.length;
+  $('rooms-empty').hidden = !!rooms.length;
+  $('rooms-count').textContent = rooms.length || ''; $('films-count').textContent = movies.length || '';
   renderSettings(await api('/api/settings'));
   $('rooms').replaceChildren(...rooms.map(room => {
     const card = el('div', undefined, 'card');
@@ -559,6 +560,22 @@ $('join-form').elements.code.addEventListener('paste', event => {
 });
 $('logout').addEventListener('click', handle(async () => { disposePlayer(); $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await api('/api/logout', { method: 'POST', body: {} }); await refresh(); }));
 $('refresh').addEventListener('click', handle(refresh));
+const tabs = [...document.querySelectorAll('#admin-tabs [role=tab]')];
+function showTab(name) {
+  sessionStorage.setItem('admin-tab', name);
+  for (const tab of tabs) {
+    const on = tab.dataset.tab === name;
+    tab.setAttribute('aria-selected', String(on)); tab.tabIndex = on ? 0 : -1; $(`tab-${tab.dataset.tab}`).hidden = !on;
+  }
+}
+showTab(tabs.some(tab => tab.dataset.tab === sessionStorage.getItem('admin-tab')) ? sessionStorage.getItem('admin-tab') : 'films');
+for (const tab of tabs) tab.addEventListener('click', () => showTab(tab.dataset.tab));
+$('admin-tabs').addEventListener('keydown', event => {
+  const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+  if (!step) return;
+  const next = tabs[(tabs.indexOf(document.activeElement) + step + tabs.length) % tabs.length];
+  showTab(next.dataset.tab); next.focus();
+});
 $('allow-sound').addEventListener('click', handle(() => player?.activate()));
 $('copy-invite').addEventListener('click', handle(() => copyLink(`${location.origin}/#invite=${encodeURIComponent($('room-code').textContent)}`)));
 $('upload-form').addEventListener('submit', handle(() => upload($('upload-file').files[0])));

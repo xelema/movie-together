@@ -122,9 +122,15 @@ progress::-moz-progress-bar{background:var(--text-3)}
 .panel-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:26px}
 .panel-actions button{margin:0}
 .panel-actions .danger{margin-left:auto}
-#rooms-section{margin-top:44px}
+#admin-tabs{display:flex;gap:4px;margin:-6px 0 26px;border-bottom:1px solid var(--line-soft);overflow-x:auto}
+#admin-tabs button{display:flex;align-items:center;gap:8px;min-height:44px;padding:8px 16px;margin-bottom:-1px;border:0;border-bottom:2px solid transparent;
+  border-radius:0;background:transparent;color:var(--text-3);font-size:14px;white-space:nowrap}
+#admin-tabs button:hover{background:transparent;color:var(--text)}
+#admin-tabs button[aria-selected=true]{color:var(--text);border-bottom-color:var(--white)}
+#admin-tabs small{font-family:var(--mono);font-size:11px;padding:0 7px;border-radius:999px;background:var(--hover);color:var(--text-2)}
+#admin-tabs small:empty{display:none}
+.empty{padding:40px 20px;border:1px solid var(--line-soft);border-radius:12px;text-align:center;color:var(--text-3)}
 #rooms{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),420px));justify-content:start;gap:16px}
-#settings-form{margin-top:36px;padding-top:16px;border-top:1px solid var(--line-soft)}
 #settings-form fieldset{border:0;margin:0 0 18px;padding:0;min-width:0}
 #settings-form legend{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--label);padding:0;margin-bottom:6px}
 .setting-row{display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;margin:8px 0}

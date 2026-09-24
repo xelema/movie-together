@@ -35,6 +35,12 @@
 
     <section id="library" hidden>
       <div class="heading"><h1 data-fr="Bibliothèque" data-ko="영화 목록"></h1><button id="refresh" class="ghost" data-fr="Actualiser" data-ko="새로고침"></button></div>
+      <div id="admin-tabs" role="tablist">
+        <button role="tab" type="button" data-tab="films" aria-controls="tab-films"><span data-fr="Films" data-ko="영화"></span><small id="films-count"></small></button>
+        <button role="tab" type="button" data-tab="rooms" aria-controls="tab-rooms"><span data-fr="Séances" data-ko="시청방"></span><small id="rooms-count"></small></button>
+        <button role="tab" type="button" data-tab="settings" aria-controls="tab-settings"><span data-fr="Réglages" data-ko="설정"></span></button>
+      </div>
+      <section id="tab-films" role="tabpanel">
       <form id="upload-form">
         <h2 data-fr="Ajouter un film" data-ko="영화 추가"></h2>
         <div class="upload-row">
@@ -51,8 +57,10 @@
         <h2 id="ready-heading" class="section-heading" data-fr="Prêts" data-ko="준비 완료" hidden></h2>
         <div id="movies-ready" class="columns"></div>
       </div>
-      <section id="rooms-section" hidden><h2 data-fr="Séances ouvertes" data-ko="열린 시청방"></h2><div id="rooms"></div></section>
-      <section id="settings-section"><h2 class="visually-hidden" data-fr="Réglages" data-ko="설정"></h2>
+      </section>
+      <section id="tab-rooms" role="tabpanel" hidden><h2 class="visually-hidden" data-fr="Séances ouvertes" data-ko="열린 시청방"></h2>
+        <p id="rooms-empty" class="empty" data-fr="Aucune séance ouverte. Créez-en une depuis un film prêt." data-ko="열린 시청방이 없습니다. 준비된 영화에서 만드세요."></p><div id="rooms"></div></section>
+      <section id="tab-settings" role="tabpanel" hidden><h2 class="visually-hidden" data-fr="Réglages" data-ko="설정"></h2>
         <form id="settings-form"></form>
         <p class="hint" data-fr="Les seuils de buffer valent aussi pour les séances en cours ; les autres réglages s’appliquent aux nouvelles opérations." data-ko="버퍼 값은 진행 중인 시청방에도 적용되며, 나머지 설정은 새 작업부터 적용됩니다."></p>
       </section>
