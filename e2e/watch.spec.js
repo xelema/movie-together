@@ -738,12 +738,10 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     expect(supertitleStyle.typography).toBe(true);
     expect(supertitleStyle.background).toBe('rgba(0, 0, 0, 0)');
     expect(supertitleStyle.color).toBe('rgb(79, 215, 232)');
-    // La carte de refus de l'invité s'est effacée seule (RESULT_MS), sans
-    // action ni nouveau message.
-    await expect(guest.locator('#voice-local')).toBeHidden({ timeout: 12_000 });
     // Placement variante B : micro sur le bord droit, carte locale en bas à
     // gauche, surtitre centré en haut de l'image. Carte et surtitre s'effacent
-    // après RESULT_MS : leurs mesures précèdent la sortie de veille du micro.
+    // après RESULT_MS : on les mesure tant qu'ils sont visibles, avant que
+    // l'attente de l'effacement invité ne dépasse ce délai.
     const stage = await host.locator('.video-stage').boundingBox();
     const cardBox = await host.locator('#voice-local').boundingBox();
     const resultBox = await host.locator('#voice-result').boundingBox();
@@ -754,6 +752,9 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     expect(cardBox.y - stage.y).toBeGreaterThan(stage.height * .6);
     expect(Math.abs(resultBox.x + resultBox.width / 2 - stage.x - stage.width / 2)).toBeLessThan(stage.width * .15);
     expect(resultBox.y - stage.y).toBeLessThan(stage.height * .3);
+    // La carte de refus de l'invité s'est effacée seule (RESULT_MS), sans
+    // action ni nouveau message.
+    await expect(guest.locator('#voice-local')).toBeHidden({ timeout: 12_000 });
     // Le fixture de 50 s peut finir pendant la prise : position fraîche avant
     // la suite, comme en tête de passe.
     await ensurePlaying();
