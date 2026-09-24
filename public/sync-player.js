@@ -213,7 +213,9 @@ export class SyncPlayer {
     this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.backend?.destroy(); this.backend = null;
     this.loadToken = (this.loadToken || 0) + 1; this.activating = false; this.recovering = false;
     this.movie = movie; this.failure = null; this.activated = activated; this.autoActivationTried = false; this.activationBlocked = false; this.onActivation(activated);
-    this.video.removeAttribute('src'); this.video.load();
+    // video.load() drops media events still queued on the element, so pauses
+    // counted but never delivered must not outlive the reload.
+    this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
     if (!movie) return;
     const versions = movie.renditions?.length ? movie.renditions : [{ id: 'original', manifest: 'master.m3u8', timelineOffset: 0 }];
     this.rendition = versions[0];
@@ -364,7 +366,7 @@ export class SyncPlayer {
   dispose() {
     this.disposed = true; clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings);
     clearTimeout(this.startTimer); clearTimeout(this.retry); this.subtitleObserver?.disconnect(); this.listeners.forEach(remove => remove());
-    this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load();
+    this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
     this.releaseWakeLock();
   }
 }
