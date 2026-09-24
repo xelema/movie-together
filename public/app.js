@@ -1,12 +1,12 @@
 import { SyncPlayer } from './sync-player.js';
 import { attachTelemetry } from './telemetry.js';
-import { label } from './labels.js';
+import { label, language } from './labels.js';
 import { trackName, defaultTrackNames, sourceTitle, trackLayout } from './track-names.js';
 import { SUBTITLE_EXT, SUBTITLE_ACCEPT, IMAGE_SUBTITLE_CODECS } from './subtitle-formats.js';
 import { attachVoice } from './voice.js';
 
 const $ = id => document.getElementById(id);
-const t = (fr, ko) => sessionStorage.getItem('language') === 'ko' ? ko : fr;
+const t = (fr, ko) => language() === 'ko' ? ko : fr;
 const adminPage = location.pathname === '/admin';
 let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null, diskInfo = null, telemetry = null, voice = null;
 function disposePlayer() { telemetry?.dispose(); telemetry = null; voice?.dispose(); voice = null; player?.dispose(); player = null; window.player = null; refreshBandwidth(); }
@@ -143,7 +143,7 @@ $('screen').addEventListener('keydown', event => {
   playbackUI.toggleControls(true);
 });
 function translate() {
-  const lang = sessionStorage.getItem('language') === 'ko' ? 'ko' : 'fr';
+  const lang = language();
   document.documentElement.lang = lang; $('language').value = lang;
   $('language-flag').src = `/flags/${lang}.svg`;
   for (const node of document.querySelectorAll('[data-fr]')) node.textContent = node.dataset[lang];
@@ -300,8 +300,8 @@ async function refresh() {
   movies = await api('/api/movies');
   selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title]));
   if (player || !adminPage) return;
-  const language = sessionStorage.getItem('language') === 'ko' ? 'ko' : 'fr';
-  const signature = movie => JSON.stringify([language, movie.status, movie.progress, movie.title, movie.error,
+  const lang = language();
+  const signature = movie => JSON.stringify([lang, movie.status, movie.progress, movie.title, movie.error,
     movie.probe, movie.trackNames, movie.externalTracks, movie.subtitles]);
   const render = movie => {
     const key = signature(movie), cached = movieCards.get(movie.id);
@@ -477,14 +477,14 @@ function manageDetails(movie, selection) {
 
 async function enterRoom(id, name, context = {}) {
   if (!name) {
-    $('room-name').value = sessionStorage.getItem('nickname') || '';
+    $('room-name').value = localStorage.getItem('nickname') || '';
     $('name-context').hidden = !context.code;
     $('name-code').textContent = context.code ?? ''; $('name-movie').textContent = context.title ?? '';
     name = await askDialog('name-dialog', 'room-name');
     if (!name) return;
   }
   $('room-code').textContent = context.code ?? '';
-  sessionStorage.setItem('nickname', name); showSettings(false);
+  localStorage.setItem('nickname', name); showSettings(false);
   await api(`/api/rooms/${id}`); session = await api('/api/session');
   disposePlayer(); activeRoom = id; roomMessage = null;
   $('voice-mic').hidden = $('voice-local').hidden = $('voice-result').hidden = true;
@@ -533,7 +533,7 @@ async function enterRoom(id, name, context = {}) {
   refreshBandwidth();
   if (session.admin) { movies = await api('/api/movies'); selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title])); }
 }
-$('language').addEventListener('change', handle(async () => { sessionStorage.setItem('language', $('language').value); translate(); notice(); if (!player && !uploadBusy) await refresh(); }));
+$('language').addEventListener('change', handle(async () => { localStorage.setItem('language', $('language').value); translate(); notice(); if (!player && !uploadBusy) await refresh(); }));
 $('login-form').addEventListener('submit', handle(async event => { await api('/api/login', { method: 'POST', body: { password: new FormData(event.target).get('password') } }); event.target.reset(); notice(); await refresh(); }));
 $('join-form').addEventListener('submit', handle(async event => {
   const data = new FormData(event.target);
@@ -658,7 +658,7 @@ setInterval(() => { if (!player && !uploadBusy && movies.some(movie => ['process
 translate();
 await handle(async () => {
   await refresh(); const params = new URLSearchParams(location.hash.slice(1));
-  if (['fr', 'ko'].includes(params.get('lang'))) { sessionStorage.setItem('language', params.get('lang')); translate(); }
+  if (['fr', 'ko'].includes(params.get('lang'))) { localStorage.setItem('language', params.get('lang')); translate(); }
   if (params.has('hdr')) sessionStorage.setItem('hdr', params.get('hdr'));
   if (params.has('invite')) $('join-form').elements.code.value = params.get('invite');
   else if (params.has('room')) await enterRoom(params.get('room'));

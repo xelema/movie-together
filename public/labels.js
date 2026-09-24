@@ -82,8 +82,16 @@ const korean = {
   'La traduction a expiré.': '번역 시간이 초과되었습니다.',
 };
 
+// Without a saved choice, the first French or Korean browser language wins, then a Seoul clock means Korean.
+export function language() {
+  const saved = localStorage.getItem('language');
+  if (saved === 'fr' || saved === 'ko') return saved;
+  const browser = (navigator.languages ?? [navigator.language]).map(tag => tag.slice(0, 2).toLowerCase()).find(code => code === 'fr' || code === 'ko');
+  return browser ?? (Intl.DateTimeFormat().resolvedOptions().timeZone === 'Asia/Seoul' ? 'ko' : 'fr');
+}
+
 export function label(french) {
-  const ko = sessionStorage.getItem('language') === 'ko';
+  const ko = language() === 'ko';
   // Some player messages carry an inline 'français / 한국어' pair.
   const pair = french.split(' / ');
   if (pair.length === 2 && /[가-힣]/.test(pair[1])) return ko ? pair[1] : pair[0];
