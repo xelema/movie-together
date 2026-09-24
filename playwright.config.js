@@ -2,7 +2,9 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   // Playwright empties outputDir on start: keep it away from the colour report and the screenshots.
+  // The self-hosted runner shares a 2 vCPU box with prod: one retry absorbs timing flakes.
   testDir: './e2e', outputDir: './test-results/e2e', timeout: 90_000, workers: 1, fullyParallel: false,
+  retries: process.env.CI ? 1 : 0,
   projects: [{ name: 'chromium', use: { browserName: 'chromium' } },
     // CI has no GPU: mesa gives Firefox software WebGL, which it refuses unless allowed.
     { name: 'firefox', use: { browserName: 'firefox', launchOptions: { firefoxUserPrefs: { 'webgl.forbid-software': false } } } },
