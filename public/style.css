@@ -90,7 +90,7 @@ input::file-selector-button:hover{background:#2b2d35}
 .card code,#room-code,.room-pill code{font-family:var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--text)}
 .card code{display:block;font-size:15px;margin:14px 0;overflow-wrap:anywhere}
 #upload-form{margin:22px 0}
-#drop-zone{display:grid;justify-items:center;gap:4px;margin:0;padding:32px 20px;border:1.5px dashed var(--line-strong);border-radius:10px;
+#drop-zone{position:relative;overflow:hidden;display:grid;justify-items:center;gap:4px;margin:0;padding:32px 20px;border:1.5px dashed var(--line-strong);border-radius:10px;
   text-align:center;cursor:pointer;transition:border-color .2s var(--ease),background .2s var(--ease)}
 #drop-zone:hover,#upload-form.dragging #drop-zone{border-color:var(--text-3);background:var(--hover)}
 #drop-zone:focus-within{outline:1px solid var(--white);outline-offset:3px}
