@@ -110,8 +110,10 @@ const micHold = held => event => {
   // The latch stays mouse-and-keyboard only, like Plyr's own: on touch the
   // :hover sticks after a tap and the bar would never drop again, and the
   // first tap can reach the mic before Plyr's touch flag is even set.
+  // Firefox still matches :hover while it dispatches pointerleave, so a leave
+  // trusts the event itself and only a blur asks whether the pointer stayed.
   if (controls) controls.hover = event.pointerType !== 'touch' && !playbackUI.touch &&
-    (held || $('voice-mic').matches(':hover') || $('voice-mic').matches(':focus-visible'));
+    (held || (event.type !== 'pointerleave' && $('voice-mic').matches(':hover')) || $('voice-mic').matches(':focus-visible'));
   const container = playbackUI.elements.container, inside = event.relatedTarget && container.contains(event.relatedTarget);
   container.dispatchEvent(new Event(held || inside ? 'mousemove' : 'mouseleave'));
 };
