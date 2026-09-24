@@ -727,8 +727,12 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     // Texte compris local : italique, sans préfixe « Compris : » (#47).
     await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
     await expect(host.locator('#voice-local')).toHaveCSS('font-style', 'italic');
+    // Carte et surtitre s'effacent après RESULT_MS (8 s) : chaque boîte est
+    // prise dès que son texte est là, un runner lent brûle le reste du délai.
+    const cardBox = await host.locator('#voice-local').boundingBox();
     expect(await host.evaluate(() => window.voiceTest.states)).toContain('processing');
     await expect(host.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
+    const resultBox = await host.locator('#voice-result').boundingBox();
     await expect(guest.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
     // Le surtitre reprend la typographie des sous-titres (.color-captions,
     // video::cue) sans plaque sombre ni préfixe : seul le cyan le distingue.
@@ -743,12 +747,8 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     expect(supertitleStyle.background).toBe('rgba(0, 0, 0, 0)');
     expect(supertitleStyle.color).toBe('rgb(79, 215, 232)');
     // Placement variante B : micro sur le bord droit, carte locale en bas à
-    // gauche, surtitre centré en haut de l'image. Carte et surtitre s'effacent
-    // après RESULT_MS : on les mesure tant qu'ils sont visibles, avant que
-    // l'attente de l'effacement invité ne dépasse ce délai.
+    // gauche, surtitre centré en haut de l'image.
     const stage = await host.locator('.video-stage').boundingBox();
-    const cardBox = await host.locator('#voice-local').boundingBox();
-    const resultBox = await host.locator('#voice-result').boundingBox();
     await showControls(host);
     const micBox = await host.locator('#voice-mic').boundingBox();
     expect(micBox.x + micBox.width / 2).toBeGreaterThan(stage.x + stage.width * .7);
