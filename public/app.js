@@ -325,7 +325,7 @@ async function refresh() {
   $('movies-pending').replaceChildren(...pending.map(render));
   $('movies-ready').replaceChildren(...ready.map(render));
   for (const id of [...movieCards.keys()]) if (!movies.some(movie => movie.id === id)) { movieCards.delete(id); openPanels.delete(id); closedPanels.delete(id); }
-  $('pending-heading').hidden = !pending.length; $('ready-heading').hidden = !ready.length;
+  $('pending-heading').hidden = !pending.length; $('ready-heading').hidden = !ready.length; $('library-empty').hidden = !!movies.length;
   const rooms = await api('/api/rooms');
   $('rooms-empty').hidden = !!rooms.length;
   $('rooms-count').textContent = rooms.length || ''; $('films-count').textContent = movies.length || '';
@@ -350,6 +350,22 @@ async function copyLink(link) {
   if (!navigator.clipboard) { notice(`${t('Lien', '링크')} : ${link}`, true); return; }
   await navigator.clipboard.writeText(link); notice(t('Lien copié.', '링크를 복사했습니다.'));
 }
+// Uploaded, checked, prepared, ready: where the film stands in its lifecycle at a glance.
+function stepper(movie) {
+  const { status } = movie, verified = !!movie.probe?.compatible;
+  const states = ['done',
+    verified ? 'done' : status === 'probing' ? 'active' : ['incompatible', 'failed'].includes(status) ? 'failed' : 'todo',
+    !verified ? 'todo' : status === 'processing' ? 'active' : status === 'failed' ? 'failed' : 'todo', 'todo'];
+  const percent = movie.progress ? ` ${movie.progress.percent} %` : '';
+  const labels = [t('Envoyé', '업로드됨'), t('Vérifié', '확인됨'), t(`Préparation${percent}`, `준비${percent}`), t('Prêt', '준비 완료')];
+  const list = el('ol', undefined, 'steps');
+  list.append(...labels.map((text, index) => {
+    const item = el('li', text); item.dataset.state = states[index];
+    if (states[index] === 'active') item.setAttribute('aria-current', 'step');
+    return item;
+  }));
+  return list;
+}
 function movieCard(movie) {
   const card = el('article', undefined, 'card'); card.append(el('h2', movie.title));
   const states = { ready: [t('Prêt à regarder', '시청 준비 완료'), 'ready'], uploaded: [t('À préparer', '준비 필요'), 'pending'],
@@ -359,10 +375,11 @@ function movieCard(movie) {
   const [statusText, tone] = states[movie.status] ?? ['', 'pending'];
   const status = el('p', undefined, 'status'); status.dataset.tone = tone;
   status.append(el('span', undefined, 'dot'), document.createTextNode(statusText));
+  if (movie.status !== 'ready') card.append(stepper(movie));
   card.append(status);
   if (movie.progress) {
     const bar = el('progress', undefined, 'card-progress'); bar.max = 100; bar.value = movie.progress.percent;
-    card.append(bar, el('p', `${movie.progress.percent} %`, 'hint'));
+    card.append(bar);
   }
   if (movie.error) card.append(el('p', label(movie.error), 'media-error'));
   if (['processing', 'probing'].includes(movie.status)) return card;

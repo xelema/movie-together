@@ -112,6 +112,13 @@ progress::-moz-progress-bar{background:var(--text-3)}
 .status[data-tone=pending] .dot{background:var(--pending)}
 .status[data-tone=danger] .dot{background:var(--danger)}
 .status[data-tone=danger]{color:var(--danger)}
+.steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;list-style:none;padding:0;margin:14px 0 4px}
+.steps li{padding-top:8px;border-top:3px solid var(--line);font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--text-4);overflow-wrap:anywhere;transition:border-color .3s var(--ease),color .3s var(--ease)}
+.steps [data-state=done]{border-color:var(--ready);color:var(--text-2)}
+.steps [data-state=active]{border-color:var(--pending);color:var(--text)}
+.steps [data-state=failed]{border-color:var(--danger);color:var(--danger)}
+html[lang=ko] .steps li{font-family:var(--sans);letter-spacing:.02em;text-transform:none}
 .hint{font-size:12px;color:var(--text-4);margin:4px 0}
 #disk-space.insufficient{color:var(--danger)}
 .title-row{display:flex;gap:10px;margin-top:8px}
