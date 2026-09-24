@@ -540,6 +540,12 @@ $('join-form').addEventListener('submit', handle(async event => {
   const room = await api('/api/join', { method: 'POST', body: { code: data.get('code') } }); notice();
   await enterRoom(room.id, undefined, { code: String(data.get('code')).trim() });
 }));
+// A pasted invitation link would be cut by maxlength before any input event, so it is caught at paste time.
+$('join-form').elements.code.addEventListener('paste', event => {
+  const code = /[#&?]invite=([^&\s]+)/.exec(event.clipboardData.getData('text'))?.[1];
+  if (!code) return;
+  event.preventDefault(); event.target.value = code;
+});
 $('logout').addEventListener('click', handle(async () => { disposePlayer(); $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await api('/api/logout', { method: 'POST', body: {} }); await refresh(); }));
 $('refresh').addEventListener('click', handle(refresh));
 $('allow-sound').addEventListener('click', handle(() => player?.activate()));
