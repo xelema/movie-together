@@ -624,6 +624,36 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await host.waitForFunction(at => performance.now() - at > 2600, hoveredAt);
     await expect(host.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
     await expect(host.locator('#watch')).toHaveAttribute('data-chrome', 'true');
+    // Le saut direct de la barre vers le micro tient en une seule étape de
+    // hit-test : Chromium livre l'entrée du micro avant le leave de la barre,
+    // et sans le relais le verrou est effacé après avoir été posé. C'est le
+    // cas réel des écrans bas où le micro touche le haut des contrôles ; une
+    // traversée en plusieurs étapes passe par la vidéo et ne le voit jamais.
+    // Une chute même transitoire du chrome compte : une fois le micro caché,
+    // le pointeur retombe sur la vidéo et l'auto-masquage reprend.
+    await host.evaluate(() => {
+      const plyr = document.querySelector('.plyr');
+      window.chromeDrops = 0;
+      new MutationObserver(() => { if (plyr.matches('.plyr--hide-controls')) window.chromeDrops++; })
+        .observe(plyr, { attributes: true, attributeFilter: ['class'] });
+    });
+    const barPoint = await host.locator('.plyr__controls').boundingBox()
+      .then(box => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 }));
+    await host.mouse.move(barPoint.x, barPoint.y);
+    await host.mouse.move(micPoint.x, micPoint.y);
+    // Le verrou survit à la traversée : Plyr ne l'a pas effacé après l'entrée.
+    await expect.poll(() => host.locator('.plyr__controls').evaluate(el => el.hover)).toBe(true);
+    const crossedAt = await host.evaluate(() => performance.now());
+    await host.waitForFunction(at => performance.now() - at > 2600, crossedAt);
+    await expect(host.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
+    await expect(host.locator('#voice-mic')).toBeVisible();
+    expect(await host.evaluate(() => window.chromeDrops)).toBe(0);
+    // Le départ du micro sans focus rend l'auto-masquage immédiat.
+    await host.mouse.move(0, 0);
+    await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
+    await expect(host.locator('#voice-mic')).toBeHidden();
+    await showControls(host);
+    await expect(host.locator('#voice-mic')).toBeVisible();
     // Le focus clavier retient la barre de la même façon (:focus-visible) :
     // une entrée clavier réelle donne la modalité, le pointeur part, le focus
     // seul maintient, et le blur rend l'auto-masquage.
@@ -831,6 +861,10 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
       await expect(phone.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
       await expect(host.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
       await expect(phone.locator('#voice-result')).not.toContainText('Sam');
+      // Après les taps aucun :hover ne reste accroché au micro : la barre et
+      // le micro repartent en auto-masquage tactile.
+      await expect(phone.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 5000 });
+      await expect(phone.locator('#voice-mic')).toBeHidden();
       await touchContext.close();
       // Le départ du membre fige la séance ou la laisse reprendre seule :
       // attendre la phase, jouer si nécessaire, jamais un délai.
