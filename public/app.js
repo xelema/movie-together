@@ -102,20 +102,31 @@ playbackUI.on('controlsshown', () => { if (clickHidden) playbackUI.toggleControl
 $('video').addEventListener('play', () => { clickHidden = false; });
 // The mic lives outside the Plyr container, so hovering or focusing it never
 // reaches the handlers that keep the chrome up. controls.hover is the same
-// latch the transport sets; the synthetic container event routes the release
+// latch the transport sets. The synthetic container event routes the release
 // through Plyr's own hide policy: a grace delay while the pointer stays on
 // the player, immediate hide when it leaves.
 const micHold = held => event => {
   const controls = playbackUI.elements.controls;
   // The latch stays mouse-and-keyboard only, like Plyr's own: on touch the
-  // :hover sticks after a tap and the bar would never drop again.
-  if (controls) controls.hover = !playbackUI.touch &&
+  // :hover sticks after a tap and the bar would never drop again, and the
+  // first tap can reach the mic before Plyr's touch flag is even set.
+  if (controls) controls.hover = event.pointerType !== 'touch' && !playbackUI.touch &&
     (held || $('voice-mic').matches(':hover') || $('voice-mic').matches(':focus-visible'));
   const container = playbackUI.elements.container, inside = event.relatedTarget && container.contains(event.relatedTarget);
   container.dispatchEvent(new Event(held || inside ? 'mousemove' : 'mouseleave'));
 };
 for (const [type, held] of [['pointerenter', true], ['focusin', true], ['pointerleave', false], ['focusout', false]])
   $('voice-mic').addEventListener(type, micHold(held));
+// A straight jump from the bar onto the mic is a single hit-test step: the
+// mic's enter runs before the bar's own leave, and that leave clears the
+// latch it just set. Bound after Plyr's listener, this hands the hold back
+// whenever the mic still owns it: the pointer landing on it (relatedTarget
+// covers leave-before-enter engines) or keyboard focus holding it.
+playbackUI.elements.controls.addEventListener('mouseleave', event => {
+  const mic = $('voice-mic');
+  if (!playbackUI.touch && (mic.contains(event.relatedTarget) || mic.matches(':hover') || mic.matches(':focus-visible')))
+    playbackUI.elements.controls.hover = true;
+});
 // Route transport shortcuts through the shared clock, not Plyr's local playback.
 $('screen').addEventListener('keydown', event => {
   if (!player || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
