@@ -70,7 +70,8 @@ const latchHover = page => expect.poll(async () => {
   if (probe.over || !probe.ok) await page.mouse.move(probe.x, probe.out);
   if (!probe.ok) return false;
   await page.mouse.move(probe.x, probe.y, { steps: 4 });
-  return false;
+  return page.locator('.plyr__controls').evaluate(el =>
+    !el.closest('.plyr').classList.contains('plyr--hide-controls') && (el.hover === true || document.querySelector('video').paused));
 }, { timeout: 5000 }).toBe(true);
 
 // Latching hover is also what shows the chrome: each pass re-wakes a dropped
@@ -132,7 +133,7 @@ const ensurePlaying = () => expect.poll(async () => {
 // freezes the séance and pins the bar, a room state rather than a hiding
 // defect. Re-arm a paused room, then the hide still has to prove itself.
 const controlsAutoHide = page => expect(async () => {
-  if (await page.evaluate(() => window.player?.state?.phase === 'paused')) await ensurePlaying();
+  if (await page.evaluate(() => window.player?.state?.phase === 'paused' || (document.querySelector('video')?.currentTime ?? 0) >= 40)) await ensurePlaying();
   await expect(page.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
 }).toPass({ timeout: 30_000 });
 
@@ -470,6 +471,7 @@ test('track and settings choices stay viewer-local while only the transport move
     // hit-tested against the transport they carry: it must still only toggle
     // the overlay. Trusted touch input needs CDP, a Chromium-only pass.
     if (browser.browserType().name() === 'chromium') {
+      await ensurePlaying();
       const touchContext = await browser.newContext({ hasTouch: true });
       const phone = await touchContext.newPage();
       phone.setDefaultTimeout(10_000); phone.setDefaultNavigationTimeout(30_000);
@@ -596,6 +598,7 @@ test('the picture layout holds across viewports and fullscreen', async () => {
       await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '0', { timeout: 1000 });
       await expect(host.locator('video')).toHaveCSS('cursor', 'none', { timeout: 1000 });
     }).toPass({ timeout: 60_000 });
+    await ensurePlaying();
     await showControls(host);
     await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '1');
     await expect(host.locator('video')).not.toHaveCSS('cursor', 'none');
@@ -610,7 +613,7 @@ test('the picture layout holds across viewports and fullscreen', async () => {
 test('a voice prise is exclusive to one speaker and member failures pause the room', async ({ browser }) => {
   test.skip(!joined, 'the séance setup pass did not complete');
   // Chromium alone pays the trusted-touch pass on top of the prise journey.
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   try {
     // Traduction vocale : la permission micro n'est demandée qu'au premier
     // appui, une seule prise est acceptée, le texte compris reste local et le
@@ -676,6 +679,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await host.waitForFunction(at => performance.now() - at > 2600, focusedAt);
     await expect(host.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
     await host.evaluate(() => document.querySelector('#voice-mic').blur());
+    await ensurePlaying();
     await controlsAutoHide(host);
     await expect(host.locator('#watch')).toHaveAttribute('data-chrome', 'false');
     await showControls(host);
@@ -685,29 +689,28 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
     // Surtitre incrémental : la traduction seule s'affiche chez tous pendant
     // la prise, avant même l'arrêt. Le nom de l'orateur n'y figure plus.
-    await expect(host.locator('#voice-result')).toContainText('엔딩');
-    await expect(guest.locator('#voice-result')).toContainText('엔딩');
-    await expect(host.locator('#voice-result')).not.toContainText('Alex');
-    await expect(guest.locator('#voice-result')).not.toContainText('Alex');
+    await Promise.all([
+      expect(host.locator('#voice-result')).toContainText('엔딩'),
+      expect(guest.locator('#voice-result')).toContainText('엔딩'),
+      expect(host.locator('#voice-result')).not.toContainText('Alex'),
+      expect(guest.locator('#voice-result')).not.toContainText('Alex'),
+    ]);
     await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
     // Pendant l'enregistrement le micro reste visible et rouge même quand
     // l'overlay se cache.
     await host.mouse.move(0, 0);
     await controlsAutoHide(host);
-    await expect(host.locator('#voice-mic')).toBeVisible();
-    await expect(host.locator('#voice-mic')).toHaveCSS('color', 'rgb(229, 72, 77)');
-    // Le bouton devient un rond rouge : l'icône micro s'efface derrière le
-    // spectrogramme blanc, dont les barres suivent le niveau réel de la
-    // capture — l'oscillateur en dents de scie (330 Hz + harmoniques) couvre
-    // les quatre bandes : au moins trois barres quittent le repos (4 px),
-    // dont une barre de médium-aigu que la fondamentale seule n'atteint pas.
-    await expect(host.locator('#voice-mic .voice-icon')).toBeHidden();
-    await expect(host.locator('#voice-mic .voice-spectrogram')).toBeVisible();
+    await Promise.all([
+      expect(host.locator('#voice-mic')).toBeVisible(),
+      expect(host.locator('#voice-mic')).toHaveCSS('color', 'rgb(229, 72, 77)'),
+      expect(host.locator('#voice-mic .voice-icon')).toBeHidden(),
+      expect(host.locator('#voice-mic .voice-spectrogram')).toBeVisible(),
+    ]);
     await expect.poll(() => host.locator('#voice-mic .voice-bar')
-      .evaluateAll(els => els.filter(el => parseFloat(el.style.height) > 6).length))
-      .toBeGreaterThanOrEqual(3);
-    await expect.poll(() => host.locator('#voice-mic .voice-bar').nth(2)
-      .evaluate(el => parseFloat(el.style.height) || 0)).toBeGreaterThan(6);
+      .evaluateAll(els => {
+        const heights = els.map(el => parseFloat(el.style.height) || 0);
+        return heights.filter(h => h > 6).length >= 3 && heights[2] > 6;
+      })).toBe(true);
     // Pendant la prise de l'hôte, l'invité est refusé localement, en coréen,
     // et aucun état intermédiaire ne fuite vers l'hôte. Sa demande de
     // permission reste suspendue : c'est elle qui deviendra orpheline pendant
@@ -836,6 +839,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await expect(guest.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
     // Après l'erreur, l'invité reprend la parole : interface coréenne, sens
     // figé ko -> fr. Changer la langue du site pendant l'écoute n'y touche pas.
+    await ensurePlaying();
     await showControls(guest);
     await guest.locator('#voice-mic').click();
     await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');

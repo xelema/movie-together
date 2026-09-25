@@ -57,9 +57,9 @@ export class HlsJsBackend {
     this.mediaRecoveries = 0; this.networkRecoveries = 0;
     this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
       maxBufferSize: bufferBytes(minBuffer, bitrate), backBufferLength: 60,
-      // Prefetch du fragment de départ et lookup fin : la reprise et le
-      // re-buffer piochent dans le cache local sans attendre le réseau.
-      startFragPrefetch: true, maxFragLookUpTolerance: 0.05, enableWorker: true });
+      // Prefetch du fragment de départ : la reprise et le re-buffer piochent
+      // dans le cache local sans attendre le réseau.
+      startFragPrefetch: true, enableWorker: true });
 
     const trackController = this.hls.subtitleTrackController;
     if (trackController) trackController.toggleTrackModes = () => pinSubtitleModes(trackController);

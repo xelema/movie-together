@@ -186,10 +186,9 @@ export class SyncPlayer {
     this.ws.onerror = () => this.onStatus('Connexion à la room impossible. Vérifier l’invitation.');
   }
   pauseLocal() {
-    // Déjà en pause : rien à réarmer toutes les 200 ms, juste le rate à rendre.
-    if (this.video.paused) { if (this.video.playbackRate !== 1) this.video.playbackRate = 1; return; }
     this.internalUntil = performance.now() + INTERNAL_EVENT_MS;
-    this.pendingPauses++; this.video.pause(); this.video.playbackRate = 1;
+    if (!this.video.paused) { this.pendingPauses++; this.video.pause(); }
+    if (this.video.playbackRate !== 1) this.video.playbackRate = 1;
   }
   // The room's thresholds arrive with welcome and can change mid-session via state.
   applySync(sync) {
@@ -354,6 +353,7 @@ export class SyncPlayer {
     if (this.serverTime() < this.state.startsAt) {
       this.startTimer = setTimeout(() => this.begin(), Math.ceil(this.state.startsAt - this.serverTime())); return;
     }
+    this.internalUntil = performance.now() + INTERNAL_EVENT_MS;
     try { await this.video.play(); }
     catch (error) { this.activated = false; this.activationBlocked = error.name === 'NotAllowedError'; this.onActivation(false); this.report(false); }
   }

@@ -53,8 +53,8 @@ export function decide({ activating, state, clockReady, hidden, online, silent,
   // WSOLA (playbackRate != 1) en plein amorçage ré-ancre l'horloge média de
   // Chrome et saccade la reprise (< 24 fps pendant 1-2 s) : seul un vrai
   // décrochage justifie un changement de rate avant 1,5 s.
-  const starting = serverNow - state.startsAt < 1500;
-  if (Math.abs(drift) > (starting ? 0.65 : rate !== undefined && rate !== 1 ? 0.2 : 0.35)) return { rate: drift > 0 ? 1.08 : 0.92 };
+  const starting = serverNow - state.startsAt < 350;
+  if (Math.abs(drift) > (starting ? 0.45 : rate !== undefined && rate !== 1 ? 0.2 : 0.35)) return { rate: drift > 0 ? 1.08 : 0.92 };
   return { normalizeRate: true };
 }
 

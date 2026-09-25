@@ -601,11 +601,10 @@ export class ColorRenderer {
       gl.flush();
       // Keep error detection without a synchronous GPU round trip on every frame.
       const now = performance.now();
-      // Pendant la reprise (2,5 s après play) puis dès que l'import texture est
-      // prouvé, aucune sonde synchrone ne doit bloquer le pipeline : getError et
-      // readPixels figent le GPU/IPC de Chrome (15-80 ms) et font chuter la
-      // reprise sous 24 fps. La pause garde sa sonde, inoffensive sur une image
-      // figée.
+      // Pendant la reprise (2,5 s après play), aucune sonde synchrone ne doit
+      // bloquer le pipeline : getError et readPixels figent le GPU/IPC de Chrome
+      // (15-80 ms) et font chuter la reprise sous 24 fps. Dès que l'import
+      // texture est prouvé (importVerified), readPixels n'est plus jamais appelé.
       const resuming = this.ready && !this.drawErrors && now < (this.resumeGraceUntil ?? 0);
       const settled = this.ready && this.importVerified && !this.drawErrors && !resized && !video.paused;
       if (!resuming && !settled &&
