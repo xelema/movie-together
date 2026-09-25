@@ -67,7 +67,8 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
         const level = Math.min(1, peaks[i] * .75 + share);
         // Hauteur entière en px : un transform scaleY laissait des traînées
         // de rasterisation au bord demi-pixel de la première barre.
-        bars[i].style.height = `${Math.round(4 + level * 16)}px`;
+        const h = `${Math.round(4 + level * 16)}px`;
+        if (bars[i].style.height !== h) bars[i].style.height = h;
       }
       spectrumRaf = requestAnimationFrame(tick);
     };
@@ -231,7 +232,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       // périmé ne le remplacent ensuite.
       if (event.seq < shownSeq || (event.seq === shownSeq && shownFinal)) return;
       shownSeq = event.seq; shownFinal = true;
-      fail();
+      if (!event.utterance || event.utterance === utterance || state === 'processing' || state === 'listening') fail();
       show(supertitle, event.text, RESULT_MS);
     }
   };

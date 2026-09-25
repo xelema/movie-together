@@ -48,6 +48,7 @@ test('copies 4K video exactly and prepares embedded audio and external subtitles
   assert.match(await readFile(path.join(prepared, 'master.m3u8'), 'utf8'), /VIDEO-RANGE=SDR/);
   assert.deepEqual(await colourBox(prepared), { primaries: 1, transfer: 1, matrix: 1, fullRange: false });
   assert.match(await readFile(path.join(prepared, 'master.m3u8'), 'utf8'), /CHANNELS="2"/);
+  assert.match(await readFile(path.join(prepared, 'stream_0.m3u8'), 'utf8'), /#EXT-X-INDEPENDENT-SEGMENTS/);
   assert.ok(result.maxSegmentSeconds <= 4.05);
 });
 

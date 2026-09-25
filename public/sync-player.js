@@ -48,7 +48,10 @@ export class SyncPlayer {
       this.listen(event.track, 'cuechange', raise); raise();
     });
     this.listen(video.textTracks, 'change', () => this.positionSubtitles());
-    for (const event of ['controlsshown', 'controlshidden']) this.listen(video, event, () => this.positionSubtitles());
+    // Les transitions d'interface arrivent en rafale au play/pause : le mesurage
+    // (getBoundingClientRect) est coalescé sur un seul rAF pour éviter un Forced
+    // Synchronous Layout pendant que le décodeur démarre.
+    for (const event of ['controlsshown', 'controlshidden']) this.listen(video, event, () => this.scheduleSubtitles());
     // The element box tracks window resizes, fullscreen and orientation changes:
     // observing it keeps the glyph size glued to the picture with no skipped frame.
     this.subtitleObserver = new ResizeObserver(() => this.positionSubtitles());
@@ -98,6 +101,12 @@ export class SyncPlayer {
     this.connect();
   }
   listen(target, event, handler) { target.addEventListener(event, handler); this.listeners.push(() => target.removeEventListener(event, handler)); }
+  scheduleSubtitles() {
+    // Sans boucle d'animation (tests, DOM minimal) la mesure reste synchrone.
+    if (typeof requestAnimationFrame !== 'function') { this.positionSubtitles(); return; }
+    if (this.subtitleFrame) return;
+    this.subtitleFrame = requestAnimationFrame(() => { this.subtitleFrame = 0; if (!this.disposed) this.positionSubtitles(); });
+  }
   positionSubtitles() {
     const container = this.video.closest('.plyr'), controls = container?.querySelector('.plyr__controls');
     // iOS native fullscreen paints through a system layer where the element box
@@ -176,7 +185,11 @@ export class SyncPlayer {
     };
     this.ws.onerror = () => this.onStatus('Connexion à la room impossible. Vérifier l’invitation.');
   }
-  pauseLocal() { this.internalUntil = performance.now() + INTERNAL_EVENT_MS; if (!this.video.paused) this.pendingPauses++; this.video.pause(); this.video.playbackRate = 1; }
+  pauseLocal() {
+    this.internalUntil = performance.now() + INTERNAL_EVENT_MS;
+    if (!this.video.paused) { this.pendingPauses++; this.video.pause(); }
+    if (this.video.playbackRate !== 1) this.video.playbackRate = 1;
+  }
   // The room's thresholds arrive with welcome and can change mid-session via state.
   applySync(sync) {
     const retune = sync.minBuffer !== undefined && sync.minBuffer !== this.sync.minBuffer;
@@ -340,6 +353,7 @@ export class SyncPlayer {
     if (this.serverTime() < this.state.startsAt) {
       this.startTimer = setTimeout(() => this.begin(), Math.ceil(this.state.startsAt - this.serverTime())); return;
     }
+    this.internalUntil = performance.now() + INTERNAL_EVENT_MS;
     try { await this.video.play(); }
     catch (error) { this.activated = false; this.activationBlocked = error.name === 'NotAllowedError'; this.onActivation(false); this.report(false); }
   }
@@ -364,7 +378,8 @@ export class SyncPlayer {
       ackStartsAt: ready && this.scheduled === this.state.startsAt ? this.scheduled : null });
   }
   dispose() {
-    this.disposed = true; clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings);
+    this.disposed = true; if (this.subtitleFrame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.subtitleFrame);
+    clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings);
     clearTimeout(this.startTimer); clearTimeout(this.retry); this.subtitleObserver?.disconnect(); this.listeners.forEach(remove => remove());
     this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
     this.releaseWakeLock();
