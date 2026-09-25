@@ -15,8 +15,9 @@ const STATE_NAMES = {
 
 export function attachVoice({ mic, local, supertitle, player, t, label }) {
   let state = 'idle', utterance = null, shownSeq = 0, shownRev = 0, shownFinal = false;
-  let stream = null, audioContext = null, source = null, worklet = null;
-  let listenTimer = null, watchdog = null, hardware = null, armSeq = 0;
+  let stream = null, audioContext = null, source = null, worklet = null, analyser = null;
+  let listenTimer = null, watchdog = null, hardware = null, armSeq = 0, spectrumRaf = 0;
+  let spectrumBins = null;
 
   const show = (node, text, ms = 0) => {
     node.textContent = text;
@@ -31,12 +32,35 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     const [fr, ko] = STATE_NAMES[next] ?? STATE_NAMES.idle;
     mic.setAttribute('aria-label', t(fr, ko));
   };
+  // Pendant l'écoute le bouton devient un rond rouge : quatre barres blanches
+  // animées par le niveau réel du micro prouvent que la capture fonctionne.
+  const spectrumOff = () => {
+    if (spectrumRaf) { cancelAnimationFrame(spectrumRaf); spectrumRaf = 0; }
+    mic.querySelectorAll?.('.voice-bar')?.forEach(bar => { bar.style.transform = ''; });
+  };
+  const spectrumOn = () => {
+    const bars = mic.querySelectorAll?.('.voice-bar');
+    if (!analyser || !bars?.length) return;
+    spectrumBins ??= new Uint8Array(analyser.frequencyBinCount);
+    const tick = () => {
+      if (state !== 'listening' || !analyser) return;
+      analyser.getByteFrequencyData(spectrumBins);
+      for (let i = 0; i < bars.length; i++) {
+        let peak = 0;
+        for (let j = i * 8; j < i * 8 + 8 && j < spectrumBins.length; j++) peak = Math.max(peak, spectrumBins[j]);
+        bars[i].style.transform = `scaleY(${(.22 + peak / 255 * 1.3).toFixed(2)})`;
+      }
+      spectrumRaf = requestAnimationFrame(tick);
+    };
+    tick();
+  };
   const stopCapture = () => {
     clearTimeout(listenTimer);
+    spectrumOff();
     // Les noeuds ne sont branchés qu'à l'accord : une déconnexion sans lien
     // lève InvalidAccessError sur certains moteurs.
-    try { worklet?.disconnect(); source?.disconnect(); } catch {}
-    worklet = source = null;
+    try { worklet?.disconnect(); source?.disconnect(); analyser?.disconnect(); } catch {}
+    worklet = source = analyser = null;
     // Le flux reste ouvert pour éviter de redemander la permission, mais
     // muet en dehors de l'écoute : aucun échantillon ne peut circuler.
     stream?.getAudioTracks().forEach(track => { track.enabled = false; });
@@ -85,6 +109,11 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
         if (stale()) return false;
         source = audioContext.createMediaStreamSource(stream);
         worklet = new AudioWorkletNode(audioContext, 'voice-pcm');
+        // L'analyseur observe la source sans sortie pour le spectrogramme. Un
+        // contexte sans createAnalyser (doublure de test) ne fait pas échouer
+        // la prise : le bouton reste rouge, les barres simplement fixes.
+        analyser = audioContext.createAnalyser?.() ?? null;
+        if (analyser) { analyser.fftSize = 64; analyser.smoothingTimeConstant = .4; }
         // Le seuil de bufferedAmount décidé dans #39 arrête la prise proprement :
         // aucune trame n'est perdue silencieusement et la page ne se bloque pas.
         worklet.port.onmessage = event => {
@@ -142,9 +171,11 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       }
       stream.getAudioTracks().forEach(track => { track.enabled = true; });
       source.connect(worklet);
+      if (analyser) source.connect(analyser);
       worklet.connect(audioContext.destination);
       listenTimer = setTimeout(stopSpeaking, LISTEN_MS);
       setState('listening');
+      spectrumOn();
       return;
     }
     if (event.state === 'failed') {
