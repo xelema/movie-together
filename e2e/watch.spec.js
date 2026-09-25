@@ -725,12 +725,14 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
     await host.locator('#voice-mic').click();
     // Texte compris local : italique, sans préfixe « Compris : » (#47).
+    await expect(host.locator('#voice-local')).toBeVisible();
     await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
     await expect(host.locator('#voice-local')).toHaveCSS('font-style', 'italic');
     // Carte et surtitre s'effacent après RESULT_MS (8 s) : chaque boîte est
     // prise dès que son texte est là, un runner lent brûle le reste du délai.
     const cardBox = await host.locator('#voice-local').boundingBox();
     expect(await host.evaluate(() => window.voiceTest.states)).toContain('processing');
+    await expect(host.locator('#voice-result')).toBeVisible();
     await expect(host.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
     const resultBox = await host.locator('#voice-result').boundingBox();
     await expect(guest.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
