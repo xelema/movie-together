@@ -91,3 +91,19 @@ test('a fast subtitle re-selection never strands a track without cues', () => {
     saved === undefined ? delete globalThis.window : globalThis.window = saved;
   }
 });
+
+test('hls.js is configured for stall-free resume and deep segment reuse', () => {
+  const { hls } = fakeHls();
+  const saved = globalThis.window;
+  let config;
+  globalThis.window = { Hls: class { constructor(options) { config = options; return hls; } } };
+  window.Hls.Events = { FRAG_BUFFERED: 'fb', MANIFEST_PARSED: 'mp', AUDIO_TRACKS_UPDATED: 'au', SUBTITLE_TRACKS_UPDATED: 'su', ERROR: 'err' };
+  window.Hls.ErrorTypes = { MEDIA_ERROR: 'media', NETWORK_ERROR: 'network' };
+  try {
+    new HlsJsBackend({}, 'u');
+    assert.equal(config.backBufferLength, 60);
+    assert.equal(config.startFragPrefetch, true);
+  } finally {
+    saved === undefined ? delete globalThis.window : globalThis.window = saved;
+  }
+});

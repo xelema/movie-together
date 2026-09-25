@@ -277,6 +277,7 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
     }
   }
   args.push('-f', 'hls', '-hls_time', String(options.segmentSeconds ?? 4), '-hls_playlist_type', 'vod',
+    '-hls_flags', 'independent_segments',
     // FFmpeg only expands %v when the stream map holds more than one variant.
     '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', audio.length ? 'init_%v.mp4' : 'init_0.mp4',
     '-hls_segment_filename', path.join(directory, 'segment_%v_%06d.m4s'),
