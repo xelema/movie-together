@@ -16,7 +16,7 @@ test('keeps audio at normal speed and pauses the group for excessive drift', () 
     activating: false, state: { phase: 'playing', startsAt: 0, position: 10, duration: 100 },
     clockReady: true, hidden: false, online: true, silent: false,
     decoded: true, seeking: false, paused: false, currentTime: 9.8, bufferedStart: 0,
-    target: 10, serverNow: 1000, activated: true, scheduled: 0,
+    target: 10, serverNow: 3000, activated: true, scheduled: 0,
   };
   assert.deepEqual(decide(base), { normalizeRate: true });
   // Mid-range drift stretches the playback rate instead of freezing the room.
@@ -31,6 +31,26 @@ test('keeps audio at normal speed and pauses the group for excessive drift', () 
   assert.equal(decide(paused).seekTo, 10);
   // Before the first decoded frame a seek would wedge the media element on some engines.
   assert.equal(decide({ ...paused, decoded: false }).seekTo, undefined);
+});
+
+test('the post-start stabilization window absorbs decoder warm-up drift', () => {
+  const base = {
+    activating: false, state: { phase: 'playing', startsAt: 0, position: 10, duration: 100 },
+    clockReady: true, hidden: false, online: true, silent: false,
+    decoded: true, seeking: false, paused: false, currentTime: 9.5, bufferedStart: 0,
+    target: 10, serverNow: 900, activated: true, scheduled: 0,
+  };
+  // video.play() takes ~80-250 ms to move currentTime: drift inside 1.5 s of
+  // startsAt must not engage the WSOLA resampler mid-warm-up.
+  assert.deepEqual(decide(base), { normalizeRate: true });
+  assert.deepEqual(decide({ ...base, currentTime: 10.5 }), { normalizeRate: true });
+  // A real desync still corrects, even inside the window.
+  assert.deepEqual(decide({ ...base, currentTime: 9.3 }), { rate: 1.08 });
+  assert.deepEqual(decide({ ...base, currentTime: 10.7 }), { rate: 0.92 });
+  assert.deepEqual(decide({ ...base, currentTime: 8.7 }), { pause: true, reportUnready: true });
+  // Past 1.5 s the regular thresholds apply again.
+  assert.deepEqual(decide({ ...base, serverNow: 1500 }), { rate: 1.08 });
+  assert.deepEqual(decide({ ...base, serverNow: 1499 }), { normalizeRate: true });
 });
 
 test('a playing phase before startsAt arms the local start timer once', () => {
@@ -204,4 +224,32 @@ test('a pause counted before a source reload cannot swallow the next real pause'
     player?.dispose();
     for (const key of globals) saved[key] === undefined ? delete globalThis[key] : globalThis[key] = saved[key];
   }
+});
+
+test('pauseLocal on an already paused element only restores the playback rate', () => {
+  let pauses = 0;
+  const player = Object.assign(Object.create(SyncPlayer.prototype), {
+    internalUntil: 0, pendingPauses: 0,
+    video: { paused: true, playbackRate: 1.08, pause() { pauses++; } },
+  });
+  player.pauseLocal();
+  assert.equal(pauses, 0);
+  assert.equal(player.internalUntil, 0);
+  assert.equal(player.pendingPauses, 0);
+  assert.equal(player.video.playbackRate, 1);
+});
+
+test('a pause queued for delivery is not re-armed on every tick', () => {
+  let pauses = 0;
+  const video = { paused: false, playbackRate: 1, pause() { pauses++; this.paused = true; } };
+  const player = Object.assign(Object.create(SyncPlayer.prototype), { internalUntil: 0, pendingPauses: 0, video });
+  player.pauseLocal();
+  assert.equal(pauses, 1);
+  assert.equal(player.pendingPauses, 1);
+  const until = player.internalUntil;
+  assert.ok(until > 0);
+  player.pauseLocal();
+  assert.equal(pauses, 1);
+  assert.equal(player.pendingPauses, 1);
+  assert.equal(player.internalUntil, until);
 });

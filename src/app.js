@@ -428,14 +428,18 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     } finally { release(); }
   });
   app.get('/media/:id/:file', authenticated, (req, res, next) => {
+    // TCP_NODELAY : pas de latence Nagle sur le flux des segments vidéo.
+    req.socket?.setNoDelay?.(true);
     const movie = getMovie(req.params.id);
     if (!req.session.admin && ![...req.session.rooms].some(id => hub.get(id)?.movieId === movie.id)) throw fail(403, 'Accès au film refusé.');
     if (movie.status !== 'ready' || !/^(master(?:_original|_compatible)?|stream_\d+|sub_[a-f0-9-]+(?:_original|_compatible)?)\.m3u8$|^(init_\d+\.mp4|segment_\d+_\d+\.m4s|sub_[a-f0-9-]+(?:_original|_compatible)?\.vtt)$/.test(req.params.file)) throw fail(404, 'Média introuvable.');
     res.set('Cache-Control', 'private, no-store');
     const ext = path.extname(req.params.file);
     if (ext === '.m4s' || ext === '.mp4') {
-      // Revalidate access before reusing private bytes; generations change on preparation.
-      res.set('Cache-Control', 'private, no-cache');
+      // Les bytes peuvent être resservis du cache mémoire pendant 1 h sans RTT
+      // bloquant (reprise, re-buffer) ; l'ETag porte la génération pour
+      // invalider toute préparation ultérieure.
+      res.set('Cache-Control', 'private, max-age=3600');
       res.set('ETag', `"${movie.generation}-${req.params.file}"`);
     }
     res.type(({ '.m3u8': 'application/vnd.apple.mpegurl', '.m4s': 'video/mp4', '.vtt': 'text/vtt', '.mp4': 'video/mp4' })[ext]);

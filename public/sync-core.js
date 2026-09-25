@@ -47,7 +47,14 @@ export function decide({ activating, state, clockReady, hidden, online, silent,
   // Only a real desync still pauses and realigns the entire room.
   const drift = target - currentTime;
   if (Math.abs(drift) > 1.2) return { pause: true, reportUnready: true };
-  if (Math.abs(drift) > (rate !== undefined && rate !== 1 ? 0.2 : 0.35)) return { rate: drift > 0 ? 1.08 : 0.92 };
+  // Fenêtre de stabilisation après startsAt : video.play() met ~80-250 ms à
+  // faire avancer currentTime, et l'écart figé en pause (±0,1 s) pousse le
+  // drift mesuré au-delà de 0,35 s dès le premier tick. Activer le resampler
+  // WSOLA (playbackRate != 1) en plein amorçage ré-ancre l'horloge média de
+  // Chrome et saccade la reprise (< 24 fps pendant 1-2 s) : seul un vrai
+  // décrochage justifie un changement de rate avant 1,5 s.
+  const starting = serverNow - state.startsAt < 1500;
+  if (Math.abs(drift) > (starting ? 0.65 : rate !== undefined && rate !== 1 ? 0.2 : 0.35)) return { rate: drift > 0 ? 1.08 : 0.92 };
   return { normalizeRate: true };
 }
 
@@ -102,11 +109,25 @@ export function shownSubtitleTrack(tracks, selected = -1) {
 // track reads healthy again, and the snapshot keeps the live cue list stable
 // while it is rebuilt.
 export function reviveSubtitleCues(track, time) {
-  const cues = Array.from(track.cues ?? []);
-  const active = new Set(track.activeCues ?? []);
-  const stale = cues.some(cue => cue.startTime <= time && cue.endTime > time && !active.has(cue));
+  const list = track.cues;
+  if (!list?.length) { track.revived = false; return; }
+  // La liste est triée par startTime et activeCues ne compte que quelques cues
+  // : un scan indexé qui coupe à la première cue stale ou à la première cue
+  // future évite Array.from/Set à chaque tick sur des milliers d'entrées.
+  let stale = false;
+  for (let i = 0; i < list.length; i++) {
+    const cue = list[i];
+    if (cue.startTime > time) break;
+    if (cue.endTime <= time) continue;
+    const active = track.activeCues ?? [];
+    let live = false;
+    for (let j = 0; j < active.length; j++) if (active[j] === cue) { live = true; break; }
+    if (!live) { stale = true; break; }
+  }
   if (!stale) { track.revived = false; return; }
   if (track.revived) return;
   track.revived = true;
+  // removeCue mutates the live list: the re-registration replays a snapshot.
+  const cues = Array.from(list);
   for (const cue of cues) { track.removeCue(cue); track.addCue(cue); }
 }
