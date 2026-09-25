@@ -40,14 +40,18 @@ export function decide({ activating, state, clockReady, hidden, online, silent,
     return action;
   }
   if (paused) return {};
-  // Mid-range drift is caught up with a short playback-rate nudge: inaudible and
-  // invisible next to a room-wide pause. A constant reporting bias (Android's
-  // currentTime lags ~0.3 s) hovers near the gate, so a correcting member keeps
-  // correcting until drift falls below 0.2 s instead of toggling every tick.
-  // Only a real desync still pauses and realigns the entire room.
+  // Pour préserver la qualité du film (audio natif sans étirement WSOLA et
+  // vidéo à 24 fps sans judder), les petits écarts restent à 1.0x : une
+  // dérive sous 1.2 s (1.5 s au démarrage pendant le calage du décodeur)
+  // ne touche à rien. Au-delà, un micro-ajustement doux (±4%) résorbe le retard
+  // sans déformation audible jusqu'à revenir sous 0.5 s. Seul un vrai
+  // décrochage (> 2.5 s) déclenche une pause et un recalage de la salle.
   const drift = target - currentTime;
-  if (Math.abs(drift) > 1.2) return { pause: true, reportUnready: true };
-  if (Math.abs(drift) > (rate !== undefined && rate !== 1 ? 0.2 : 0.35)) return { rate: drift > 0 ? 1.08 : 0.92 };
+  if (Math.abs(drift) > 2.5) return { pause: true, reportUnready: true };
+  const starting = serverNow - state.startsAt < 500;
+  const correcting = rate !== undefined && rate !== 1;
+  const threshold = correcting ? 0.5 : (starting ? 1.5 : 1.2);
+  if (Math.abs(drift) > threshold) return { rate: drift > 0 ? 1.04 : 0.96 };
   return { normalizeRate: true };
 }
 
@@ -68,7 +72,7 @@ export function readyBlockers({ state, failure, rendererReady, recovering, activ
   if (silent) blockers.push('silent');
   if (seeking) blockers.push('seeking');
   if (readyState < 3) blockers.push('data');
-  if (running && (paused || Math.abs(position - target) > 1.2)) blockers.push('drift');
+  if (running && (paused || Math.abs(position - target) > 2.5)) blockers.push('drift');
   return blockers;
 }
 export const memberReady = observables => readyBlockers(observables).length === 0;
@@ -102,11 +106,25 @@ export function shownSubtitleTrack(tracks, selected = -1) {
 // track reads healthy again, and the snapshot keeps the live cue list stable
 // while it is rebuilt.
 export function reviveSubtitleCues(track, time) {
-  const cues = Array.from(track.cues ?? []);
-  const active = new Set(track.activeCues ?? []);
-  const stale = cues.some(cue => cue.startTime <= time && cue.endTime > time && !active.has(cue));
+  const list = track.cues;
+  if (!list?.length) { track.revived = false; return; }
+  // La liste est triée par startTime et activeCues ne compte que quelques cues
+  // : un scan indexé qui coupe à la première cue stale ou à la première cue
+  // future évite Array.from/Set à chaque tick sur des milliers d'entrées.
+  let stale = false;
+  for (let i = 0; i < list.length; i++) {
+    const cue = list[i];
+    if (cue.startTime > time) break;
+    if (cue.endTime <= time) continue;
+    const active = track.activeCues ?? [];
+    let live = false;
+    for (let j = 0; j < active.length; j++) if (active[j] === cue) { live = true; break; }
+    if (!live) { stale = true; break; }
+  }
   if (!stale) { track.revived = false; return; }
   if (track.revived) return;
   track.revived = true;
+  // removeCue mutates the live list: the re-registration replays a snapshot.
+  const cues = Array.from(list);
   for (const cue of cues) { track.removeCue(cue); track.addCue(cue); }
 }

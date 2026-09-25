@@ -139,7 +139,13 @@ test('authenticated upload, original video and audio, private rooms and access c
   assert.equal((master.match(/TYPE=AUDIO/g) ?? []).length, 2);
   const media = await request(`/media/${movie.id}/init_0.mp4`, { cookie });
   assert.equal(media.status, 200);
-  assert.equal(media.headers.get('cache-control'), 'private, no-cache');
+  // Les segments sont resservis du cache mémoire 1 h : reprise et re-buffer
+  // sans RTT bloquant ; les playlists restent non cachées.
+  assert.equal(media.headers.get('cache-control'), 'private, max-age=3600');
+  const segment = await request(`/media/${movie.id}/segment_0_000000.m4s`, { cookie });
+  assert.equal(segment.headers.get('cache-control'), 'private, max-age=3600');
+  const freshPlaylist = await request(`/media/${movie.id}/master.m3u8`, { cookie });
+  assert.equal(freshPlaylist.headers.get('cache-control'), 'private, no-store');
   const etag = media.headers.get('etag');
   assert.ok(etag.includes(prepared.generation));
   assert.equal((await request(`/media/${movie.id}/init_0.mp4`, { cookie, headers: { 'If-None-Match': etag, 'Cache-Control': 'max-age=0' } })).status, 304);

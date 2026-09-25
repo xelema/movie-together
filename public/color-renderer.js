@@ -400,7 +400,7 @@ export class ColorRenderer {
     this.canvas = document.createElement('canvas'); this.canvas.className = 'color-canvas';
     this.canvas.setAttribute('aria-hidden', 'true');
     this.captions = document.createElement('div'); this.captions.className = 'color-captions';
-    const gl = this.canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false });
+    const gl = this.canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
     if (!gl || !gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT).precision) throw new Error('Le rendu des couleurs nécessite l’accélération graphique.');
     this.gl = gl;
     const shaders = [];
@@ -494,7 +494,13 @@ export class ColorRenderer {
       video.parentElement.append(this.canvas, this.captions);
       this.listen(this.canvas, 'webglcontextlost', event => { event.preventDefault(); this.failed = true; onFailure('Le rendu des couleurs a été interrompu. Rechargez la page.'); });
       this.listen(this.canvas, 'webglcontextrestored', () => onFailure('Le rendu des couleurs a été interrompu. Rechargez la page.'));
-      for (const event of ['loadeddata', 'canplay', 'seeked', 'pause', 'resize']) this.listen(video, event, () => this.draw());
+      for (const event of ['loadeddata', 'canplay', 'pause']) this.listen(video, event, () => this.draw());
+      // Une frame déjà présentée est sautée : un seek ou un changement de flux
+      // repart d'un compteur vierge pour forcer le rendu de la frame suivante.
+      for (const event of ['seeked', 'resize']) this.listen(video, event, () => { this.lastPresentedFrames = undefined; this.draw(); });
+      // video.play() met ~80-250 ms à amorcer le décodeur : aucune sonde GPU
+      // synchrone pendant la reprise, le pipeline reste sans stall.
+      for (const event of ['play', 'playing']) this.listen(video, event, () => { this.resumeGraceUntil = performance.now() + 2500; });
       this.resizeObserver = new ResizeObserver(([entry]) => {
         this.displayWidth = entry.contentRect.width; this.displayHeight = entry.contentRect.height; this.draw();
       });
@@ -503,9 +509,9 @@ export class ColorRenderer {
       this.listen(video.textTracks, 'change', () => this.updateCaptions());
       this.listen(video.textTracks, 'addtrack', event => this.watchTrack(event.track));
       for (const track of video.textTracks) this.watchTrack(track);
-      const frame = () => {
+      const frame = (now, metadata) => {
         if (this.disposed || this.failed) return;
-        this.draw(false);
+        this.draw(false, metadata?.presentedFrames);
         this.callback = video.requestVideoFrameCallback ? video.requestVideoFrameCallback(frame) : requestAnimationFrame(frame);
       };
       frame();
@@ -569,7 +575,7 @@ export class ColorRenderer {
     gl.uniform1f(u.main.recovery, this.recovery > 0 ? this.recovery : 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
-  draw(force = true) {
+  draw(force = true, presentedFrames) {
     const { video, gl, canvas } = this;
     if (this.disposed || this.failed || document.hidden || video.readyState < 2 || !video.videoWidth || video.seeking) return;
     if (!force && !video.requestVideoFrameCallback && this.lastTime === video.currentTime) return;
@@ -585,6 +591,9 @@ export class ColorRenderer {
         if (video.videoWidth > maximum || video.videoHeight > maximum) throw new Error('Définition vidéo non prise en charge par le rendu des couleurs.');
         canvas.width = width; canvas.height = height;
       }
+      // requestVideoFrameCallback peut doubler un tirage : une frame déjà
+      // présentée ne se re-uploade pas en texture 4K ni ne repasse les shaders.
+      if (!force && !resized && presentedFrames !== undefined && presentedFrames === this.lastPresentedFrames) return;
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
       if (this.programs?.main) this.render(width, height);
@@ -592,7 +601,14 @@ export class ColorRenderer {
       gl.flush();
       // Keep error detection without a synchronous GPU round trip on every frame.
       const now = performance.now();
-      if (!this.ready || resized || this.drawErrors || video.paused || now - this.lastErrorCheck >= 2000) {
+      // Pendant la reprise (2,5 s après play), aucune sonde synchrone ne doit
+      // bloquer le pipeline : getError et readPixels figent le GPU/IPC de Chrome
+      // (15-80 ms) et font chuter la reprise sous 24 fps. Dès que l'import
+      // texture est prouvé (importVerified), readPixels n'est plus jamais appelé.
+      const resuming = this.ready && !this.drawErrors && now < (this.resumeGraceUntil ?? 0);
+      const settled = this.ready && this.importVerified && !this.drawErrors && !resized && !video.paused;
+      if (!resuming && !settled &&
+        (!this.ready || resized || this.drawErrors || video.paused || now - this.lastErrorCheck >= 2000)) {
         this.lastErrorCheck = now;
         if (gl.getError() !== gl.NO_ERROR) throw new Error('Le rendu des couleurs a été interrompu. Rechargez la page.');
         // Sur certains appareils texImage2D ne reçoit jamais les pixels de la vidéo et la
@@ -600,17 +616,26 @@ export class ColorRenderer {
         // bugzilla 1884282). On détecte la frame uniforme et la vidéo native reprend le relais.
         // Une frame en pause peut être légitimement unie : le test n'a de sens qu'en lecture.
         // La vidéo native affiche alors ses propres sous-titres : l'overlay se tait aussi.
-        if (!video.paused) {
+        if (!video.paused && !this.importVerified) {
           // Un seul tirage uniforme peut etre une frame noire du film : on ne
           // bascule sur la video native qu'apres deux checks morts d'affilee,
-          // sinon le canvas clignote sur les imports intermittents.
-          this.deadStreak = this.deadImport() ? (this.deadStreak || 0) + 1 : 0;
-          const dead = this.deadStreak >= 2;
-          this.canvas.style.visibility = dead ? 'hidden' : '';
-          this.captions.style.display = dead ? 'none' : '';
+          // sinon le canvas clignote sur les imports intermittents. Un tirage
+          // non uniforme prouve l'import : readPixels ne sert alors plus jamais
+          // jusqu'à la fin de la lecture.
+          const deadFrame = this.deadImport();
+          this.deadStreak = deadFrame ? (this.deadStreak || 0) + 1 : 0;
+          if (deadFrame) {
+            const dead = this.deadStreak >= 2;
+            this.canvas.style.visibility = dead ? 'hidden' : '';
+            this.captions.style.display = dead ? 'none' : '';
+          } else {
+            this.importVerified = true;
+            this.canvas.style.visibility = '';
+            this.captions.style.display = '';
+          }
         }
       }
-      this.lastTime = video.currentTime; this.drawErrors = 0;
+      this.lastTime = video.currentTime; this.lastPresentedFrames = presentedFrames; this.drawErrors = 0;
       if (!this.ready) { this.ready = true; canvas.dataset.ready = 'true'; }
     } catch (error) {
       // Texture upload can fail while the first frame is still being presented; retry before giving up.

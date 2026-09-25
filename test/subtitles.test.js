@@ -187,3 +187,74 @@ test('positionSubtitles revives the kept track when its cues went stale', () => 
   positionSubtitles(fakePlayer([kept, track('disabled')], 0, { currentTime: 10 }));
   assert.deepEqual(kept.added, [cue]);
 });
+
+test('reviveSubtitleCues stops scanning at the first stale cue without snapshotting', () => {
+  const live = { startTime: 0, endTime: 10 }, stale = { startTime: 2, endTime: 8 }, late = { startTime: 20, endTime: 30 };
+  let reads = 0;
+  const cues = { length: 3 };
+  [live, stale, late].forEach((cue, i) => Object.defineProperty(cues, i, { get: () => { reads++; return cue; } }));
+  const track = { cues, activeCues: [live], revived: true,
+    removeCue() { throw new Error('unexpected'); }, addCue() { throw new Error('unexpected'); } };
+  reviveSubtitleCues(track, 5);
+  // Le premier trou suffit : la cue tardive n'est jamais lue, aucune copie
+  // (Array.from) n'est faite quand la piste est déjà marquée revived.
+  assert.equal(reads, 2);
+});
+
+test('reviveSubtitleCues reads no cue past the clock on a healthy track', () => {
+  const ended = { startTime: 0, endTime: 2 }, live = { startTime: 4, endTime: 10 },
+    late = { startTime: 20, endTime: 30 }, later = { startTime: 40, endTime: 50 };
+  let reads = 0;
+  const cues = { length: 4 };
+  [ended, live, late, later].forEach((cue, i) => Object.defineProperty(cues, i, { get: () => { reads++; return cue; } }));
+  const track = { cues, activeCues: [live], addCue() { throw new Error('unexpected'); }, removeCue() {} };
+  reviveSubtitleCues(track, 5);
+  assert.equal(track.revived, false);
+  assert.equal(reads, 3); // la première cue qui commence après `time` coupe le scan
+});
+
+test('control show/hide transitions coalesce subtitle layout onto one frame', () => {
+  const recorded = () => {
+    const events = {};
+    return { events, addEventListener: (name, handler) => (events[name] ??= []).push(handler), removeEventListener() {} };
+  };
+  const video = recorded(), doc = recorded(), win = recorded(), textTracks = recorded();
+  Object.assign(video, { textTracks, pause() {}, load() {}, removeAttribute() {} });
+  const globals = ['document', 'window', 'location', 'matchMedia', 'ResizeObserver', 'WebSocket', 'requestAnimationFrame', 'cancelAnimationFrame'];
+  const saved = Object.fromEntries(globals.map(key => [key, globalThis[key]]));
+  const queued = [];
+  Object.assign(globalThis, {
+    document: Object.assign(doc, { hidden: false }),
+    window: win,
+    location: { protocol: 'https:', host: 'example.test' },
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    ResizeObserver: class { observe() {} disconnect() {} },
+    WebSocket: class { static OPEN = 1; constructor() { this.readyState = 0; } send() {} close() {} },
+    requestAnimationFrame: cb => (queued.push(cb), queued.length),
+    cancelAnimationFrame: () => {},
+  });
+  let player;
+  try {
+    player = new SyncPlayer({ video, roomId: 'room', onStatus() {}, onState() {}, onTracks() {}, onActivation() {} });
+    let calls = 0;
+    player.positionSubtitles = () => calls++;
+    video.events['controlsshown'][0]();
+    video.events['controlshidden'][0]();
+    video.events['controlsshown'][0]();
+    // Aucun mesurage synchrone pendant la transition, une seule passe prévue.
+    assert.equal(calls, 0);
+    assert.equal(queued.length, 1);
+    queued.shift()();
+    assert.equal(calls, 1);
+    // Sans boucle d'animation la mesure repasse en synchrone.
+    delete globalThis.requestAnimationFrame;
+    video.events['controlshidden'][0]();
+    assert.equal(calls, 2);
+  } finally {
+    if (player) {
+      player.disposed = true;
+      clearInterval(player.interval); clearInterval(player.pinger); clearInterval(player.initialPings);
+    }
+    for (const key of globals) saved[key] === undefined ? delete globalThis[key] : globalThis[key] = saved[key];
+  }
+});
