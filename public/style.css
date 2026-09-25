@@ -232,10 +232,10 @@ video::cue{color:#fff;background:transparent;font-family:Arial,"Segoe UI",sans-s
 #voice-mic:hover{background:rgba(10,10,12,.82)}
 #voice-mic:disabled{cursor:default}
 #voice-mic .voice-spectrogram{display:none}
-#voice-mic .voice-bar{width:3px;height:18px;border-radius:2px;background:#fff;transform:scaleY(.22);transform-origin:center}
+#voice-mic .voice-bar{width:3px;height:4px;border-radius:1.5px;background:#fff}
 #voice-mic[data-state=listening]{color:#e5484d;background:#e5484d;border-color:rgba(229,72,77,.8);animation:voice-pulse 1.4s var(--ease) infinite}
 #voice-mic[data-state=listening] .voice-icon{display:none}
-#voice-mic[data-state=listening] .voice-spectrogram{display:flex;gap:3px;align-items:center;justify-content:center;width:100%;height:100%}
+#voice-mic[data-state=listening] .voice-spectrogram{display:flex;gap:4px;align-items:center;justify-content:center;width:100%;height:100%;transform:translateZ(0);backface-visibility:hidden}
 #voice-mic[data-state=processing],#voice-mic[data-state=starting]{color:var(--pending);animation:voice-pulse 1.4s var(--ease) infinite}
 #voice-mic[data-state=error]{color:var(--danger);border-color:rgba(226,141,148,.6)}
 @keyframes voice-pulse{50%{opacity:.55}}

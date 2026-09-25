@@ -3,11 +3,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/*
 ARG TARGETARCH
 RUN case "$TARGETARCH" in \
-        amd64) asset=ffmpeg-n8.1.2-52-g5a03dfa0f6-linux64-gpl-8.1; sha=6fc8d0a3ac9e3956bef486655fbc0a049fb3dacb74ea2e44cc2fc62eeb80a182 ;; \
-        arm64) asset=ffmpeg-n8.1.2-52-g5a03dfa0f6-linuxarm64-gpl-8.1; sha=077a3a11f41e38b2d54c905157d6bcb86e6ea6d027a0c0a582582e470149458d ;; \
+        amd64) asset=ffmpeg-n8.1.2-50-g1a748fe2cd-linux64-gpl-8.1; sha=c733b4b2951e5957e15505f788b2c65a7a41b6da4b289e295852cc38079b4d2b ;; \
+        arm64) asset=ffmpeg-n8.1.2-50-g1a748fe2cd-linuxarm64-gpl-8.1; sha=ae5da4f51b9052390f414005f8ab26c1eed1268f327cce7cb79aa076b29bd66e ;; \
         *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
     esac \
-    && curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-11-13-20/$asset.tar.xz" -o /tmp/ffmpeg.tar.xz \
+    && curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-31-13-27/$asset.tar.xz" -o /tmp/ffmpeg.tar.xz \
     && echo "$sha  /tmp/ffmpeg.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp \
     && install -m 755 "/tmp/$asset/bin/ffmpeg" "/tmp/$asset/bin/ffprobe" /usr/local/bin/
