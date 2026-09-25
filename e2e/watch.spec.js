@@ -28,7 +28,7 @@ const fakeMic = () => {
       const context = new AudioContext();
       const osc = context.createOscillator(), gain = context.createGain();
       const dest = context.createMediaStreamDestination();
-      osc.frequency.value = 330; gain.gain.value = .4;
+      osc.type = 'sawtooth'; osc.frequency.value = 330; gain.gain.value = .4;
       osc.connect(gain); gain.connect(dest); osc.start();
       context.resume();
       window.voiceTest.stream = dest.stream;
@@ -698,12 +698,16 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await expect(host.locator('#voice-mic')).toHaveCSS('color', 'rgb(229, 72, 77)');
     // Le bouton devient un rond rouge : l'icône micro s'efface derrière le
     // spectrogramme blanc, dont les barres suivent le niveau réel de la
-    // capture — l'oscillateur factice (330 Hz) tombe dans le premier groupe.
+    // capture — l'oscillateur en dents de scie (330 Hz + harmoniques) couvre
+    // les quatre bandes : au moins trois barres quittent le repos (4 px),
+    // dont une barre de médium-aigu que la fondamentale seule n'atteint pas.
     await expect(host.locator('#voice-mic .voice-icon')).toBeHidden();
     await expect(host.locator('#voice-mic .voice-spectrogram')).toBeVisible();
-    await expect.poll(() => host.locator('#voice-mic .voice-bar').first()
-      .evaluate(el => parseFloat(el.style.transform.replace('scaleY(', '')) || 0))
-      .toBeGreaterThan(.5);
+    await expect.poll(() => host.locator('#voice-mic .voice-bar')
+      .evaluateAll(els => els.filter(el => parseFloat(el.style.height) > 6).length))
+      .toBeGreaterThanOrEqual(3);
+    await expect.poll(() => host.locator('#voice-mic .voice-bar').nth(2)
+      .evaluate(el => parseFloat(el.style.height) || 0)).toBeGreaterThan(6);
     // Pendant la prise de l'hôte, l'invité est refusé localement, en coréen,
     // et aucun état intermédiaire ne fuite vers l'hôte. Sa demande de
     // permission reste suspendue : c'est elle qui deviendra orpheline pendant
@@ -732,6 +736,10 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     });
     await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
     await host.locator('#voice-mic').click();
+    // À l'arrêt chaque barre relâche sa hauteur inline : aucune traînée de
+    // pixels ne survit au-dessus ou en dessous du spectrogramme replié.
+    await expect.poll(() => host.locator('#voice-mic .voice-bar')
+      .evaluateAll(els => els.every(el => !el.style.height))).toBe(true);
     // Texte compris local : italique, sans préfixe « Compris : » (#47).
     await expect(host.locator('#voice-local')).toBeVisible();
     await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');

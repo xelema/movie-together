@@ -36,19 +36,38 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
   // animées par le niveau réel du micro prouvent que la capture fonctionne.
   const spectrumOff = () => {
     if (spectrumRaf) { cancelAnimationFrame(spectrumRaf); spectrumRaf = 0; }
-    mic.querySelectorAll?.('.voice-bar')?.forEach(bar => { bar.style.transform = ''; });
+    mic.querySelectorAll?.('.voice-bar')?.forEach(bar => { bar.style.height = ''; });
   };
   const spectrumOn = () => {
     const bars = mic.querySelectorAll?.('.voice-bar');
     if (!analyser || !bars?.length) return;
     spectrumBins ??= new Uint8Array(analyser.frequencyBinCount);
+    // Quatre bandes calées sur les formants de la voix, en indices de bins
+    // calculés sur le sampleRate réel : le grave sous 180 Hz est écarté (il
+    // sature tout), les bandes hautes reçoivent un poids qui compense leur
+    // énergie brute plus faible.
+    const hz = (audioContext?.sampleRate || 48000) / analyser.fftSize;
+    const bands = [[180, 450, .65], [450, 1000, .95], [1000, 2100, 1.2], [2100, 4000, 1.4]]
+      .map(([lo, hi, w]) => [Math.max(1, Math.round(lo / hz)), Math.min(spectrumBins.length - 1, Math.round(hi / hz)), w]);
     const tick = () => {
       if (state !== 'listening' || !analyser) return;
       analyser.getByteFrequencyData(spectrumBins);
-      for (let i = 0; i < bars.length; i++) {
+      let sum = 0;
+      const peaks = bands.map(([from, to, w]) => {
         let peak = 0;
-        for (let j = i * 8; j < i * 8 + 8 && j < spectrumBins.length; j++) peak = Math.max(peak, spectrumBins[j]);
-        bars[i].style.transform = `scaleY(${(.22 + peak / 255 * 1.3).toFixed(2)})`;
+        for (let j = from; j <= to; j++) peak = Math.max(peak, spectrumBins[j]);
+        const gated = peak < 50 ? 0 : Math.min(1, (peak - 50) / 180 * w);
+        sum += gated;
+        return gated;
+      });
+      // Un quart de l'énergie moyenne irrigue chaque barre : pendant la parole
+      // toutes s'animent sans que la bande grave reste collée au maximum.
+      const share = sum / bands.length * .25;
+      for (let i = 0; i < bars.length; i++) {
+        const level = Math.min(1, peaks[i] * .75 + share);
+        // Hauteur entière en px : un transform scaleY laissait des traînées
+        // de rasterisation au bord demi-pixel de la première barre.
+        bars[i].style.height = `${Math.round(4 + level * 16)}px`;
       }
       spectrumRaf = requestAnimationFrame(tick);
     };
@@ -113,7 +132,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
         // contexte sans createAnalyser (doublure de test) ne fait pas échouer
         // la prise : le bouton reste rouge, les barres simplement fixes.
         analyser = audioContext.createAnalyser?.() ?? null;
-        if (analyser) { analyser.fftSize = 64; analyser.smoothingTimeConstant = .4; }
+        if (analyser) { analyser.fftSize = 512; analyser.minDecibels = -85; analyser.maxDecibels = -28; analyser.smoothingTimeConstant = .5; }
         // Le seuil de bufferedAmount décidé dans #39 arrête la prise proprement :
         // aucune trame n'est perdue silencieusement et la page ne se bloque pas.
         worklet.port.onmessage = event => {
