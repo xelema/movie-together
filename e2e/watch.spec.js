@@ -696,6 +696,14 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await controlsAutoHide(host);
     await expect(host.locator('#voice-mic')).toBeVisible();
     await expect(host.locator('#voice-mic')).toHaveCSS('color', 'rgb(229, 72, 77)');
+    // Le bouton devient un rond rouge : l'icône micro s'efface derrière le
+    // spectrogramme blanc, dont les barres suivent le niveau réel de la
+    // capture — l'oscillateur factice (330 Hz) tombe dans le premier groupe.
+    await expect(host.locator('#voice-mic .voice-icon')).toBeHidden();
+    await expect(host.locator('#voice-mic .voice-spectrogram')).toBeVisible();
+    await expect.poll(() => host.locator('#voice-mic .voice-bar').first()
+      .evaluate(el => parseFloat(el.style.transform.replace('scaleY(', '')) || 0))
+      .toBeGreaterThan(.5);
     // Pendant la prise de l'hôte, l'invité est refusé localement, en coréen,
     // et aucun état intermédiaire ne fuite vers l'hôte. Sa demande de
     // permission reste suspendue : c'est elle qui deviendra orpheline pendant
@@ -732,6 +740,10 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     // prise dès que son texte est là, un runner lent brûle le reste du délai.
     const cardBox = await host.locator('#voice-local').boundingBox();
     expect(await host.evaluate(() => window.voiceTest.states)).toContain('processing');
+    // Hors écoute le rond rouge rend l'icône micro : traitement en orange
+    // puis blanc une fois le résultat affiché.
+    await expect(host.locator('#voice-mic .voice-icon')).toBeVisible();
+    await expect(host.locator('#voice-mic .voice-spectrogram')).toBeHidden();
     await expect(host.locator('#voice-result')).toBeVisible();
     await expect(host.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
     const resultBox = await host.locator('#voice-result').boundingBox();
