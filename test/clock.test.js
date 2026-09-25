@@ -19,13 +19,15 @@ test('keeps audio at normal speed and pauses the group for excessive drift', () 
     target: 10, serverNow: 3000, activated: true, scheduled: 0,
   };
   assert.deepEqual(decide(base), { normalizeRate: true });
-  // Mid-range drift stretches the playback rate instead of freezing the room.
-  assert.deepEqual(decide({ ...base, currentTime: 9.5 }), { rate: 1.08 });
-  assert.deepEqual(decide({ ...base, currentTime: 10.5 }), { rate: 0.92 });
-  // A correcting member keeps correcting until drift falls under the release band.
-  assert.deepEqual(decide({ ...base, currentTime: 9.75, rate: 1.08 }), { rate: 1.08 });
-  assert.deepEqual(decide({ ...base, currentTime: 9.85, rate: 1.08 }), { normalizeRate: true });
-  assert.deepEqual(decide({ ...base, currentTime: 8.5 }), { pause: true, reportUnready: true });
+  // Drift up to 1.2 s stays at normal rate (1.0x) to preserve film audio/video fidelity.
+  assert.deepEqual(decide({ ...base, currentTime: 8.9 }), { normalizeRate: true });
+  // Mid-range drift gently stretches the playback rate instead of freezing the room.
+  assert.deepEqual(decide({ ...base, currentTime: 8.7 }), { rate: 1.04 });
+  assert.deepEqual(decide({ ...base, currentTime: 11.3 }), { rate: 0.96 });
+  // A correcting member keeps correcting until drift falls under the 0.5 s release band.
+  assert.deepEqual(decide({ ...base, currentTime: 9.4, rate: 1.04 }), { rate: 1.04 });
+  assert.deepEqual(decide({ ...base, currentTime: 9.6, rate: 1.04 }), { normalizeRate: true });
+  assert.deepEqual(decide({ ...base, currentTime: 7.2 }), { pause: true, reportUnready: true });
   // A backward seek must reload evicted segments rather than clamp to the buffered range.
   const paused = { ...base, state: { ...base.state, phase: 'paused' }, currentTime: 44, bufferedStart: 40 };
   assert.equal(decide(paused).seekTo, 10);
@@ -37,20 +39,20 @@ test('the post-start stabilization window absorbs decoder warm-up drift', () => 
   const base = {
     activating: false, state: { phase: 'playing', startsAt: 0, position: 10, duration: 100 },
     clockReady: true, hidden: false, online: true, silent: false,
-    decoded: true, seeking: false, paused: false, currentTime: 9.58, bufferedStart: 0,
+    decoded: true, seeking: false, paused: false, currentTime: 8.7, bufferedStart: 0,
     target: 10, serverNow: 200, activated: true, scheduled: 0,
   };
-  // video.play() takes ~80-250 ms to move currentTime: drift inside 350 ms of
+  // video.play() takes ~80-250 ms to move currentTime: drift inside 500 ms of
   // startsAt must not engage the WSOLA resampler mid-warm-up.
   assert.deepEqual(decide(base), { normalizeRate: true });
-  assert.deepEqual(decide({ ...base, currentTime: 10.42 }), { normalizeRate: true });
+  assert.deepEqual(decide({ ...base, currentTime: 11.3 }), { normalizeRate: true });
   // A real desync still corrects, even inside the window.
-  assert.deepEqual(decide({ ...base, currentTime: 9.3 }), { rate: 1.08 });
-  assert.deepEqual(decide({ ...base, currentTime: 10.7 }), { rate: 0.92 });
-  assert.deepEqual(decide({ ...base, currentTime: 8.7 }), { pause: true, reportUnready: true });
-  // Past 350 ms the regular thresholds apply again.
-  assert.deepEqual(decide({ ...base, serverNow: 350 }), { rate: 1.08 });
-  assert.deepEqual(decide({ ...base, serverNow: 349 }), { normalizeRate: true });
+  assert.deepEqual(decide({ ...base, currentTime: 8.4 }), { rate: 1.04 });
+  assert.deepEqual(decide({ ...base, currentTime: 11.6 }), { rate: 0.96 });
+  assert.deepEqual(decide({ ...base, currentTime: 7.4 }), { pause: true, reportUnready: true });
+  // Past 500 ms the regular thresholds apply again.
+  assert.deepEqual(decide({ ...base, serverNow: 500 }), { rate: 1.04 });
+  assert.deepEqual(decide({ ...base, serverNow: 499 }), { normalizeRate: true });
 });
 
 test('a playing phase before startsAt arms the local start timer once', () => {
@@ -81,7 +83,8 @@ test('readiness folds activation, decode, liveness and alignment into one bit', 
   assert.ok(!memberReady({ ...base, recovering: true }));
   assert.ok(!memberReady({ ...base, silent: true }));
   // Once the start has run past its grace window, drift beyond tolerance reports not-ready.
-  assert.ok(!memberReady({ ...base, position: 11.5 }));
+  assert.ok(!memberReady({ ...base, position: 12.8 }));
+  assert.ok(memberReady({ ...base, position: 11.5 }));
   assert.ok(memberReady({ ...base, position: 10.6 }));
   assert.ok(memberReady({ ...base, position: 10.2 }));
   // Before that window, position checks do not apply.
@@ -98,7 +101,7 @@ test('readiness blockers name each failing gate', () => {
   assert.deepEqual(readyBlockers({ ...base, activated: false }), ['activation']);
   assert.deepEqual(readyBlockers({ ...base, clockReady: false, hidden: true }), ['clock', 'hidden']);
   assert.deepEqual(readyBlockers({ ...base, seeking: true, readyState: 2 }), ['seeking', 'data']);
-  assert.deepEqual(readyBlockers({ ...base, position: 11.5 }), ['drift']);
+  assert.deepEqual(readyBlockers({ ...base, position: 12.8 }), ['drift']);
   assert.deepEqual(readyBlockers({ ...base, failure: 'x', rendererReady: false, recovering: true }),
     ['failure', 'renderer', 'recovering']);
 });

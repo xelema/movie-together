@@ -40,21 +40,18 @@ export function decide({ activating, state, clockReady, hidden, online, silent,
     return action;
   }
   if (paused) return {};
-  // Mid-range drift is caught up with a short playback-rate nudge: inaudible and
-  // invisible next to a room-wide pause. A constant reporting bias (Android's
-  // currentTime lags ~0.3 s) hovers near the gate, so a correcting member keeps
-  // correcting until drift falls below 0.2 s instead of toggling every tick.
-  // Only a real desync still pauses and realigns the entire room.
+  // Pour préserver la qualité du film (audio natif sans étirement WSOLA et
+  // vidéo à 24 fps sans judder), les petits écarts restent à 1.0x : une
+  // dérive sous 1.2 s (1.5 s au démarrage pendant le calage du décodeur)
+  // ne touche à rien. Au-delà, un micro-ajustement doux (±4%) résorbe le retard
+  // sans déformation audible jusqu'à revenir sous 0.5 s. Seul un vrai
+  // décrochage (> 2.5 s) déclenche une pause et un recalage de la salle.
   const drift = target - currentTime;
-  if (Math.abs(drift) > 1.2) return { pause: true, reportUnready: true };
-  // Fenêtre de stabilisation après startsAt : video.play() met ~80-250 ms à
-  // faire avancer currentTime, et l'écart figé en pause (±0,1 s) pousse le
-  // drift mesuré au-delà de 0,35 s dès le premier tick. Activer le resampler
-  // WSOLA (playbackRate != 1) en plein amorçage ré-ancre l'horloge média de
-  // Chrome et saccade la reprise (< 24 fps pendant 1-2 s) : seul un vrai
-  // décrochage justifie un changement de rate avant 1,5 s.
-  const starting = serverNow - state.startsAt < 350;
-  if (Math.abs(drift) > (starting ? 0.45 : rate !== undefined && rate !== 1 ? 0.2 : 0.35)) return { rate: drift > 0 ? 1.08 : 0.92 };
+  if (Math.abs(drift) > 2.5) return { pause: true, reportUnready: true };
+  const starting = serverNow - state.startsAt < 500;
+  const correcting = rate !== undefined && rate !== 1;
+  const threshold = correcting ? 0.5 : (starting ? 1.5 : 1.2);
+  if (Math.abs(drift) > threshold) return { rate: drift > 0 ? 1.04 : 0.96 };
   return { normalizeRate: true };
 }
 
@@ -75,7 +72,7 @@ export function readyBlockers({ state, failure, rendererReady, recovering, activ
   if (silent) blockers.push('silent');
   if (seeking) blockers.push('seeking');
   if (readyState < 3) blockers.push('data');
-  if (running && (paused || Math.abs(position - target) > 1.2)) blockers.push('drift');
+  if (running && (paused || Math.abs(position - target) > 2.5)) blockers.push('drift');
   return blockers;
 }
 export const memberReady = observables => readyBlockers(observables).length === 0;
