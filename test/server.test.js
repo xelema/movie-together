@@ -153,6 +153,13 @@ test('authenticated upload, original video and audio, private rooms and access c
   const range = await request(`/media/${movie.id}/init_0.mp4`, { cookie, headers: { Range: 'bytes=0-31' } });
   assert.equal(range.status, 206);
   assert.equal((await range.arrayBuffer()).byteLength, 32);
+  // Les assets vendor et les polices sont immuables en pratique : cache long.
+  for (const asset of ['hls.js', 'plyr.js', 'plyr.css', 'plyr.svg']) {
+    const vendor = await request(`/vendor/${asset}`);
+    assert.equal(vendor.status, 200);
+    assert.equal(vendor.headers.get('cache-control'), 'public, max-age=86400');
+  }
+  assert.match((await request('/fonts/fonts.css')).headers.get('cache-control'), /^public, max-age=\d+$/);
   assert.deepEqual(await readFile(path.join(instance.store.directory(movie.id), 'source')), bytes);
   assert.equal(prepared.renditions.length, 1);
   assert.equal(prepared.renditions[0].codec, 'h264');
@@ -166,8 +173,16 @@ test('authenticated upload, original video and audio, private rooms and access c
     headers: { 'Content-Type': 'text/plain' }, body: Buffer.from('1\n00:00:01,000 --> 00:00:03,000\nA subtitle.\n') });
   assert.equal(subtitle.status, 200);
   const withSubtitles = await subtitle.json();
-  const vtt = await (await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`, { cookie })).text();
-  assert.match(vtt, /WEBVTT/); assert.match(vtt, /A subtitle\./);
+  const vtt = await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`, { cookie });
+  // Les fichiers WebVTT se resservent comme les segments : cache 1 h, ETag de
+  // génération, 304 sur revalidation.
+  assert.equal(vtt.headers.get('cache-control'), 'private, max-age=3600');
+  const vttEtag = vtt.headers.get('etag');
+  assert.ok(vttEtag.includes(prepared.generation));
+  assert.equal((await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`,
+    { cookie, headers: { 'If-None-Match': vttEtag, 'Cache-Control': 'max-age=0' } })).status, 304);
+  const vttText = await vtt.text();
+  assert.match(vttText, /WEBVTT/); assert.match(vttText, /A subtitle\./);
   const smiSub = await request(`/api/movies/${movie.id}/subtitles?label=Korean&language=ko&name=korean.smi`, { cookie, method: 'POST',
     headers: { 'Content-Type': 'text/plain' }, body: smi });
   assert.equal(smiSub.status, 200);
@@ -433,6 +448,54 @@ test('room capacity counts distinct sessions and a session holds at most two soc
   assert.equal(await open(await join()), null);
 });
 
+test('webcam room limits capacity to 2 participants and refuses a 3rd participant', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
+  const origin = 'http://localhost:3000';
+  const movieId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  await mkdir(path.join(dataDir, 'movies', movieId), { recursive: true });
+  await writeFile(path.join(dataDir, 'movies', movieId, 'movie.json'),
+    JSON.stringify({ id: movieId, title: 'Webcam Cap Film', status: 'ready', duration: 120 }));
+  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin, env: {} });
+  await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${instance.server.address().port}`;
+  const sockets = [];
+  t.after(async () => { sockets.forEach(socket => socket.terminate()); await instance.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const request = async (url, { cookie, method = 'GET', body } = {}) => fetch(base + url, {
+    method, headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body) });
+  const login = await request('/api/login', { method: 'POST', body: { password: 'test-password-long-enough' } });
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const room = await (await request('/api/rooms', { cookie, method: 'POST', body: { movieId, code: 'webcam-room', webcam: true } })).json();
+
+  const join = async () => request('/api/join', { method: 'POST', body: { code: room.code } });
+  const open = cookieValue => new Promise(resolve => {
+    const socket = new WebSocket(`${base.replace('http', 'ws')}/ws?room=${room.id}`,
+      { headers: { Cookie: cookieValue, Origin: origin } });
+    sockets.push(socket);
+    socket.on('unexpected-response', () => resolve(null));
+    socket.on('error', () => resolve(null));
+    socket.on('message', data => { if (JSON.parse(data).type === 'welcome') resolve(socket); });
+  });
+
+  const resA = await join();
+  assert.equal(resA.status, 200);
+  const cookieA = resA.headers.get('set-cookie').split(';')[0];
+  const wsA = await open(cookieA);
+  assert.ok(wsA);
+
+  const resB = await join();
+  assert.equal(resB.status, 200);
+  const cookieB = resB.headers.get('set-cookie').split(';')[0];
+  const wsB = await open(cookieB);
+  assert.ok(wsB);
+
+  // 3rd participant is rejected at HTTP join level
+  const resC = await join();
+  assert.equal(resC.status, 409);
+  const errC = await resC.json();
+  assert.equal(errC.error, 'Séance complète (2 personnes maximum avec caméra).');
+});
+
 test('joining a room with a malformed code is a client error, not a crash', async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
   const origin = 'http://localhost:3000';
@@ -512,4 +575,104 @@ test('voice translation is an opt-in capability published in room state', async 
   const revived = rooms.find(room => room.code === 'probe-voix');
   assert.ok(revived);
   assert.equal((await (await second.request(`/api/rooms/${revived.id}`, { cookie: second.cookie })).json()).voice?.enabled, true);
+});
+
+test('webcam is an opt-in capability and its signaling relays between two participants', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
+  const origin = 'http://localhost:3000';
+  const movieId = 'eeeeeeee-aaaa-bbbb-cccc-dddddddddddd';
+  await mkdir(path.join(dataDir, 'movies', movieId), { recursive: true });
+  await writeFile(path.join(dataDir, 'movies', movieId, 'movie.json'),
+    JSON.stringify({ id: movieId, title: 'Cam Film', status: 'ready', duration: 90 }));
+  const instances = [], sockets = [];
+  const boot = async () => {
+    const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin, env: {} });
+    instances.push(instance);
+    await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${instance.server.address().port}`;
+    const request = (url, { cookie, method = 'GET', body } = {}) => fetch(base + url, {
+      method, headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body === undefined ? undefined : Buffer.isBuffer(body) ? body : JSON.stringify(body) });
+    const login = await request('/api/login', { method: 'POST', body: { password: 'test-password-long-enough' } });
+    return { base, request, cookie: login.headers.get('set-cookie').split(';')[0] };
+  };
+  t.after(async () => {
+    sockets.forEach(socket => socket.terminate());
+    for (const instance of instances) await instance.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const first = await boot();
+  const cam = await (await first.request('/api/rooms', { cookie: first.cookie, method: 'POST',
+    body: { movieId, code: 'cam-room', webcam: true } })).json();
+  const plain = await (await first.request('/api/rooms', { cookie: first.cookie, method: 'POST',
+    body: { movieId, code: 'plain-room' } })).json();
+  assert.deepEqual((await (await first.request(`/api/rooms/${cam.id}`, { cookie: first.cookie })).json()).webcam,
+    { enabled: true });
+  assert.equal('webcam' in await (await first.request(`/api/rooms/${plain.id}`, { cookie: first.cookie })).json(), false);
+  const join = code => first.request('/api/join', { method: 'POST', body: { code } })
+    .then(response => response.headers.get('set-cookie').split(';')[0]);
+  // Each socket collects every frame; the welcome exposes its member id.
+  const connect = async (room, cookieValue) => {
+    const socket = new WebSocket(`${first.base.replace('http', 'ws')}/ws?room=${room.id}`,
+      { headers: { Cookie: cookieValue, Origin: origin } });
+    sockets.push(socket);
+    const frames = [];
+    socket.on('message', data => frames.push(JSON.parse(data)));
+    const self = await new Promise((resolve, reject) => {
+      socket.on('error', reject);
+      socket.on('message', data => { const m = JSON.parse(data); if (m.type === 'welcome') resolve(m); });
+    });
+    return { socket, frames, id: self.id };
+  };
+  const until = (frames, predicate, ms = 3000) => new Promise((resolve, reject) => {
+    const started = Date.now();
+    const poll = () => {
+      const found = frames.find(predicate);
+      if (found) return resolve(found);
+      if (Date.now() - started > ms) return reject(new Error('message never arrived'));
+      setTimeout(poll, 20);
+    };
+    poll();
+  });
+  const a = await connect(cam, await join('cam-room'));
+  const b = await connect(cam, await join('cam-room'));
+  assert.equal(a.frames[0].webcam?.enabled, true);
+  assert.equal(a.frames.find(m => m.type === 'state')?.webcam?.enabled, true);
+  // A signal reaches the peer stamped with the sender's server-side identity.
+  a.socket.send(JSON.stringify({ type: 'webcam', action: 'signal', signal: { description: { type: 'offer', sdp: 'v=0' } } }));
+  const signal = await until(b.frames, m => m.type === 'webcam' && m.action === 'signal');
+  assert.equal(signal.from, a.id);
+  assert.equal(signal.signal.description.type, 'offer');
+  assert.equal(a.frames.some(m => m.type === 'webcam'), false);
+  // `to` narrows the relay to the named member.
+  a.socket.send(JSON.stringify({ type: 'webcam', action: 'signal', to: b.id, signal: { candidate: { candidate: 'x' } } }));
+  const targeted = await until(b.frames, m => m.type === 'webcam' && m.action === 'signal' && m.signal.candidate);
+  assert.equal(targeted.from, a.id);
+  // Status broadcasts carry a boolean, nothing else.
+  a.socket.send(JSON.stringify({ type: 'webcam', action: 'status', active: 1 }));
+  const status = await until(b.frames, m => m.type === 'webcam' && m.action === 'status');
+  assert.equal(status.active, true);
+  // A malformed signal is refused to the sender and never relayed. Anything
+  // larger than the websocket frame cap is already killed by the transport.
+  a.socket.send(JSON.stringify({ type: 'webcam', action: 'signal', signal: 'nope' }));
+  await until(a.frames, m => m.type === 'error');
+  assert.equal(b.frames.filter(m => m.type === 'webcam' && m.action === 'signal').length, 2);
+  // A disconnect tells the remaining peer to hang up.
+  a.socket.close();
+  const left = await until(b.frames, m => m.type === 'webcam' && m.action === 'peer-left');
+  assert.equal(left.from, a.id);
+  // A room without the capability drops webcam traffic silently.
+  const c = await connect(plain, await join('plain-room'));
+  const d = await connect(plain, await join('plain-room'));
+  c.socket.send(JSON.stringify({ type: 'webcam', action: 'status', active: true }));
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(d.frames.some(m => m.type === 'webcam'), false);
+  // A probe room keeps the capability across a restart.
+  await first.request('/api/rooms', { cookie: first.cookie, method: 'POST',
+    body: { movieId, code: 'probe-cam', probe: true, webcam: true } });
+  const second = await boot();
+  const rooms = await (await second.request('/api/rooms', { cookie: second.cookie })).json();
+  const revived = rooms.find(room => room.code === 'probe-cam');
+  assert.ok(revived);
+  assert.equal((await (await second.request(`/api/rooms/${revived.id}`, { cookie: second.cookie })).json()).webcam?.enabled, true);
 });

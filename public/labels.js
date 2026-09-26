@@ -21,6 +21,7 @@ const korean = {
   'Code : 4 à 32 lettres, chiffres ou tirets.': '영문, 숫자, 하이픈으로 4~32자를 입력하세요.',
   'Mot de passe incorrect.': '비밀번호가 올바르지 않습니다.',
   'Code invalide ou expiré.': '초대 코드가 올바르지 않거나 만료되었습니다.',
+  'Séance complète (2 personnes maximum avec caméra).': '정원이 찼습니다 (웹캠 시청방은 최대 2명).',
   'Film utilisé dans une room.': '시청 중에는 영화를 수정할 수 없습니다.',
   'Fermer les rooms de ce film avant suppression.': '영화를 삭제하려면 먼저 시청방을 닫으세요.',
   'Un import est déjà en cours.': '다른 파일을 준비 중입니다. 잠시 기다려 주세요.',
@@ -80,6 +81,16 @@ const korean = {
   'Service de traduction indisponible.': '번역 서비스를 사용할 수 없습니다.',
   'Réponse de traduction invalide.': '번역 응답이 올바르지 않습니다.',
   'La traduction a expiré.': '번역 시간이 초과되었습니다.',
+  'Caméra': '카메라',
+  'Activer la caméra': '카메라 켜기',
+  'Couper la caméra': '카메라 끄기',
+  'Activation de la caméra…': '카메라 켜는 중…',
+  'Caméra indisponible sur cet appareil.': '이 기기에서는 카메라를 사용할 수 없습니다.',
+  'En attente de la caméra…': '카메라 연결 대기 중…',
+  'Caméra (face-à-face à 2)': '웹캠 (2인용)',
+  'Réduire': '축소',
+  'Agrandir': '확대',
+  'Fermer': '닫기',
 };
 
 // Without a saved choice, the first French or Korean browser language wins, then a Seoul clock means Korean.

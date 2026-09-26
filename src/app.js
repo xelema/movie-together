@@ -63,20 +63,32 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   if (trustProxy) app.set('trust proxy', 1);
   app.use(helmet({ contentSecurityPolicy: { directives: {
     defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"],
-    mediaSrc: ["'self'", 'blob:'], workerSrc: ["'self'", 'blob:'],
-    connectSrc: ["'self'"], upgradeInsecureRequests: secure ? [] : null,
+    mediaSrc: ["'self'", 'blob:', 'mediastream:'], workerSrc: ["'self'", 'blob:'],
+    connectSrc: ["'self'", 'stun:'], upgradeInsecureRequests: secure ? [] : null,
   } }, strictTransportSecurity: secure ? undefined : false }));
   const sessionFor = request => {
     const token = request.headers.cookie?.split(';').map(value => value.trim()).find(value => value.startsWith('sid='))?.slice(4);
     const session = sessions.get(token);
     return session?.expires > Date.now() ? session : null;
   };
+  const isAllowedOrigin = (headerOrigin, request) => {
+    if (headerOrigin === origin) return true;
+    if (!secure && headerOrigin) {
+      try {
+        const u = new URL(headerOrigin);
+        if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return true;
+        if (request?.headers?.host && u.host === request.headers.host) return true;
+        if (u.hostname.endsWith('.loca.lt') || u.hostname.endsWith('.trycloudflare.com') || u.hostname.endsWith('.ngrok-free.app')) return true;
+      } catch {}
+    }
+    return false;
+  };
   app.use((req, res, next) => {
     req.session = sessionFor(req);
     // A non-JSON content type leaves req.body undefined; routes read it freely.
     req.body ??= {};
     if (req.path.startsWith('/api')) res.set('Cache-Control', 'no-store');
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin !== origin) {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !isAllowedOrigin(req.headers.origin, req)) {
       return res.status(403).json({ error: 'Origine refusée.' });
     }
     next();
@@ -109,7 +121,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   // recreated as long as their film is still playable.
   const persistRoom = room => {
     store.saveRooms([...store.rooms().filter(saved => saved.code !== room.code),
-      { code: room.code, movieId: room.movieId, probe: true, ...(room.voice ? { voice: true } : {}) }]);
+      { code: room.code, movieId: room.movieId, probe: true, ...(room.voice ? { voice: true } : {}), ...(room.webcam ? { webcam: true } : {}) }]);
   };
   const forgetRoom = room => {
     if (room?.probe) store.saveRooms(store.rooms().filter(saved => saved.code !== room.code));
@@ -117,7 +129,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   for (const saved of store.rooms()) {
     const movie = store.movies.get(saved?.movieId);
     try {
-      if (saved?.probe && movie && jobs.playable(movie)) hub.create({ movieId: movie.id, duration: movie.duration, code: saved.code, probe: true, voice: saved.voice === true });
+      if (saved?.probe && movie && jobs.playable(movie)) hub.create({ movieId: movie.id, duration: movie.duration, code: saved.code, probe: true, voice: saved.voice === true, webcam: saved.webcam === true });
     } catch { }
   }
   const cookie = (res, session) => {
@@ -148,7 +160,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.post('/api/rooms', admin, (req, res) => {
     const movie = getMovie(req.body.movieId);
     if (!jobs.playable(movie)) throw fail(409, 'Film non préparé.');
-    const room = hub.create({ movieId: movie.id, duration: movie.duration, code: req.body.code, probe: req.body.probe === true, voice: req.body.voice === true });
+    const room = hub.create({ movieId: movie.id, duration: movie.duration, code: req.body.code, probe: req.body.probe === true, voice: req.body.voice === true, webcam: req.body.webcam === true });
     if (room.probe) persistRoom(room);
     res.status(201).json({ id: room.id, code: room.code, link: `${origin}/#invite=${room.code}` });
   });
@@ -169,6 +181,9 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.post('/api/join', inviteLimiter, (req, res) => {
     const room = hub.findByCode(req.body.code);
     if (!room) throw fail(404, 'Code invalide ou expiré.');
+    if (room.webcam && hub.countSessions(room) >= 2 && !req.session?.rooms?.has(room.id)) {
+      throw fail(409, 'Séance complète (2 personnes maximum avec caméra).');
+    }
     const session = req.session ?? { admin: false, rooms: new Set(), expires: Date.now() + ttlMs() };
     session.rooms.add(room.id);
     if (!req.session) cookie(res, session);
@@ -436,7 +451,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     if (movie.status !== 'ready' || !/^(master(?:_original|_compatible)?|stream_\d+|sub_[a-f0-9-]+(?:_original|_compatible)?)\.m3u8$|^(init_\d+\.mp4|segment_\d+_\d+\.m4s|sub_[a-f0-9-]+(?:_original|_compatible)?\.vtt)$/.test(req.params.file)) throw fail(404, 'Média introuvable.');
     res.set('Cache-Control', 'private, no-store');
     const ext = path.extname(req.params.file);
-    if (ext === '.m4s' || ext === '.mp4') {
+    if (ext === '.m4s' || ext === '.mp4' || ext === '.vtt') {
       // Les bytes peuvent être resservis du cache mémoire pendant 1 h sans RTT
       // bloquant (reprise, re-buffer) ; l'ETag porte la génération pour
       // invalider toute préparation ultérieure.
@@ -446,10 +461,11 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     res.type(({ '.m3u8': 'application/vnd.apple.mpegurl', '.m4s': 'video/mp4', '.vtt': 'text/vtt', '.mp4': 'video/mp4' })[ext]);
     res.sendFile(req.params.file, { root: path.join(store.directory(movie.id), movie.generation) }, error => { if (error) next(error); });
   });
-  app.get('/vendor/hls.js', (req, res) => res.sendFile(path.join(ROOT, 'node_modules/hls.js/dist/hls.min.js')));
+  app.get('/vendor/hls.js', (req, res) => res.sendFile(path.join(ROOT, 'node_modules/hls.js/dist/hls.min.js'), { maxAge: '1d' }));
   app.get('/admin', (req, res) => res.sendFile(path.join(ROOT, 'public/index.html')));
   for (const file of ['plyr.js', 'plyr.css', 'plyr.svg']) app.get(`/vendor/${file}`, (req, res) =>
-    res.sendFile(path.join(ROOT, 'node_modules/plyr/dist', file)));
+    res.sendFile(path.join(ROOT, 'node_modules/plyr/dist', file), { maxAge: '1d' }));
+  app.use('/fonts', express.static(path.join(ROOT, 'public/fonts'), { maxAge: '30d' }));
   app.use(express.static(path.join(ROOT, 'public')));
   app.use((req, res) => res.status(404).json({ error: 'Page introuvable.' }));
   app.use((error, req, res, next) => {
