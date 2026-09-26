@@ -63,7 +63,7 @@ playbackUI.on('controlshidden', () => { $('watch').dataset.chrome = 'false'; });
 // Plyr's own buttons move the room. Plyr pins the controls open while paused,
 // so a flag re-hides every show a click asks for until a real pointer gesture
 // asks for the controls back.
-let clickHidden = false, touchHidden = false, touchOnPicture = false;
+let clickHidden = false, touchHidden = false, touchOnPicture = false, lastSubtitle = -1;
 playbackUI.elements.container.addEventListener('mousemove', () => { clickHidden = false; }, true);
 playbackUI.elements.container.addEventListener('touchstart', event => {
   clickHidden = false;
@@ -134,11 +134,23 @@ $('screen').addEventListener('keydown', event => {
   if (!player || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
       event.target.closest('input, select, textarea, button, [contenteditable=true]')) return;
   const key = event.key.toLowerCase();
-  if (![' ', 'k', 'arrowleft', 'arrowright', 'm', 'f'].includes(key)) return;
+  if (![' ', 'k', 'j', 'l', 'c', 'arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'm', 'f'].includes(key)) return;
   event.preventDefault();
   if (event.repeat) return;
+  const seek = delta => player.command('seek', Math.max(0, Math.min(player.state?.duration || 0, player.position() + delta)));
   if (key === ' ' || key === 'k') player.togglePlayback().catch(error => notice(error));
-  else if (key.startsWith('arrow')) player.command('seek', Math.max(0, Math.min(player.state?.duration || 0, player.position() + (key === 'arrowleft' ? -10 : 10))));
+  else if (key === 'arrowleft' || key === 'j') seek(-10);
+  else if (key === 'arrowright' || key === 'l') seek(10);
+  else if (key === 'arrowup') { playbackUI.muted = false; playbackUI.volume = Math.min(1, playbackUI.volume + 0.05); }
+  else if (key === 'arrowdown') playbackUI.volume = Math.max(0, playbackUI.volume - 0.05);
+  else if (key === 'c') {
+    const select = $('subtitles'), options = [...select.options];
+    const next = select.value === '-1'
+      ? (options.find(option => option.value === String(lastSubtitle)) ?? options.find(option => option.value !== '-1'))?.value ?? '-1'
+      : (lastSubtitle = Number(select.value), '-1');
+    select.value = next;
+    player.changeTrack('subtitles', Number(next));
+  }
   else if (key === 'm') playbackUI.muted = !playbackUI.muted;
   else playbackUI.fullscreen.toggle();
   clickHidden = false;
@@ -616,7 +628,11 @@ document.addEventListener('drop', event => {
   $('upload-file').files = transfer.files; $('upload-file').dispatchEvent(new Event('change'));
 });
 $('audio').addEventListener('change', () => player?.changeTrack('audio', Number($('audio').value)));
-$('subtitles').addEventListener('change', () => player?.changeTrack('subtitles', Number($('subtitles').value)));
+$('subtitles').addEventListener('change', () => {
+  const value = Number($('subtitles').value);
+  if (value !== -1) lastSubtitle = value;
+  player?.changeTrack('subtitles', value);
+});
 // A per-viewer multiplier on the picture-based size, shared by subtitles and the translated supertitle.
 const subtitleScale = () => { $('screen').style.setProperty('--subtitle-scale', $('subtitle-size').value); localStorage.setItem('subtitle-scale', $('subtitle-size').value); };
 if ([...$('subtitle-size').options].some(option => option.value === localStorage.getItem('subtitle-scale'))) $('subtitle-size').value = localStorage.getItem('subtitle-scale');
