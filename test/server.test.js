@@ -153,6 +153,13 @@ test('authenticated upload, original video and audio, private rooms and access c
   const range = await request(`/media/${movie.id}/init_0.mp4`, { cookie, headers: { Range: 'bytes=0-31' } });
   assert.equal(range.status, 206);
   assert.equal((await range.arrayBuffer()).byteLength, 32);
+  // Les assets vendor et les polices sont immuables en pratique : cache long.
+  for (const asset of ['hls.js', 'plyr.js', 'plyr.css', 'plyr.svg']) {
+    const vendor = await request(`/vendor/${asset}`);
+    assert.equal(vendor.status, 200);
+    assert.equal(vendor.headers.get('cache-control'), 'public, max-age=86400');
+  }
+  assert.match((await request('/fonts/fonts.css')).headers.get('cache-control'), /^public, max-age=\d+$/);
   assert.deepEqual(await readFile(path.join(instance.store.directory(movie.id), 'source')), bytes);
   assert.equal(prepared.renditions.length, 1);
   assert.equal(prepared.renditions[0].codec, 'h264');
@@ -166,8 +173,16 @@ test('authenticated upload, original video and audio, private rooms and access c
     headers: { 'Content-Type': 'text/plain' }, body: Buffer.from('1\n00:00:01,000 --> 00:00:03,000\nA subtitle.\n') });
   assert.equal(subtitle.status, 200);
   const withSubtitles = await subtitle.json();
-  const vtt = await (await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`, { cookie })).text();
-  assert.match(vtt, /WEBVTT/); assert.match(vtt, /A subtitle\./);
+  const vtt = await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`, { cookie });
+  // Les fichiers WebVTT se resservent comme les segments : cache 1 h, ETag de
+  // génération, 304 sur revalidation.
+  assert.equal(vtt.headers.get('cache-control'), 'private, max-age=3600');
+  const vttEtag = vtt.headers.get('etag');
+  assert.ok(vttEtag.includes(prepared.generation));
+  assert.equal((await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`,
+    { cookie, headers: { 'If-None-Match': vttEtag, 'Cache-Control': 'max-age=0' } })).status, 304);
+  const vttText = await vtt.text();
+  assert.match(vttText, /WEBVTT/); assert.match(vttText, /A subtitle\./);
   const smiSub = await request(`/api/movies/${movie.id}/subtitles?label=Korean&language=ko&name=korean.smi`, { cookie, method: 'POST',
     headers: { 'Content-Type': 'text/plain' }, body: smi });
   assert.equal(smiSub.status, 200);

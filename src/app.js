@@ -436,7 +436,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     if (movie.status !== 'ready' || !/^(master(?:_original|_compatible)?|stream_\d+|sub_[a-f0-9-]+(?:_original|_compatible)?)\.m3u8$|^(init_\d+\.mp4|segment_\d+_\d+\.m4s|sub_[a-f0-9-]+(?:_original|_compatible)?\.vtt)$/.test(req.params.file)) throw fail(404, 'Média introuvable.');
     res.set('Cache-Control', 'private, no-store');
     const ext = path.extname(req.params.file);
-    if (ext === '.m4s' || ext === '.mp4') {
+    if (ext === '.m4s' || ext === '.mp4' || ext === '.vtt') {
       // Les bytes peuvent être resservis du cache mémoire pendant 1 h sans RTT
       // bloquant (reprise, re-buffer) ; l'ETag porte la génération pour
       // invalider toute préparation ultérieure.
@@ -446,10 +446,11 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     res.type(({ '.m3u8': 'application/vnd.apple.mpegurl', '.m4s': 'video/mp4', '.vtt': 'text/vtt', '.mp4': 'video/mp4' })[ext]);
     res.sendFile(req.params.file, { root: path.join(store.directory(movie.id), movie.generation) }, error => { if (error) next(error); });
   });
-  app.get('/vendor/hls.js', (req, res) => res.sendFile(path.join(ROOT, 'node_modules/hls.js/dist/hls.min.js')));
+  app.get('/vendor/hls.js', (req, res) => res.sendFile(path.join(ROOT, 'node_modules/hls.js/dist/hls.min.js'), { maxAge: '1d' }));
   app.get('/admin', (req, res) => res.sendFile(path.join(ROOT, 'public/index.html')));
   for (const file of ['plyr.js', 'plyr.css', 'plyr.svg']) app.get(`/vendor/${file}`, (req, res) =>
-    res.sendFile(path.join(ROOT, 'node_modules/plyr/dist', file)));
+    res.sendFile(path.join(ROOT, 'node_modules/plyr/dist', file), { maxAge: '1d' }));
+  app.use('/fonts', express.static(path.join(ROOT, 'public/fonts'), { maxAge: '30d' }));
   app.use(express.static(path.join(ROOT, 'public')));
   app.use((req, res) => res.status(404).json({ error: 'Page introuvable.' }));
   app.use((error, req, res, next) => {
