@@ -93,20 +93,262 @@ const korean = {
   'Fermer': '닫기',
 };
 
-// Without a saved choice, the first French or Korean browser language wins, then a Seoul clock means Korean.
-export function language() {
+
+// Mêmes clés que le dictionnaire coréen, plus les libellés d'interface servis
+// par t() : toute chaîne française non traduite retombe sur le français.
+export const vietnamese = {
+  'Format couleur non pris en charge.': 'Định dạng màu không được hỗ trợ.',
+  'Le rendu des couleurs nécessite l’accélération graphique.': 'Kết xuất màu cần tăng tốc phần cứng.',
+  'Le rendu des couleurs a été interrompu. Rechargez la page.': 'Kết xuất màu đã bị gián đoạn. Hãy tải lại trang.',
+  'Définition vidéo non prise en charge par le rendu des couleurs.': 'Độ phân giải video này không được kết xuất màu của thiết bị hỗ trợ.',
+  'Lecture impossible sur cet appareil.': 'Không thể phát trên thiết bị này.',
+  'Room fermée ou session expirée.': 'Buổi xem đã đóng hoặc phiên đã hết hạn.',
+  'Connexion perdue. Séance en pause, reconnexion…': 'Mất kết nối. Đã tạm dừng, đang kết nối lại…',
+  'Connexion à la room impossible. Vérifier l’invitation.': 'Không vào được buổi xem. Hãy kiểm tra lời mời.',
+  'Chargement interrompu. Rechargez la page pour réessayer.': 'Tải bị gián đoạn. Hãy tải lại trang để thử lại.',
+  'Ce film utilise un codec vidéo que cet appareil ne peut pas lire.': 'Thiết bị này không đọc được codec video của phim.',
+  'Seuils invalides : 1 ≤ réserve < démarrage ≤ 300 s.': 'Ngưỡng không hợp lệ: 1 ≤ dự phòng < bắt đầu ≤ 300 s.',
+  'Réglages invalides : le délai de départ doit rester sous le délai de rapport.': 'Cài đặt không hợp lệ: độ trễ bắt đầu phải nhỏ hơn thời hạn báo cáo.',
+  'Réglage inconnu.': 'Cài đặt không xác định.',
+  'Ce navigateur ne permet pas la lecture HLS.': 'Trình duyệt này không hỗ trợ phát HLS.',
+  'Commande invalide.': 'Lệnh không hợp lệ.',
+  'Analyse du fichier…': 'Đang phân tích tệp…',
+  'Ce code est déjà utilisé.': 'Mã này đã được sử dụng.',
+  'Code : 4 à 32 lettres, chiffres ou tirets.': 'Mã: 4 đến 32 chữ cái, số hoặc dấu gạch.',
+  'Mot de passe incorrect.': 'Mật khẩu không đúng.',
+  'Code invalide ou expiré.': 'Mã không hợp lệ hoặc đã hết hạn.',
+  'Séance complète (2 personnes maximum avec caméra).': 'Buổi xem đã đủ người (tối đa 2 người khi có camera).',
+  'Film utilisé dans une room.': 'Phim đang được dùng trong một buổi xem.',
+  'Fermer les rooms de ce film avant suppression.': 'Hãy đóng các buổi xem của phim này trước khi xóa.',
+  'Un import est déjà en cours.': 'Đang có một tiến trình nhập khác.',
+  'Choisir un fichier de sous-titres de moins de 2 Mo (SRT, VTT, SMI, ASS, SUB…).': 'Chọn tệp phụ đề nhỏ hơn 2MB (SRT, VTT, SMI, ASS, SUB…).',
+  'Ce fichier ne contient aucune piste utilisable.': 'Tệp này không chứa track nào dùng được.',
+  'Piste introuvable.': 'Không tìm thấy track.',
+  'Espace disque insuffisant pour l’original et sa préparation.': 'Không đủ dung lượng cho tệp gốc và bản chuẩn bị.',
+  'Espace disque insuffisant pour les versions préparées.': 'Không đủ dung lượng cho các bản đã chuẩn bị.',
+  'Origine refusée.': 'Nguồn yêu cầu bị từ chối.',
+  'Connexion administrateur requise.': 'Cần đăng nhập quản trị.',
+  'Rejoindre une room ou se connecter.': 'Tham gia một buổi xem hoặc đăng nhập.',
+  'Film introuvable.': 'Không tìm thấy phim.',
+  'Modification du film en cours.': 'Đang chỉnh sửa phim.',
+  'Traitement en cours.': 'Đang xử lý.',
+  'Fermer une room avant d’en créer une autre.': 'Đóng một buổi xem trước khi tạo buổi mới.',
+  'Film non préparé.': 'Phim chưa được chuẩn bị.',
+  'Room introuvable.': 'Không tìm thấy buổi xem.',
+  'Upload introuvable.': 'Không tìm thấy tải lên.',
+  'Fichier invalide.': 'Tệp không hợp lệ.',
+  'Trop de fichiers ajoutés.': 'Quá nhiều tệp được thêm.',
+  'Nom ou langue invalide.': 'Tên hoặc ngôn ngữ không hợp lệ.',
+  'Fichier invalide (maximum 20 Go).': 'Tệp không hợp lệ (tối đa 20GB).',
+  'Terminer ou supprimer les uploads précédents.': 'Hoàn tất hoặc xóa các tải lên trước.',
+  'Empreinte invalide.': 'Dấu vân tay tệp không hợp lệ.',
+  'Upload occupé.': 'Tải lên đang bận.',
+  'Bloc invalide.': 'Khối dữ liệu không hợp lệ.',
+  'Reprendre à la position courante.': 'Tiếp tục từ vị trí hiện tại.',
+  'Upload incomplet.': 'Tải lên chưa hoàn tất.',
+  'Analyse indisponible.': 'Hiện không thể phân tích.',
+  'Noms de pistes invalides.': 'Tên track không hợp lệ.',
+  'Titre invalide.': 'Tiêu đề không hợp lệ.',
+  'Film indisponible.': 'Phim hiện không khả dụng.',
+  'Sous-titre vide.': 'Tệp phụ đề trống.',
+  'Accès au film refusé.': 'Từ chối truy cập phim.',
+  'Média introuvable.': 'Không tìm thấy media.',
+  'Page introuvable.': 'Không tìm thấy trang.',
+  'Erreur serveur. Consulter les journaux.': 'Lỗi máy chủ. Hãy xem nhật ký.',
+  'Pseudo invalide.': 'Biệt danh không hợp lệ.',
+  'Pseudo requis.': 'Cần nhập biệt danh.',
+  'Message inconnu.': 'Tin nhắn không xác định.',
+  'Traitement trop long.': 'Xử lý quá lâu.',
+  'Manifeste vidéo incomplet.': 'Manifest video không đầy đủ.',
+  'Aucune vidéo exploitable ou durée invalide.': 'Không có video dùng được hoặc thời lượng không hợp lệ.',
+  'Sélection invalide.': 'Lựa chọn không hợp lệ.',
+  'Piste incompatible.': 'Track không tương thích.',
+  'Choisir au moins une piste audio.': 'Chọn ít nhất một track âm thanh.',
+  'Version préparée illisible.': 'Bản chuẩn bị không đọc được.',
+  'Import interrompu. Relancer la préparation.': 'Nhập bị gián đoạn. Hãy chạy lại chuẩn bị.',
+  'Traduction vocale indisponible.': 'Dịch giọng nói không khả dụng.',
+  'Un participant parle déjà.': 'Đã có người đang nói.',
+  'Attendre avant de reprendre la parole.': 'Hãy đợi trước khi nói tiếp.',
+  'Quota de traductions atteint.': 'Đã đạt hạn mức dịch.',
+  'Trame vocale invalide.': 'Khung thoại không hợp lệ.',
+  'Aucune parole détectée.': 'Không phát hiện lời nói.',
+  'Traduction incohérente, réessayez.': 'Bản dịch không khớp, hãy thử lại.',
+  'Sens de traduction invalide.': 'Chiều dịch không hợp lệ.',
+  'Service de traduction indisponible.': 'Dịch vụ dịch không khả dụng.',
+  'Réponse de traduction invalide.': 'Phản hồi dịch không hợp lệ.',
+  'La traduction a expiré.': 'Bản dịch đã hết thời gian.',
+  'Caméra': 'Camera',
+  'Activer la caméra': 'Bật camera',
+  'Couper la caméra': 'Tắt camera',
+  'Activation de la caméra…': 'Đang bật camera…',
+  'Caméra indisponible sur cet appareil.': 'Camera không khả dụng trên thiết bị này.',
+  'En attente de la caméra…': 'Đang chờ camera…',
+  'Caméra (face-à-face à 2)': 'Camera (2 người đối mặt)',
+  'Réduire': 'Thu nhỏ',
+  'Agrandir': 'Phóng to',
+  'Fermer': 'Đóng',
+  // Libellés d'interface (t() retombe ici quand aucun troisième argument
+  // vietnamien n'est passé au niveau de l'appel).
+  ' · vous': ' · bạn',
+  'Activer le son': 'Bật âm thanh',
+  'Ajouter': 'Thêm',
+  'Aucun sous-titre ajouté.': 'Chưa có phụ đề nào được thêm.',
+  'Avancer ou reculer': 'Tua tới hoặc tua lùi',
+  'Ce fichier ne peut pas être lu.': 'Không thể đọc tệp này.',
+  'Ces noms sont ceux que verront les participants.': 'Người tham gia sẽ thấy các tên này.',
+  'Chargement du film…': 'Đang tải phim…',
+  'Chargement…': 'Đang tải…',
+  'Chargé': 'Đã tải',
+  'Choisir un fichier.': 'Chọn một tệp.',
+  'Choisissez à nouveau le même fichier pour reprendre.': 'Chọn lại cùng một tệp để tiếp tục.',
+  'Connexion perdue. Séance en pause.': 'Mất kết nối. Buổi xem đã tạm dừng.',
+  'Copier le lien': 'Sao chép liên kết',
+  'Couper le son': 'Tắt tiếng',
+  'Créer une séance': 'Tạo buổi xem',
+  'Durée': 'Thời lượng',
+  'Débit en direct': 'Tốc độ trực tiếp',
+  'En pause': 'Đã tạm dừng',
+  'Enregistrer': 'Lưu',
+  'Envoyé': 'Đã tải lên',
+  'Fermer la séance': 'Đóng buổi xem',
+  'Fichier ajouté. Préparez le film pour l’utiliser.': 'Đã thêm tệp. Hãy chuẩn bị phim để sử dụng.',
+  'Garder cette piste': 'Giữ track này',
+  'Gérer le film': 'Quản lý phim',
+  'Indisponible': 'Không khả dụng',
+  'La préparation applique la sélection ci-dessus.': 'Chuẩn bị sẽ áp dụng lựa chọn ở trên.',
+  'Préparer à nouveau reconduit les pistes déjà choisies.': 'Chuẩn bị lại sẽ giữ các track đã chọn.',
+  'La séance va commencer…': 'Buổi xem sắp bắt đầu…',
+  'Langue': 'Ngôn ngữ',
+  'Langues du film': 'Ngôn ngữ phim',
+  'Lecteur vidéo': 'Trình phát video',
+  'Lecture': 'Phát',
+  'Lien copié.': 'Đã sao chép liên kết.',
+  'Lien': 'Liên kết',
+  'Lu': 'Đã phát',
+  'L’envoi exige une page servie en HTTPS ou en localhost.': 'Tải lên cần trang được phục vụ qua HTTPS hoặc localhost.',
+  'Nom affiché': 'Tên hiển thị',
+  'Nom d’origine': 'Tên gốc',
+  'Ouvrir': 'Mở',
+  'Parler': 'Nói',
+  'Pause': 'Tạm dừng',
+  'Plein écran': 'Toàn màn hình',
+  'Position': 'Vị trí',
+  'Préparation en cours…': 'Đang chuẩn bị…',
+  'Préparation échouée. Réessayez.': 'Chuẩn bị thất bại. Hãy thử lại.',
+  'Préparer le film': 'Chuẩn bị phim',
+  'Préparer à nouveau': 'Chuẩn bị lại',
+  'Prêt à regarder': 'Sẵn sàng xem',
+  'Prêt': 'Sẵn sàng',
+  'Quitter le plein écran': 'Thoát toàn màn hình',
+  'Reconnexion…': 'Đang kết nối lại…',
+  'Retirer': 'Gỡ bỏ',
+  'Réglages enregistrés.': 'Đã lưu cài đặt.',
+  'Réglages': 'Cài đặt',
+  'Sans son': 'Không có âm thanh',
+  'Sans sous-titres': 'Không có phụ đề',
+  'Sous-titres ajoutés': 'Phụ đề đã thêm',
+  'Sous-titres ajoutés.': 'Đã thêm phụ đề.',
+  'Sous-titres du film': 'Phụ đề của phim',
+  'Supprimer cet envoi': 'Xóa tải lên này',
+  'Supprimer le film': 'Xóa phim',
+  'Titre': 'Tiêu đề',
+  'Un clic pour activer le son': 'Nhấn một lần để bật âm thanh',
+  'Une erreur est survenue.': 'Đã xảy ra lỗi.',
+  'Valeurs par défaut rétablies.': 'Đã khôi phục giá trị mặc định.',
+  'Valeurs par défaut': 'Giá trị mặc định',
+  'Volume': 'Âm lượng',
+  'Votre pseudo': 'Biệt danh của bạn',
+  'Vérification…': 'Đang kiểm tra…',
+  'Vérifier le fichier': 'Kiểm tra tệp',
+  'Vérifié': 'Đã kiểm tra',
+  'audiodescription': 'thuyết minh',
+  'commentaire': 'bình luận',
+  'converti en AAC': 'đã chuyển sang AAC',
+  'en attente': 'đang chờ',
+  'forcés': 'cưỡng bức',
+  'format non pris en charge': 'định dạng không được hỗ trợ',
+  'format non reconnu': 'không nhận ra định dạng',
+  'jusqu’à': 'đến',
+  'par défaut': 'mặc định',
+  'personne(s)': 'người',
+  'sous-titres image, pas de conversion en texte possible': 'phụ đề dạng ảnh, không thể chuyển thành văn bản',
+  'Micro refusé.': 'Quyền micro bị từ chối.',
+  'Micro indisponible.': 'Micro không khả dụng.',
+  'Connexion lente, prise interrompue.': 'Kết nối chậm, đã ngắt lượt nói.',
+  'Activation du micro…': 'Đang bật micro…',
+  'Écoute en cours, appuyer pour terminer': 'Đang nghe, nhấn để kết thúc',
+  'Traduction en cours…': 'Đang dịch…',
+  'Réessayer de parler': 'Thử nói lại',
+  // Réglages
+  'Buffer de démarrage (s)': 'Buffer khởi động (s)',
+  'Réserve de lecture (s)': 'Dự phòng phát (s)',
+  'Expiration des rapports (s)': 'Hết hạn báo cáo (s)',
+  'Délai avant le départ (s)': 'Độ trễ trước khi bắt đầu (s)',
+  'Cadence des états (ms)': 'Nhịp gửi trạng thái (ms)',
+  'Cadence de présence (ms)': 'Nhịp kiểm tra kết nối (ms)',
+  'Durée des sessions et séances (h)': 'Thời hạn phiên và buổi xem (h)',
+  'Séances simultanées': 'Số buổi xem đồng thời',
+  'Participants par séance': 'Người tham gia mỗi buổi xem',
+  'Connexions par participant': 'Kết nối mỗi người tham gia',
+  'Taille des blocs d’envoi (Mo)': 'Kích thước khối tải lên (MB)',
+  'Envois simultanés': 'Số tải lên đồng thời',
+  'Taille maximale d’un film (Go)': 'Kích thước phim tối đa (GB)',
+  'Taille maximale d’un sous-titre (Mo)': 'Kích thước phụ đề tối đa (MB)',
+  'Sous-titres ajoutés par film': 'Số phụ đề thêm mỗi phim',
+  'Threads de préparation': 'Luồng chuẩn bị',
+  'Durée des segments (s)': 'Độ dài segment (s)',
+  'Essais de connexion par 15 min': 'Số lần đăng nhập mỗi 15 phút',
+  'Essais de code par minute': 'Số lần thử mã mỗi phút',
+  'Appels de traduction par participant': 'Số lần dịch mỗi người tham gia',
+  'Fenêtre du quota de traduction (s)': 'Cửa sổ hạn mức dịch (s)',
+  'Délai entre deux prises (s)': 'Khoảng cách giữa hai lượt nói (s)',
+  'Synchronisation': 'Đồng bộ',
+  'Séances': 'Buổi xem',
+  'Envois': 'Tải lên',
+  'Préparation': 'Chuẩn bị',
+  'Sécurité': 'Bảo mật',
+  'Traduction vocale': 'Dịch giọng nói',
+};
+
+// La palette complète hors contexte ; une séance ou un compte admin la
+// réduit à sa paire via setScopeLanguages().
+let scope = ['fr', 'ko', 'vi'];
+export function setScopeLanguages(languages) {
+  scope = Array.isArray(languages) && languages.length ? [...languages] : ['fr', 'ko', 'vi'];
+}
+export const scopeLanguages = () => scope;
+
+// Without a saved choice, the first browser language inside the allowed
+// scope wins, then a Seoul clock means Korean and a Saigon or Bangkok clock
+// Vietnamese; anything else falls back to the first allowed language.
+export function language(allowed = scope) {
   const saved = localStorage.getItem('language');
-  if (saved === 'fr' || saved === 'ko') return saved;
-  const browser = (navigator.languages ?? [navigator.language]).map(tag => tag.slice(0, 2).toLowerCase()).find(code => code === 'fr' || code === 'ko');
-  return browser ?? (Intl.DateTimeFormat().resolvedOptions().timeZone === 'Asia/Seoul' ? 'ko' : 'fr');
+  if (allowed.includes(saved)) return saved;
+  const browser = (navigator.languages ?? [navigator.language])
+    .map(tag => (tag ?? '').slice(0, 2).toLowerCase()).find(code => allowed.includes(code));
+  if (browser) return browser;
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (zone === 'Asia/Seoul' && allowed.includes('ko')) return 'ko';
+  if (['Asia/Ho_Chi_Minh', 'Asia/Saigon', 'Asia/Bangkok'].includes(zone) && allowed.includes('vi')) return 'vi';
+  return allowed[0] || 'fr';
 }
 
 export function label(french) {
-  const ko = language() === 'ko';
+  const lang = language();
   // Some player messages carry an inline 'français / 한국어' pair.
   const pair = french.split(' / ');
-  if (pair.length === 2 && /[가-힣]/.test(pair[1])) return ko ? pair[1] : pair[0];
-  if (ko) {
+  if (pair.length === 2 && /[가-힣]/.test(pair[1])) {
+    if (lang === 'ko') return pair[1];
+    if (lang === 'vi') return vietnamese[pair[0]] ?? pair[0];
+    return pair[0];
+  }
+  if (lang === 'vi') {
+    const found = vietnamese[french];
+    if (found) return found;
+    if (french.startsWith('Valeur invalide pour ')) return `Giá trị không hợp lệ cho ${french.slice('Valeur invalide pour '.length)}`;
+    return french;
+  }
+  if (lang === 'ko') {
     const found = korean[french];
     if (found) return found;
     if (french.startsWith('Valeur invalide pour ')) return `설정 값이 올바르지 않습니다: ${french.slice('Valeur invalide pour '.length)}`;
