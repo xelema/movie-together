@@ -6,13 +6,13 @@ export class Clock {
   constructor() { this.samples = []; }
   sample(sentAt, receivedAt, serverNow) {
     const rtt = receivedAt - sentAt;
-    if (!Number.isFinite(rtt) || rtt < 0 || rtt > 1500) return;
+    if (!Number.isFinite(rtt) || rtt < 0 || rtt > 2500) return;
     this.samples.push({ rtt, offset: serverNow - (sentAt + receivedAt) / 2, at: receivedAt });
     this.samples = this.samples.filter(sample => receivedAt - sample.at < 20_000).slice(-20);
   }
   get best() { return this.samples.reduce((best, sample) => !best || sample.rtt < best.rtt ? sample : best, null); }
   get offset() { return this.best?.offset ?? 0; }
-  get ready() { return this.samples.length >= 3 && this.best.rtt < 500; }
+  get ready() { return this.samples.length >= 3 && this.best.rtt < 1200; }
 }
 
 export function bufferEnd(video) {
@@ -32,7 +32,7 @@ export class SyncPlayer {
     this.retries = 0; this.listeners = [];
     // Defaults until the room publishes its sync policy in welcome.
     this.sync = { minBuffer: 8, tickMs: 200, startDelay: 1000 };
-    this.silenceMs = 1500; this.bufferSeconds = 30; this.reportEveryMs = 200;
+    this.silenceMs = 1500; this.bufferSeconds = 60; this.reportEveryMs = 200;
     this.listen(video, 'waiting', () => { if (this.state?.phase === 'playing' && this.serverTime() >= this.state.startsAt) this.report(false); });
     this.listen(video, 'canplay', () => {
       this.recovering = false;
@@ -171,7 +171,9 @@ export class SyncPlayer {
         if (this.activated && message.state.phase !== 'paused') this.acquireWakeLock(); else this.releaseWakeLock();
         if (message.movie?.id !== this.movie?.id || message.movie?.generation !== this.movie?.generation) this.load(message.movie);
         if (this.lastEpoch !== this.state.epoch) { clearTimeout(this.startTimer); this.startTimer = null; this.scheduled = null; this.lastEpoch = this.state.epoch; }
-        this.reconcile(); this.onState(message, this);
+        this.reconcile();
+        if (this.scheduled === this.state.startsAt) this.report();
+        this.onState(message, this);
       }
     };
     this.ws.onclose = event => {
@@ -197,7 +199,7 @@ export class SyncPlayer {
     // Buffer targets must exceed what the room requires to start; silence is
     // declared after several missed ticks; reports must land inside startDelay
     // for the ack-of-start handshake.
-    this.bufferSeconds = Math.max(30, Math.ceil(this.sync.minBuffer * 1.5));
+    this.bufferSeconds = Math.max(60, Math.ceil(this.sync.minBuffer * 2));
     this.silenceMs = Math.max(1500, this.sync.tickMs * 7.5);
     const cadence = Math.min(200, this.sync.startDelay / 5);
     if (cadence !== this.reportEveryMs) {

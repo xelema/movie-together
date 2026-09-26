@@ -15,7 +15,7 @@ const reasons = {
 };
 const blockers = {
   activation: 'autoplay bloqué, il faut toucher la vidéo',
-  clock: 'horloge non calibrée, latence > 500 ms (VPN, réseau lointain)',
+  clock: 'horloge non calibrée, latence > 1200 ms (VPN, réseau lointain)',
   hidden: 'onglet en arrière-plan ou écran éteint',
   silent: 'plus de messages du serveur (websocket à moitié morte, proxy)',
   offline: 'navigateur hors ligne',

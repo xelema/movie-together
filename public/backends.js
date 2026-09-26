@@ -25,10 +25,10 @@ export function createBackend(video, url, options, handlers) {
   return null;
 }
 
-// The byte cap must hold minBuffer seconds of this stream: on a high-bitrate
-// film a fixed cap would stall the room before playback could ever start.
-const bufferBytes = (minBuffer, bitrate) =>
-  Math.max(60 * 1024 ** 2, Math.ceil(minBuffer * (bitrate ?? 20_000_000) / 8));
+// The byte cap must hold the buffer goal of this stream: on a high-bitrate
+// uncompressed film, a tight cap stalls the player far before the buffer goal.
+const bufferBytes = (bufferGoal, bitrate) =>
+  Math.max(128 * 1024 ** 2, Math.ceil((bufferGoal ?? 60) * (bitrate ?? 25_000_000) / 8 * 1.5));
 
 // hls.js parks unselected subtitle tracks in 'disabled', and a WebVTT fragment
 // that finishes parsing there loses its cues for good: _appendCues bails on
@@ -51,15 +51,15 @@ export class HlsJsBackend {
   // event must not short-circuit it.
   recoversErrors = true;
 
-  constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 8, bitrate } = {},
+  constructor(video, url, { timelineOffset = 0, bufferSeconds = 60, minBuffer = 8, bitrate } = {},
     { onTracksChanged, onBuffered, onStalled, onFatal } = {}) {
     this.video = video; this.timelineOffset = timelineOffset; this.bitrate = bitrate;
     this.mediaRecoveries = 0; this.networkRecoveries = 0;
     this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
-      maxBufferSize: bufferBytes(minBuffer, bitrate), backBufferLength: 60,
-      // Prefetch du fragment de départ : la reprise et le re-buffer piochent
-      // dans le cache local sans attendre le réseau.
-      startFragPrefetch: true, enableWorker: true });
+      maxBufferSize: bufferBytes(bufferSeconds, bitrate), backBufferLength: 60,
+      startFragPrefetch: true, enableWorker: true, progressive: true,
+      fragLoadingTimeOut: 30_000, fragLoadingMaxRetry: 4, fragLoadingRetryDelay: 1000,
+      fragLoadingMaxRetryDelay: 8000, manifestLoadingTimeOut: 15_000, levelLoadingTimeOut: 15_000 });
 
     const trackController = this.hls.subtitleTrackController;
     if (trackController) trackController.toggleTrackModes = () => pinSubtitleModes(trackController);
@@ -81,7 +81,7 @@ export class HlsJsBackend {
   // The room's thresholds can change at runtime; hls.js reads its config live.
   setBufferGoal(minBuffer, bufferSeconds) {
     Object.assign(this.hls.config, { maxBufferLength: bufferSeconds,
-      maxMaxBufferLength: bufferSeconds * 2, maxBufferSize: bufferBytes(minBuffer, this.bitrate) });
+      maxMaxBufferLength: bufferSeconds * 2, maxBufferSize: bufferBytes(bufferSeconds, this.bitrate) });
   }
 
   audioTracks() {
