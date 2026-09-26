@@ -1,5 +1,5 @@
 import { ColorRenderer, colorNeedsRenderer, nativeHdrPipeline } from './color-renderer.js';
-import { codecPlayable, createBackend } from './backends.js';
+import { codecPlayable, createBackend, supportsMime } from './backends.js';
 import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, readyBlockers, canBegin, subtitleFontSize, shownSubtitleTrack, reviveSubtitleCues } from './sync-core.js';
 
 export class Clock {
@@ -236,7 +236,7 @@ export class SyncPlayer {
     if (!movie) return;
     const versions = movie.renditions?.length ? movie.renditions : [{ id: 'original', manifest: 'master.m3u8', timelineOffset: 0 }];
     this.rendition = versions[0];
-    const playable = mime => Boolean(window.MediaSource?.isTypeSupported(mime)) || this.video.canPlayType(mime) !== '';
+    const playable = supportsMime(this.video);
     if (!codecPlayable(this.rendition, playable)) {
       this.failPlayback('Ce film utilise un codec vidéo que cet appareil ne peut pas lire.');
       return;
@@ -284,7 +284,12 @@ export class SyncPlayer {
     if (!this.movie || this.activating || this.failure) return;
     this.activating = true; this.failure = null;
     const token = this.loadToken;
-    const timeout = setTimeout(() => { if (token === this.loadToken) this.pauseLocal(); }, 15_000);
+    // A play() that never settles would hold activating for the whole timeout,
+    // and its promise rejects as AbortError when we pause it: a stall, not a refusal.
+    let interrupted = false;
+    const timeout = setTimeout(() => {
+      if (token === this.loadToken) { interrupted = true; this.activating = false; this.pauseLocal(); }
+    }, 3_000);
     this.internalUntil = performance.now() + 1500;
     try {
       // User gesture must reach play() even before metadata loads on mobile Safari.
@@ -294,6 +299,7 @@ export class SyncPlayer {
       this.acquireWakeLock();
     } catch (error) {
       if (this.disposed || token !== this.loadToken) return;
+      if (interrupted && error.name === 'AbortError') return;
       this.activated = false; this.activationBlocked = error.name === 'NotAllowedError';
       this.onActivation(false); this.onStatus('Autorisez le son pour rejoindre la séance. / 함께 시청하려면 소리를 허용하세요.');
     }
