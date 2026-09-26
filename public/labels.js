@@ -21,6 +21,7 @@ const korean = {
   'Code : 4 à 32 lettres, chiffres ou tirets.': '영문, 숫자, 하이픈으로 4~32자를 입력하세요.',
   'Mot de passe incorrect.': '비밀번호가 올바르지 않습니다.',
   'Code invalide ou expiré.': '초대 코드가 올바르지 않거나 만료되었습니다.',
+  'Séance complète (2 personnes maximum avec caméra).': '정원이 찼습니다 (웹캠 시청방은 최대 2명).',
   'Film utilisé dans une room.': '시청 중에는 영화를 수정할 수 없습니다.',
   'Fermer les rooms de ce film avant suppression.': '영화를 삭제하려면 먼저 시청방을 닫으세요.',
   'Un import est déjà en cours.': '다른 파일을 준비 중입니다. 잠시 기다려 주세요.',

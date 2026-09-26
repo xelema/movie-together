@@ -355,9 +355,10 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     // spare socket so a reconnect is not locked out by its dying predecessor.
     const held = room ? [...room.clients].filter(client => client.session === session).length : 0;
     const sessions = room ? countSessions(room) : 0;
+    const maxCapacity = room?.webcam ? 2 : settings.get('maxClients');
     if (url.pathname !== '/ws' || !isAllowedOrigin(request.headers.origin, request) || !session ||
       !canAccess(session, room) || room.expires <= Date.now() ||
-      held >= settings.get('maxSocketsPerSession') || (!held && sessions >= settings.get('maxClients')) ||
+      held >= settings.get('maxSocketsPerSession') || (!held && sessions >= maxCapacity) ||
       !moviePlayable(room.movieId)) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
     }
@@ -445,6 +446,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     attach,
     tune,
     get: id => rooms.get(id),
+    countSessions: room => room ? countSessions(room) : 0,
     state,
     findByCode: code => typeof code === 'string'
       ? [...rooms.values()].find(room => room.code === code.trim().toLowerCase() && room.expires > Date.now())

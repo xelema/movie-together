@@ -448,6 +448,54 @@ test('room capacity counts distinct sessions and a session holds at most two soc
   assert.equal(await open(await join()), null);
 });
 
+test('webcam room limits capacity to 2 participants and refuses a 3rd participant', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
+  const origin = 'http://localhost:3000';
+  const movieId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  await mkdir(path.join(dataDir, 'movies', movieId), { recursive: true });
+  await writeFile(path.join(dataDir, 'movies', movieId, 'movie.json'),
+    JSON.stringify({ id: movieId, title: 'Webcam Cap Film', status: 'ready', duration: 120 }));
+  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin, env: {} });
+  await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${instance.server.address().port}`;
+  const sockets = [];
+  t.after(async () => { sockets.forEach(socket => socket.terminate()); await instance.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const request = async (url, { cookie, method = 'GET', body } = {}) => fetch(base + url, {
+    method, headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body) });
+  const login = await request('/api/login', { method: 'POST', body: { password: 'test-password-long-enough' } });
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const room = await (await request('/api/rooms', { cookie, method: 'POST', body: { movieId, code: 'webcam-room', webcam: true } })).json();
+
+  const join = async () => request('/api/join', { method: 'POST', body: { code: room.code } });
+  const open = cookieValue => new Promise(resolve => {
+    const socket = new WebSocket(`${base.replace('http', 'ws')}/ws?room=${room.id}`,
+      { headers: { Cookie: cookieValue, Origin: origin } });
+    sockets.push(socket);
+    socket.on('unexpected-response', () => resolve(null));
+    socket.on('error', () => resolve(null));
+    socket.on('message', data => { if (JSON.parse(data).type === 'welcome') resolve(socket); });
+  });
+
+  const resA = await join();
+  assert.equal(resA.status, 200);
+  const cookieA = resA.headers.get('set-cookie').split(';')[0];
+  const wsA = await open(cookieA);
+  assert.ok(wsA);
+
+  const resB = await join();
+  assert.equal(resB.status, 200);
+  const cookieB = resB.headers.get('set-cookie').split(';')[0];
+  const wsB = await open(cookieB);
+  assert.ok(wsB);
+
+  // 3rd participant is rejected at HTTP join level
+  const resC = await join();
+  assert.equal(resC.status, 409);
+  const errC = await resC.json();
+  assert.equal(errC.error, 'Séance complète (2 personnes maximum avec caméra).');
+});
+
 test('joining a room with a malformed code is a client error, not a crash', async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
   const origin = 'http://localhost:3000';
