@@ -202,7 +202,9 @@ function updatePlayback(controller) {
   const waiting = roomMessage?.members.filter(member => member.waiting)
     .map(member => member.reason ? `${member.name} (${why(member)})` : member.name) ?? [];
   const needsSound = controller.activationBlocked;
-  const loading = !controller.activated || controller.recovering;
+  // A paused room waiting on the viewer's click is not loading: the overlay
+  // would hide the central play button under an endless spinner.
+  const loading = controller.recovering || (!controller.activated && phase !== 'paused');
   const message = controller.failure ? label(controller.failure) : navigator.onLine === false ? t('Connexion perdue. Séance en pause.', '연결이 끊겨 일시정지되었습니다.') : !phase ? t('Reconnexion…', '다시 연결 중…') :
     needsSound ? t('Un clic pour activer le son', '클릭하여 소리를 켜세요') :
     loading ? t('Chargement du film…', '영화를 불러오는 중…') :

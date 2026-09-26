@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { codecPlayable, pinSubtitleModes, HlsJsBackend } from '../public/backends.js';
+import { codecPlayable, pinSubtitleModes, HlsJsBackend, nativeHls, supportsMime } from '../public/backends.js';
 
 test('codecPlayable blocks a video codec the device rejects', () => {
   assert.equal(codecPlayable({ codec: 'hevc' }, () => false), false);
@@ -103,9 +103,33 @@ test('hls.js is configured for stall-free resume and deep segment reuse', () => 
     new HlsJsBackend({}, 'u');
     assert.equal(config.backBufferLength, 60);
     assert.equal(config.startFragPrefetch, true);
-    assert.equal(config.progressive, true);
+    assert.equal(config.progressive, false);
     assert.ok(config.maxBufferSize >= 128 * 1024 ** 2);
   } finally {
     saved === undefined ? delete globalThis.window : globalThis.window = saved;
+  }
+});
+
+// Chrome's canPlayType accepts codecs its MediaSource refuses; probing must ask
+// the engine that will actually decode the stream.
+test('codec probes ask MSE unless native HLS will decode', () => {
+  const savedWindow = globalThis.window;
+  const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  try {
+    globalThis.window = { Hls: { isSupported: () => true }, MediaSource: { isTypeSupported: () => false } };
+    const video = { canPlayType: mime => mime === 'application/vnd.apple.mpegurl' ? 'maybe' : 'probably' };
+    Object.defineProperty(globalThis, 'navigator', { value: { vendor: 'Google Inc.' }, configurable: true });
+    assert.equal(nativeHls(video), false);
+    assert.equal(supportsMime(video)('video/mp4; codecs="hvc1.1.6.L63.90"'), false);
+    Object.defineProperty(globalThis, 'navigator', { value: { vendor: 'Apple' }, configurable: true });
+    assert.equal(nativeHls(video), true);
+    assert.equal(supportsMime(video)('video/mp4; codecs="hvc1.1.6.L63.90"'), true);
+    window.Hls.isSupported = () => false;
+    Object.defineProperty(globalThis, 'navigator', { value: { vendor: 'Google Inc.' }, configurable: true });
+    assert.equal(nativeHls(video), true);
+    assert.equal(supportsMime(video)('video/mp4; codecs="x"'), true);
+  } finally {
+    savedWindow === undefined ? delete globalThis.window : globalThis.window = savedWindow;
+    Object.defineProperty(globalThis, 'navigator', savedNavigator);
   }
 });
