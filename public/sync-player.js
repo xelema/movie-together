@@ -32,7 +32,7 @@ export class SyncPlayer {
     this.retries = 0; this.listeners = [];
     // Defaults until the room publishes its sync policy in welcome.
     this.sync = { minBuffer: 8, tickMs: 200, startDelay: 1000 };
-    this.silenceMs = 1500; this.bufferSeconds = 30; this.reportEveryMs = 200;
+    this.silenceMs = 1500; this.bufferSeconds = 60; this.reportEveryMs = 200;
     this.listen(video, 'waiting', () => { if (this.state?.phase === 'playing' && this.serverTime() >= this.state.startsAt) this.report(false); });
     this.listen(video, 'canplay', () => {
       this.recovering = false;
@@ -199,7 +199,7 @@ export class SyncPlayer {
     // Buffer targets must exceed what the room requires to start; silence is
     // declared after several missed ticks; reports must land inside startDelay
     // for the ack-of-start handshake.
-    this.bufferSeconds = Math.max(30, Math.ceil(this.sync.minBuffer * 1.5));
+    this.bufferSeconds = Math.max(60, Math.ceil(this.sync.minBuffer * 2));
     this.silenceMs = Math.max(1500, this.sync.tickMs * 7.5);
     const cadence = Math.min(200, this.sync.startDelay / 5);
     if (cadence !== this.reportEveryMs) {
