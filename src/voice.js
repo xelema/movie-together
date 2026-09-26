@@ -22,19 +22,19 @@ const FLUSH_CHUNK = RATE * 2 / 20;
 // mais Google peut cesser de l'appliquer, c'est la première chose à vérifier
 // si le registre redevient poli.
 const PROMPTS = {
-  ko: 'You interpret between a close couple, the French speaker and the Korean speaker (the Korean speaker). Translate each spoken utterance into natural spoken Korean banmal, the way close partners talk. Never use jondaemal: no -yo, no -seumnida, no dangsin, no jeo/je. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
-  fr: 'You interpret between a couple and close partners. Translate each spoken utterance into natural, friendly spoken French. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
-  vi: 'You interpret between a dating couple (boyfriend and girlfriend). The French boyfriend is named the French speaker. Translate each spoken utterance into natural, affectionate spoken Vietnamese, the way a couple talks. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
+  ko: 'You interpret between two close friends, one a French speaker and the other a Korean speaker. Translate each spoken utterance into natural spoken Korean banmal, the way close friends talk. Never use jondaemal: no -yo, no -seumnida, no dangsin, no jeo/je. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
+  fr: 'You interpret between close friends. Translate each spoken utterance into natural, friendly spoken French, the way close friends talk. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
+  vi: 'You interpret between two close friends, one a French speaker and the other a Vietnamese speaker. Translate each spoken utterance into natural, informal spoken Vietnamese, the way close friends talk. Never use stiff or overly formal language. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
 };
 
 function systemPrompt({ source, target }) {
   if (target === 'ko') return PROMPTS.ko;
   if (target === 'vi') return PROMPTS.vi;
   if (source === 'ko') {
-    return 'You interpret between a close couple, the French speaker and the Korean speaker (the Korean speaker). Translate each spoken utterance into natural, friendly spoken French. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.';
+    return 'You interpret between two close friends, one a French speaker and the other a Korean speaker. Translate each spoken utterance into natural, friendly spoken French, the way close friends talk. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.';
   }
   if (source === 'vi') {
-    return 'You interpret between a dating couple (boyfriend and girlfriend, the French boyfriend is named the French speaker). Translate each spoken utterance into natural, friendly spoken French. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.';
+    return 'You interpret between two close friends, one a French speaker and the other a Vietnamese speaker. Translate each spoken utterance into natural, friendly spoken French, the way close friends talk. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.';
   }
   return PROMPTS[target] ?? PROMPTS.fr;
 }
