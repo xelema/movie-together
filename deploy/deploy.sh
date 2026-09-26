@@ -14,9 +14,10 @@
 #   REMOTE_DIR  dossier sur la VM     (defaut : movie-together, relatif au home)
 #   PUSH_ENV    fichier local envoye comme .env distant (un seul hote a la fois)
 #
-# Les cles GEMINI_API_KEY et GOOGLE_API_KEY du .env local sont propagees au
-# .env distant de chaque hote a chaque deploiement, une valeur locale vide
-# laisse la ligne distante inchangee.
+# Les cles GEMINI_API_KEY, GOOGLE_API_KEY, ADMIN_PASSWORD_FR_KO et
+# ADMIN_PASSWORD_FR_VI du .env local sont propagees au .env distant de chaque
+# hote a chaque deploiement, une valeur locale vide laisse la ligne distante
+# inchangee. ADMIN_PASSWORD reste sur le serveur en repli du compte fr-ko.
 #
 # Exemples :
 #   SSH_HOST=ubuntu@192.0.2.20 bash deploy/deploy.sh
@@ -41,6 +42,8 @@ REMOTE_DIR=${REMOTE_DIR:-movie-together}
 PUSH_ENV=${PUSH_ENV:-}
 GEMINI_API_KEY=${GEMINI_API_KEY:-$(env_var GEMINI_API_KEY .env)}
 GOOGLE_API_KEY=${GOOGLE_API_KEY:-$(env_var GOOGLE_API_KEY .env)}
+ADMIN_PASSWORD_FR_KO=${ADMIN_PASSWORD_FR_KO:-$(env_var ADMIN_PASSWORD_FR_KO .env)}
+ADMIN_PASSWORD_FR_VI=${ADMIN_PASSWORD_FR_VI:-$(env_var ADMIN_PASSWORD_FR_VI .env)}
 
 SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 
@@ -92,7 +95,7 @@ deploy_one() {
   cat "$TARBALL" | ssh "${SSH_OPTS[@]}" "$host" "mkdir -p \"$REMOTE_DIR\" 2>/dev/null || sudo mkdir -p \"$REMOTE_DIR\"; cat > /tmp/movie-night-deploy.tgz"
 
   echo ">> Extraction et reconstruction sur $host"
-  ssh "${SSH_OPTS[@]}" "$host" bash -s -- "$REMOTE_DIR" "$GEMINI_API_KEY" "$GOOGLE_API_KEY" <<'REMOTE'
+  ssh "${SSH_OPTS[@]}" "$host" bash -s -- "$REMOTE_DIR" "$GEMINI_API_KEY" "$GOOGLE_API_KEY" "$ADMIN_PASSWORD_FR_KO" "$ADMIN_PASSWORD_FR_VI" <<'REMOTE'
 set -euo pipefail
 case $1 in /*) APP_DIR=$1 ;; *) APP_DIR=$HOME/$1 ;; esac
 
@@ -116,9 +119,9 @@ TMP_DIR=$($FSUDO mktemp -d)
 $FSUDO tar -xzf /tmp/movie-night-deploy.tgz -C "$TMP_DIR"
 rm -f /tmp/movie-night-deploy.tgz
 $FSUDO cp -a "$APP_DIR/.env" "$TMP_DIR/.env"
-# Les cles API vivent dans le .env local : les valeurs recues en argument
+# Les secrets vivent dans le .env local : les valeurs recues en argument
 # remplacent les lignes distantes, une valeur vide conserve la ligne.
-for kv in "GEMINI_API_KEY=$2" "GOOGLE_API_KEY=$3"; do
+for kv in "GEMINI_API_KEY=$2" "GOOGLE_API_KEY=$3" "ADMIN_PASSWORD_FR_KO=$4" "ADMIN_PASSWORD_FR_VI=$5"; do
   [[ $kv == *= ]] && continue
   $FSUDO sed -i "/^${kv%%=*}=/d" "$TMP_DIR/.env"
   printf '%s\n' "$kv" | $FSUDO tee -a "$TMP_DIR/.env" >/dev/null
