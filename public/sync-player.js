@@ -6,13 +6,13 @@ export class Clock {
   constructor() { this.samples = []; }
   sample(sentAt, receivedAt, serverNow) {
     const rtt = receivedAt - sentAt;
-    if (!Number.isFinite(rtt) || rtt < 0 || rtt > 1500) return;
+    if (!Number.isFinite(rtt) || rtt < 0 || rtt > 2500) return;
     this.samples.push({ rtt, offset: serverNow - (sentAt + receivedAt) / 2, at: receivedAt });
     this.samples = this.samples.filter(sample => receivedAt - sample.at < 20_000).slice(-20);
   }
   get best() { return this.samples.reduce((best, sample) => !best || sample.rtt < best.rtt ? sample : best, null); }
   get offset() { return this.best?.offset ?? 0; }
-  get ready() { return this.samples.length >= 3 && this.best.rtt < 500; }
+  get ready() { return this.samples.length >= 3 && this.best.rtt < 1200; }
 }
 
 export function bufferEnd(video) {
@@ -171,7 +171,9 @@ export class SyncPlayer {
         if (this.activated && message.state.phase !== 'paused') this.acquireWakeLock(); else this.releaseWakeLock();
         if (message.movie?.id !== this.movie?.id || message.movie?.generation !== this.movie?.generation) this.load(message.movie);
         if (this.lastEpoch !== this.state.epoch) { clearTimeout(this.startTimer); this.startTimer = null; this.scheduled = null; this.lastEpoch = this.state.epoch; }
-        this.reconcile(); this.onState(message, this);
+        this.reconcile();
+        if (this.scheduled === this.state.startsAt) this.report();
+        this.onState(message, this);
       }
     };
     this.ws.onclose = event => {
