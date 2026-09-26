@@ -528,3 +528,103 @@ test('voice translation is an opt-in capability published in room state', async 
   assert.ok(revived);
   assert.equal((await (await second.request(`/api/rooms/${revived.id}`, { cookie: second.cookie })).json()).voice?.enabled, true);
 });
+
+test('webcam is an opt-in capability and its signaling relays between two participants', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
+  const origin = 'http://localhost:3000';
+  const movieId = 'eeeeeeee-aaaa-bbbb-cccc-dddddddddddd';
+  await mkdir(path.join(dataDir, 'movies', movieId), { recursive: true });
+  await writeFile(path.join(dataDir, 'movies', movieId, 'movie.json'),
+    JSON.stringify({ id: movieId, title: 'Cam Film', status: 'ready', duration: 90 }));
+  const instances = [], sockets = [];
+  const boot = async () => {
+    const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin, env: {} });
+    instances.push(instance);
+    await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${instance.server.address().port}`;
+    const request = (url, { cookie, method = 'GET', body } = {}) => fetch(base + url, {
+      method, headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body === undefined ? undefined : Buffer.isBuffer(body) ? body : JSON.stringify(body) });
+    const login = await request('/api/login', { method: 'POST', body: { password: 'test-password-long-enough' } });
+    return { base, request, cookie: login.headers.get('set-cookie').split(';')[0] };
+  };
+  t.after(async () => {
+    sockets.forEach(socket => socket.terminate());
+    for (const instance of instances) await instance.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const first = await boot();
+  const cam = await (await first.request('/api/rooms', { cookie: first.cookie, method: 'POST',
+    body: { movieId, code: 'cam-room', webcam: true } })).json();
+  const plain = await (await first.request('/api/rooms', { cookie: first.cookie, method: 'POST',
+    body: { movieId, code: 'plain-room' } })).json();
+  assert.deepEqual((await (await first.request(`/api/rooms/${cam.id}`, { cookie: first.cookie })).json()).webcam,
+    { enabled: true });
+  assert.equal('webcam' in await (await first.request(`/api/rooms/${plain.id}`, { cookie: first.cookie })).json(), false);
+  const join = code => first.request('/api/join', { method: 'POST', body: { code } })
+    .then(response => response.headers.get('set-cookie').split(';')[0]);
+  // Each socket collects every frame; the welcome exposes its member id.
+  const connect = async (room, cookieValue) => {
+    const socket = new WebSocket(`${first.base.replace('http', 'ws')}/ws?room=${room.id}`,
+      { headers: { Cookie: cookieValue, Origin: origin } });
+    sockets.push(socket);
+    const frames = [];
+    socket.on('message', data => frames.push(JSON.parse(data)));
+    const self = await new Promise((resolve, reject) => {
+      socket.on('error', reject);
+      socket.on('message', data => { const m = JSON.parse(data); if (m.type === 'welcome') resolve(m); });
+    });
+    return { socket, frames, id: self.id };
+  };
+  const until = (frames, predicate, ms = 3000) => new Promise((resolve, reject) => {
+    const started = Date.now();
+    const poll = () => {
+      const found = frames.find(predicate);
+      if (found) return resolve(found);
+      if (Date.now() - started > ms) return reject(new Error('message never arrived'));
+      setTimeout(poll, 20);
+    };
+    poll();
+  });
+  const a = await connect(cam, await join('cam-room'));
+  const b = await connect(cam, await join('cam-room'));
+  assert.equal(a.frames[0].webcam?.enabled, true);
+  assert.equal(a.frames.find(m => m.type === 'state')?.webcam?.enabled, true);
+  // A signal reaches the peer stamped with the sender's server-side identity.
+  a.socket.send(JSON.stringify({ type: 'webcam', action: 'signal', signal: { description: { type: 'offer', sdp: 'v=0' } } }));
+  const signal = await until(b.frames, m => m.type === 'webcam' && m.action === 'signal');
+  assert.equal(signal.from, a.id);
+  assert.equal(signal.signal.description.type, 'offer');
+  assert.equal(a.frames.some(m => m.type === 'webcam'), false);
+  // `to` narrows the relay to the named member.
+  a.socket.send(JSON.stringify({ type: 'webcam', action: 'signal', to: b.id, signal: { candidate: { candidate: 'x' } } }));
+  const targeted = await until(b.frames, m => m.type === 'webcam' && m.action === 'signal' && m.signal.candidate);
+  assert.equal(targeted.from, a.id);
+  // Status broadcasts carry a boolean, nothing else.
+  a.socket.send(JSON.stringify({ type: 'webcam', action: 'status', active: 1 }));
+  const status = await until(b.frames, m => m.type === 'webcam' && m.action === 'status');
+  assert.equal(status.active, true);
+  // A malformed signal is refused to the sender and never relayed. Anything
+  // larger than the websocket frame cap is already killed by the transport.
+  a.socket.send(JSON.stringify({ type: 'webcam', action: 'signal', signal: 'nope' }));
+  await until(a.frames, m => m.type === 'error');
+  assert.equal(b.frames.filter(m => m.type === 'webcam' && m.action === 'signal').length, 2);
+  // A disconnect tells the remaining peer to hang up.
+  a.socket.close();
+  const left = await until(b.frames, m => m.type === 'webcam' && m.action === 'peer-left');
+  assert.equal(left.from, a.id);
+  // A room without the capability drops webcam traffic silently.
+  const c = await connect(plain, await join('plain-room'));
+  const d = await connect(plain, await join('plain-room'));
+  c.socket.send(JSON.stringify({ type: 'webcam', action: 'status', active: true }));
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(d.frames.some(m => m.type === 'webcam'), false);
+  // A probe room keeps the capability across a restart.
+  await first.request('/api/rooms', { cookie: first.cookie, method: 'POST',
+    body: { movieId, code: 'probe-cam', probe: true, webcam: true } });
+  const second = await boot();
+  const rooms = await (await second.request('/api/rooms', { cookie: second.cookie })).json();
+  const revived = rooms.find(room => room.code === 'probe-cam');
+  assert.ok(revived);
+  assert.equal((await (await second.request(`/api/rooms/${revived.id}`, { cookie: second.cookie })).json()).webcam?.enabled, true);
+});

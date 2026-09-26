@@ -36,7 +36,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
 
   // Waiting diagnostics are for the host: guests only need the shared bit.
   const state = (room, { details = true } = {}) => ({ type: 'state', roomId: room.id, code: room.code,
-    probe: !!room.probe, ...(room.voice ? { voice: room.voice } : {}),
+    probe: !!room.probe, ...(room.voice ? { voice: room.voice } : {}), ...(room.webcam ? { webcam: room.webcam } : {}),
     state: room.engine.snapshot(), movie: room.movieId ? movieFor(room.movieId) : null,
     sync: { minBuffer: room.engine.minBuffer, lowBuffer: room.engine.lowBuffer },
     members: [...room.engine.members.keys()].map(id => {
@@ -209,6 +209,31 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     if (message.action === 'cancel') return voiceCancel(room, ws);
     throw new Error('Message inconnu.');
   };
+  // Visio face-à-face : le hub ne fait que relayer la signalisation WebRTC
+  // entre les participants d'une séance équipée. Le flux vidéo ne transite
+  // jamais par le serveur ; l'identité de l'émetteur est posée ici et jamais
+  // reprise du message entrant.
+  const webcamControl = (room, ws, message) => {
+    if (!room.webcam?.enabled) return;
+    const others = [...room.clients].filter(client => client !== ws && client.readyState === WebSocket.OPEN);
+    if (message.action === 'signal') {
+      if (!message.signal || typeof message.signal !== 'object' || JSON.stringify(message.signal).length >= 8192) {
+        throw new Error('Message invalide.');
+      }
+      const data = JSON.stringify({ type: 'webcam', action: 'signal', from: ws.memberId, name: ws.displayName, signal: message.signal });
+      for (const client of others) {
+        if (message.to !== undefined && client.memberId !== message.to) continue;
+        client.send(data);
+      }
+      return;
+    }
+    if (message.action === 'status') {
+      const data = JSON.stringify({ type: 'webcam', action: 'status', from: ws.memberId, name: ws.displayName, active: !!message.active });
+      for (const client of others) client.send(data);
+      return;
+    }
+    throw new Error('Message inconnu.');
+  };
   // Garde-fou local avant toute session facturée (#45), alimenté trame par
   // trame : le silence a une énergie nulle, un offset continu un taux de
   // passage par zéro nul malgré l'énergie et un bruit large bande un taux
@@ -268,7 +293,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       speaker: utterance.speaker, text: translation });
   };
 
-  const create = ({ movieId, duration, code, probe, voice }) => {
+  const create = ({ movieId, duration, code, probe, voice, webcam }) => {
     if (rooms.size >= settings.get('maxRooms')) throw fail(409, 'Fermer une room avant d’en créer une autre.');
     if (code !== undefined && (typeof code !== 'string' || !/^[a-z0-9-]{4,32}$/i.test(code.trim()))) throw fail(400, 'Code : 4 à 32 lettres, chiffres ou tirets.');
     code = code?.trim().toLowerCase() || randomBytes(8).toString('hex');
@@ -290,6 +315,9 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       room.voiceSeq = 0; room.utterance = null;
       room.voiceCalls = new Map(); room.voiceReleased = new Map();
     }
+    // Visio face-à-face : capacité figée à la création, pensée pour les séances
+    // à deux ; le serveur ne garde aucun état au-delà du relais.
+    if (webcam) room.webcam = Object.freeze({ enabled: true });
     room.engine.load(duration); rooms.set(room.id, room);
     return room;
   };
@@ -332,6 +360,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       const { minBuffer, lowBuffer, reportTimeout, startDelay } = room.engine;
       ws.send(JSON.stringify({ type: 'welcome', id, probe: !!room.probe,
         ...(room.voice ? { voice: room.voice } : {}),
+        ...(room.webcam ? { webcam: room.webcam } : {}),
         sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs: cadence.tickMs } })); broadcast(room);
       ws.on('pong', () => { ws.alive = true; });
       ws.on('error', () => {});
@@ -357,6 +386,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
             return ws.send(JSON.stringify({ type: 'pong', sentAt: message.sentAt, serverNow: performance.now() }));
           }
           if (message.type === 'voice') return voiceControl(room, ws, message);
+          if (message.type === 'webcam') return webcamControl(room, ws, message);
           if (message.type === 'report') {
             // Ordinary buffer reports share the ticker, transitions are sent immediately.
             if (!room.engine.report(id, message).changed) return;
@@ -370,7 +400,15 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       });
       ws.on('close', () => {
         if (room.utterance?.ws === ws) releaseUtterance(room, room.utterance, 'aborted:disconnect');
-        room.clients.delete(ws); room.engine.leave(id); if (rooms.has(room.id)) broadcast(room);
+        room.clients.delete(ws); room.engine.leave(id);
+        if (!rooms.has(room.id)) return;
+        // Le pair restant raccroche sa session WebRTC : le flux n'a plus de
+        // destinataire et sa vignette retombe sur l'attente.
+        if (room.webcam) {
+          const left = JSON.stringify({ type: 'webcam', action: 'peer-left', from: id });
+          for (const client of room.clients) if (client.readyState === WebSocket.OPEN) client.send(left);
+        }
+        broadcast(room);
       });
     });
   });
