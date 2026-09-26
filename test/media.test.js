@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createStore } from '../src/storage.js';
-import { run, probeFile, prepareMovie, inspectProbe, decodeSubtitleText, subtitleFileFormat, addSubtitle, refreshStaleProbes, PROBE_SCHEMA } from '../src/media.js';
+import { run, probeFile, prepareMovie, inspectProbe, codecString, decodeSubtitleText, subtitleFileFormat, addSubtitle, refreshStaleProbes, PROBE_SCHEMA } from '../src/media.js';
 import { defaultTrackNames } from '../public/track-names.js';
 
 // Retagging rewrites the sequence header, so compare decoded samples: no picture may change.
@@ -254,4 +254,39 @@ test('preserves full-range SDR black and white and the original color metadata',
   assert.equal(result.renditions[0].color.fullRange, true);
   assert.deepEqual(await colourBox(path.dirname(output)), { primaries: 1, transfer: 1, matrix: 1, fullRange: true });
   assert.equal(await decodedVideo(path.join(directory, 'source')), await decodedVideo(output));
+});
+
+// ffmpeg writes no CODECS for a stream it copied without parsing; the string is
+// recovered from the codec configuration record inside the init segment.
+test('codecString decodes the RFC 6381 form from a configuration record', () => {
+  const box = (type, payload) => {
+    const buffer = Buffer.alloc(8 + payload.length);
+    buffer.writeUInt32BE(buffer.length); buffer.write(type, 4); payload.copy(buffer, 8);
+    return buffer;
+  };
+  const moov = inner => box('moov', inner);
+  // hvcC: version 1, Main (profile_idc 1), compatibility 0x60000000 prints
+  // bit-reversed, constraint bytes drop trailing zeros, level 63.
+  const hvcC = Buffer.from([1, 0x01, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 63]);
+  assert.equal(codecString(moov(box('hvcC', hvcC))), 'hvc1.1.6.L63.90');
+  const hvcC10 = Buffer.from([1, 0x02, 0x20, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 63]);
+  assert.equal(codecString(moov(box('hvcC', hvcC10))), 'hvc1.2.4.L63.90');
+  const avcC = Buffer.from([1, 0x64, 0x00, 0x28]);
+  assert.equal(codecString(moov(box('avcC', avcC))), 'avc1.640028');
+  assert.equal(codecString(Buffer.alloc(64)), '');
+});
+
+test('a copied HEVC stream still gets a precise CODECS attribute', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-hevc-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
+  const store = createStore(root), movie = { id: randomUUID(), title: 'HEVC' }; store.save(movie);
+  const source = path.join(store.directory(movie.id), 'source');
+  await run(ffmpeg, ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=gray:size=128x72:rate=24', '-t', '1',
+    '-c:v', 'libx265', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p10le', '-x265-params', 'log-level=error',
+    '-tag:v', 'hvc1', '-f', 'matroska', source]);
+  const result = await prepareMovie(store, movie, [], []);
+  const master = await readFile(path.join(store.directory(movie.id), result.generation, 'master.m3u8'), 'utf8');
+  assert.match(result.renditions[0].codecs, /^hvc1\.2\.4\.L\d+/);
+  assert.match(master, new RegExp(`CODECS="${result.renditions[0].codecs}"`));
 });
