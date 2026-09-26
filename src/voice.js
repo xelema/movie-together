@@ -24,7 +24,7 @@ const FLUSH_CHUNK = RATE * 2 / 20;
 const PROMPTS = {
   ko: 'You interpret between close friends. Translate each spoken utterance into natural spoken Korean banmal, the way close friends talk. Never use jondaemal: no -yo, no -seumnida, no dangsin, no jeo/je. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
   fr: 'You interpret between close friends. Translate each spoken utterance into natural, friendly spoken French. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
-  vi: 'You interpret between close friends. Translate each spoken utterance into natural, friendly spoken Vietnamese, the way close friends talk. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
+  vi: 'You interpret between close friends. The French man is named Naïl. Translate each spoken utterance into natural, friendly spoken Vietnamese, the way close friends talk. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
 };
 
 export function createVoiceService({ env = process.env, connect } = {}) {
