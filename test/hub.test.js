@@ -47,3 +47,14 @@ test('the voice capability is frozen at creation and absent from ordinary rooms'
   const room = served.create({ movieId: 'movie', duration: 100, code: 'servi-room', voice: true });
   assert.equal(served.state(room).voice.available, true);
 });
+
+test('the webcam capability is frozen at creation and absent from ordinary rooms', async t => {
+  const hub = stubHub();
+  t.after(() => hub.close());
+  const plain = hub.create({ movieId: 'movie', duration: 100, code: 'plain-room' });
+  const faced = hub.create({ movieId: 'movie', duration: 100, code: 'cam-room', webcam: true });
+  assert.equal('webcam' in hub.state(plain), false);
+  const webcam = hub.state(faced).webcam;
+  assert.deepEqual(webcam, { enabled: true });
+  assert.ok(Object.isFrozen(webcam));
+});
