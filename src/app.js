@@ -430,6 +430,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.get('/media/:id/:file', authenticated, (req, res, next) => {
     // TCP_NODELAY : pas de latence Nagle sur le flux des segments vidéo.
     req.socket?.setNoDelay?.(true);
+    req.socket?.setKeepAlive?.(true, 1000);
     const movie = getMovie(req.params.id);
     if (!req.session.admin && ![...req.session.rooms].some(id => hub.get(id)?.movieId === movie.id)) throw fail(403, 'Accès au film refusé.');
     if (movie.status !== 'ready' || !/^(master(?:_original|_compatible)?|stream_\d+|sub_[a-f0-9-]+(?:_original|_compatible)?)\.m3u8$|^(init_\d+\.mp4|segment_\d+_\d+\.m4s|sub_[a-f0-9-]+(?:_original|_compatible)?\.vtt)$/.test(req.params.file)) throw fail(404, 'Média introuvable.');

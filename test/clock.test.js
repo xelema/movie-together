@@ -11,6 +11,18 @@ test('clock estimates offset using the shortest round trip and expires old sampl
   assert.equal(clock.offset, 2000); assert.equal(clock.ready, false);
 });
 
+test('clock calibrates successfully on high-latency transcontinental links (up to 1200ms RTT)', () => {
+  const clock = new Clock();
+  // Transcontinental round-trip (e.g. 600ms RTT)
+  clock.sample(100, 700, 1400); clock.sample(1000, 1620, 2310); clock.sample(2000, 2580, 3290);
+  assert.equal(clock.ready, true);
+  assert.equal(clock.best.rtt, 580);
+  // Extremely degraded satellite or congested mobile link (> 1200ms)
+  const slow = new Clock();
+  slow.sample(100, 1400, 1750); slow.sample(1000, 2350, 2675); slow.sample(2000, 3300, 3650);
+  assert.equal(slow.ready, false);
+});
+
 test('keeps audio at normal speed and pauses the group for excessive drift', () => {
   const base = {
     activating: false, state: { phase: 'playing', startsAt: 0, position: 10, duration: 100 },

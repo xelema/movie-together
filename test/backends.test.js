@@ -103,6 +103,8 @@ test('hls.js is configured for stall-free resume and deep segment reuse', () => 
     new HlsJsBackend({}, 'u');
     assert.equal(config.backBufferLength, 60);
     assert.equal(config.startFragPrefetch, true);
+    assert.equal(config.progressive, true);
+    assert.ok(config.maxBufferSize >= 128 * 1024 ** 2);
   } finally {
     saved === undefined ? delete globalThis.window : globalThis.window = saved;
   }
