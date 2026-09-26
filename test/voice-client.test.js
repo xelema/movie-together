@@ -43,13 +43,18 @@ class FakeWorkletNode {
   disconnect() { this.connected = false; }
 }
 const stubCapture = t => {
-  const saved = ['AudioContext', 'AudioWorkletNode', 'navigator']
+  const saved = ['AudioContext', 'AudioWorkletNode', 'navigator', 'localStorage']
     .map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
+  const storage = {};
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true, writable: true,
+    value: { getItem: key => storage[key] ?? null, setItem: (key, value) => { storage[key] = value; } },
+  });
   const streams = [];
   const track = { enabled: true, stopped: false, stop() { this.stopped = true; } };
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true, writable: true,
-    value: { mediaDevices: { getUserMedia: async () => {
+    value: { languages: ['fr'], mediaDevices: { getUserMedia: async () => {
       const stream = { track, getAudioTracks: () => [track], getTracks: () => [track] };
       streams.push(stream);
       return stream;
@@ -63,7 +68,7 @@ const stubCapture = t => {
       else delete globalThis[name];
     }
   });
-  return { streams, track };
+  return { streams, track, storage };
 };
 
 test('a saturated socket aborts the prise: local error, clean teardown, retry works', async t => {
@@ -113,7 +118,8 @@ test('a saturated socket aborts the prise: local error, clean teardown, retry wo
 // La langue d'interface au premier appui fixe le sens (#44) : une interface
 // coréenne demande une prise coréen -> français.
 test('the start request carries the interface language of the speaker', async t => {
-  stubCapture(t);
+  const { storage } = stubCapture(t);
+  storage.language = 'ko';
   const mic = fakeButton(), local = { textContent: '', hidden: true, dataset: {} }, supertitle = { textContent: '', hidden: true, dataset: {} };
   const player = { sent: [], send(message) { this.sent.push(message); }, sendFrame: () => true };
   const voice = attachVoice({ mic, local, supertitle, player, t: (fr, ko) => ko, label: message => message });

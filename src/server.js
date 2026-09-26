@@ -9,7 +9,12 @@ if (!origin || (process.env.PORT && origin.startsWith('http://localhost:'))) {
 }
 const application = createApplication({
   dataDir: process.env.DATA_DIR,
-  password: process.env.ADMIN_PASSWORD,
+  // Deux comptes admin dédiés, chacun figé sur sa paire de langues. La clé
+  // historique ADMIN_PASSWORD reste le repli du compte fr-ko.
+  passwords: Object.fromEntries(Object.entries({
+    'fr-ko': process.env.ADMIN_PASSWORD_FR_KO || process.env.ADMIN_PASSWORD,
+    'fr-vi': process.env.ADMIN_PASSWORD_FR_VI,
+  }).filter(([, value]) => value)),
   origin,
   secure: origin.startsWith('https://'),
   trustProxy: process.env.TRUST_PROXY === '1',
