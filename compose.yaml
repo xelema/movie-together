@@ -7,6 +7,8 @@ services:
       NODE_ENV: production
       APP_ORIGIN: https://${DOMAIN:?Set DOMAIN in .env}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      ADMIN_PASSWORD_FR_KO: ${ADMIN_PASSWORD_FR_KO:-}
+      ADMIN_PASSWORD_FR_VI: ${ADMIN_PASSWORD_FR_VI:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       DATA_DIR: /data
