@@ -155,12 +155,15 @@ rapports apparentés), situé dans la conversion des images décodées vers
 l'espace d'affichage.
 
 Conséquence : la lecture native d'un film SDR ne rend pas la même image sous
-Firefox et sous Chromium, quelles que soient les métadonnées du fichier. Aucun
-contournement côté serveur n'existe sans réintroduire un traitement par image,
-écarté pour le SDR. La courbe est visible dès `drawImage`, donc elle vit dans
-la conversion image décodée vers RGBA et atteint probablement aussi un import
-de texture WebGL : remettre le shader ne la corrigerait sans doute pas. La
-courbe exacte peut dépendre de la machine, pilote GPU et profil d'écran ; elle
+Firefox et sous Chromium, quelles que soient les métadonnées du fichier. Cette
+déformation est causée par la promotion du plan vidéo en superposition matérielle
+DirectComposition (D3D11 VideoProcessorBlt). Lorsqu'un élément avec composition
+complexe (tel que l'overlay webcam avec `backdrop-filter`) est affiché par-dessus,
+Firefox rétrograde la vidéo vers WebRender, rétablissant ainsi les couleurs neutres.
+Côté application, forcer un filtre d'identité (`filter: contrast(100%)`) sur Gecko
+cible WebRender et neutralise cette dérive de contraste en permanence, assurant
+une parité colorimétrique constante que la webcam soit active ou non.
+La courbe exacte peut dépendre de la machine, pilote GPU et profil d'écran ; elle
 reste à vérifier sur un autre poste.
 
 ## Plein écran : la transition de luminosité de Chromium
