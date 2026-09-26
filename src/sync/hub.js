@@ -337,6 +337,17 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     return { minBuffer, lowBuffer };
   };
 
+  const isAllowedOrigin = (headerOrigin, request) => {
+    if (headerOrigin === origin) return true;
+    if (!origin.startsWith('https://') && headerOrigin) {
+      try {
+        const u = new URL(headerOrigin);
+        if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return true;
+        if (request?.headers?.host && u.host === request.headers.host) return true;
+      } catch {}
+    }
+    return false;
+  };
   const attach = server => server.on('upgrade', (request, socket, head) => {
     const session = sessionFor(request);
     const url = new URL(request.url, origin), room = rooms.get(url.searchParams.get('room'));
@@ -344,7 +355,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     // spare socket so a reconnect is not locked out by its dying predecessor.
     const held = room ? [...room.clients].filter(client => client.session === session).length : 0;
     const sessions = room ? countSessions(room) : 0;
-    if (url.pathname !== '/ws' || request.headers.origin !== origin || !session ||
+    if (url.pathname !== '/ws' || !isAllowedOrigin(request.headers.origin, request) || !session ||
       !canAccess(session, room) || room.expires <= Date.now() ||
       held >= settings.get('maxSocketsPerSession') || (!held && sessions >= settings.get('maxClients')) ||
       !moviePlayable(room.movieId)) {

@@ -71,12 +71,23 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     const session = sessions.get(token);
     return session?.expires > Date.now() ? session : null;
   };
+  const isAllowedOrigin = (headerOrigin, request) => {
+    if (headerOrigin === origin) return true;
+    if (!secure && headerOrigin) {
+      try {
+        const u = new URL(headerOrigin);
+        if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return true;
+        if (request?.headers?.host && u.host === request.headers.host) return true;
+      } catch {}
+    }
+    return false;
+  };
   app.use((req, res, next) => {
     req.session = sessionFor(req);
     // A non-JSON content type leaves req.body undefined; routes read it freely.
     req.body ??= {};
     if (req.path.startsWith('/api')) res.set('Cache-Control', 'no-store');
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin !== origin) {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !isAllowedOrigin(req.headers.origin, req)) {
       return res.status(403).json({ error: 'Origine refusée.' });
     }
     next();

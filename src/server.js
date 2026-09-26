@@ -3,7 +3,10 @@ import { refreshStaleProbes } from './media.js';
 import { createVoiceService } from './voice.js';
 
 const port = Number(process.env.PORT || 3000);
-const origin = process.env.APP_ORIGIN || `http://localhost:${port}`;
+let origin = process.env.APP_ORIGIN;
+if (!origin || (process.env.PORT && origin.startsWith('http://localhost:'))) {
+  origin = `http://localhost:${port}`;
+}
 const application = createApplication({
   dataDir: process.env.DATA_DIR,
   password: process.env.ADMIN_PASSWORD,
