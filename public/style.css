@@ -184,11 +184,18 @@ video{display:block;width:100%;max-height:72vh;object-fit:contain}
 /* Firefox on Windows uses DirectComposition video hardware overlays (MPO) when a video
    element has standard compositing. D3D11 VideoProcessorBlt applies aggressive contrast/black-crush
    on SDR video, which disengages whenever an overlay like webcam (backdrop-filter) is visible.
-   Forcing an identity contrast filter on Gecko targets WebRender's calibrated sRGB pipeline,
-   ensuring identical, faithful SDR colorimetry whether webcam is active or disabled. */
+   A persistent zero-cost backdrop-filter overlay layer forces Gecko/WebRender to composite
+   the video plane consistently, preventing MPO promotion and eliminating the color/contrast shift. */
+#gecko-overlay-fix{display:none}
 @supports (-moz-appearance: none) {
-  .video-stage video {
-    filter: contrast(100%);
+  #gecko-overlay-fix {
+    display:block;
+    position:absolute;
+    inset:0;
+    pointer-events:none;
+    backdrop-filter:blur(0.01px);
+    opacity:0.001;
+    z-index:1;
   }
 }
 .plyr{width:100%}
