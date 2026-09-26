@@ -14,8 +14,9 @@ const MIN_W = 140, MIN_H = 105, MAX_W = 480, MAX_H = 360;
 
 export function attachWebcam({ toggle, overlay, player, t, label }) {
   const stage = overlay.parentElement;
-  const remote = overlay.querySelector('#webcam-remote-video');
-  const preview = overlay.querySelector('#webcam-self-preview');
+  const body = overlay.querySelector('.webcam-body') || overlay;
+  let remote = overlay.querySelector('#webcam-remote-video');
+  let preview = overlay.querySelector('#webcam-self-preview');
   const placeholder = overlay.querySelector('#webcam-placeholder');
   const peerName = overlay.querySelector('#webcam-peer');
   const dot = overlay.querySelector('#webcam-status');
@@ -23,6 +24,30 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
   const close = overlay.querySelector('#webcam-close');
   const header = overlay.querySelector('.webcam-header');
   const grip = overlay.querySelector('#webcam-resize');
+
+  const ensureRemote = () => {
+    if (!remote && typeof document !== 'undefined') {
+      remote = document.createElement('video');
+      remote.id = 'webcam-remote-video';
+      remote.autoplay = true;
+      remote.playsInline = true;
+      remote.muted = true;
+      body.prepend(remote);
+    }
+    return remote;
+  };
+  const ensurePreview = () => {
+    if (!preview && typeof document !== 'undefined') {
+      preview = document.createElement('video');
+      preview.id = 'webcam-self-preview';
+      preview.autoplay = true;
+      preview.playsInline = true;
+      preview.muted = true;
+      body.append(preview);
+    }
+    return preview;
+  };
+
   let state = 'idle', stream = null, pc = null, peerId = null, disposed = false;
   let makingOffer = false, ignoreOffer = false, dismissed = false, peerActive = false;
   let note = '', noteTimer = null, savedHeight = '', announcedFor = null;
@@ -34,11 +59,11 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
     toggle.setAttribute('aria-label', label(STATE_NAMES[next] ?? STATE_NAMES.idle));
   };
   const render = () => {
-    const live = !!remote.srcObject;
+    const live = Boolean(remote?.srcObject);
     dot.dataset.live = String(live);
     placeholder.textContent = live ? '' : note || (peerActive ? label('En attente de la caméra…') : '');
     overlay.hidden = dismissed || (!live && !stream && !placeholder.textContent);
-    preview.hidden = !stream;
+    if (preview) preview.hidden = !stream;
   };
   // Les erreurs locales s'effacent seules : le bouton repasse au repos et la
   // vignette disparaît si rien d'autre ne la maintient.
@@ -75,19 +100,24 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
       if (candidate) send({ action: 'signal', to: peerId ?? undefined, signal: { candidate } });
     };
     pc.ontrack = event => {
-      remote.srcObject = event.streams[0];
+      const v = ensureRemote();
+      v.srcObject = event.streams[0];
       dismissed = false;
       render();
     };
     pc.onconnectionstatechange = () => {
-      if (pc && ['failed', 'closed'].includes(pc.connectionState)) { remote.srcObject = null; render(); }
+      if (pc && ['failed', 'closed'].includes(pc.connectionState) && remote) { remote.srcObject = null; render(); }
     };
     return pc;
   };
   const resetRemote = reconnect => {
     peerActive = false; peerId = null;
     peerName.textContent = '';
-    remote.srcObject = null;
+    if (remote) {
+      remote.srcObject = null;
+      remote.remove?.();
+      remote = null;
+    }
     ignoreOffer = false;
     try { pc?.close(); } catch {}
     pc = null;
@@ -129,7 +159,11 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
       peerId = event.from;
       if (event.name) peerName.textContent = event.name;
       peerActive = !!event.active;
-      if (!peerActive) remote.srcObject = null;
+      if (!peerActive && remote) {
+        remote.srcObject = null;
+        remote.remove?.();
+        remote = null;
+      }
       dismissed = false;
       render();
       return;
@@ -139,7 +173,11 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
   const stopCamera = (notify = true) => {
     if (stream) for (const track of stream.getTracks()) track.stop();
     stream = null;
-    preview.srcObject = null;
+    if (preview) {
+      preview.srcObject = null;
+      preview.remove?.();
+      preview = null;
+    }
     try { if (pc) for (const sender of pc.getSenders()) if (sender.track) pc.removeTrack(sender); } catch {}
     if (notify) { announcedFor = null; send({ action: 'status', active: false }); }
     setState('idle');
@@ -157,7 +195,8 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
       // un flux orphelin encore actif : il est arrêté plutôt qu'adopté.
       if (disposed || state !== 'starting') { granted.getTracks().forEach(track => track.stop()); return; }
       stream = granted;
-      preview.srcObject = stream;
+      const prev = ensurePreview();
+      prev.srcObject = stream;
       const conn = connect();
       for (const track of stream.getTracks()) conn.addTrack(track, stream);
       announce();
@@ -244,7 +283,11 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
       stopCamera(false);
       try { pc?.close(); } catch {}
       pc = null;
-      remote.srcObject = null;
+      if (remote) {
+        remote.srcObject = null;
+        remote.remove?.();
+        remote = null;
+      }
       toggle.dataset.state = 'idle';
       overlay.hidden = true;
     },
