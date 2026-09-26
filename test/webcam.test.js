@@ -16,11 +16,21 @@ const fakeElement = (tag = 'div', id = '') => {
     querySelector(sel) {
       if (sel.startsWith('#')) {
         const targetId = sel.slice(1);
-        return this.children.find(c => c.id === targetId) ?? null;
+        if (this.id === targetId) return this;
+        for (const child of this.children) {
+          if (child.id === targetId) return child;
+          const found = child.querySelector?.(sel);
+          if (found) return found;
+        }
       }
       if (sel.startsWith('.')) {
         const cls = sel.slice(1);
-        return this.children.find(c => c.className === cls) ?? null;
+        if (this.className === cls) return this;
+        for (const child of this.children) {
+          if (child.className === cls) return child;
+          const found = child.querySelector?.(sel);
+          if (found) return found;
+        }
       }
       return null;
     },
@@ -38,19 +48,16 @@ const createMockOverlay = () => {
   const overlay = fakeElement('div', 'webcam-overlay');
   overlay.parentElement = stage;
 
-  const header = fakeElement('div');
-  header.className = 'webcam-header';
+  const body = fakeElement('div');
+  body.className = 'webcam-body';
   const remote = fakeElement('video', 'webcam-remote-video');
   const preview = fakeElement('video', 'webcam-self-preview');
   const placeholder = fakeElement('div', 'webcam-placeholder');
-  const peerName = fakeElement('span', 'webcam-peer');
-  const dot = fakeElement('span', 'webcam-status');
-  const minimize = fakeElement('button', 'webcam-minimize');
-  const close = fakeElement('button', 'webcam-close');
   const grip = fakeElement('span', 'webcam-resize');
 
-  overlay.children = [header, remote, preview, placeholder, peerName, dot, minimize, close, grip];
-  return { stage, overlay, header, remote, preview, placeholder, peerName, dot, minimize, close, grip };
+  body.children = [remote, preview, placeholder];
+  overlay.children = [body, grip];
+  return { stage, overlay, body, remote, preview, placeholder, grip };
 };
 
 class FakeRTCPeerConnection {
@@ -128,7 +135,7 @@ test('webcam module manages camera activation, WebRTC signaling, status events a
   });
 
   const toggle = fakeElement('button', 'webcam-toggle');
-  const { stage, overlay, header, remote, preview, placeholder, peerName, dot, minimize, close, grip } = createMockOverlay();
+  const { stage, overlay, remote, preview, placeholder, grip } = createMockOverlay();
   const sent = [];
   const player = {
     memberId: 'mem-1234',
@@ -160,7 +167,6 @@ test('webcam module manages camera activation, WebRTC signaling, status events a
     name: 'Alice',
     active: true,
   });
-  assert.equal(peerName.textContent, 'Alice');
 
   // 4. Remote track received
   const remoteTrack = { kind: 'video', stop() {} };
@@ -170,44 +176,24 @@ test('webcam module manages camera activation, WebRTC signaling, status events a
   pc.ontrack({ streams: [remoteStream] });
   assert.equal(remote.srcObject, remoteStream);
   assert.equal(overlay.hidden, false);
-  assert.equal(dot.dataset.live, 'true');
 
-  // 5. Minimize toggle
-  minimize.click();
-  assert.equal(overlay.dataset.minimized, 'true');
-  minimize.click();
-  assert.equal(overlay.dataset.minimized, 'false');
-
-  // 6. Remote peer disconnects
+  // 5. Remote peer disconnects
   await controller.message({ action: 'peer-left', from: 'peer-5678' });
   assert.equal(remote.srcObject, null);
-  assert.equal(peerName.textContent, '');
 
-  // 7. Toggle camera off
+  // 6. Toggle camera off
   await toggle.click();
   assert.equal(toggle.dataset.state, 'idle');
   assert.equal(tracks[0].stopped, true);
   assert.ok(sent.some(msg => msg.type === 'webcam' && msg.action === 'status' && msg.active === false));
 
-  // 8. Drag and resize interactions
-  // Simulate header drag
-  const downEvent = {
-    target: header,
-    clientX: 50,
-    clientY: 50,
-    pointerId: 1,
-    preventDefault() {},
-  };
-  header.listeners = header.listeners || {};
-  // Trigger pointerdown
-  const pdListeners = [];
-  // Verify clamping logic on overlay styles
+  // 7. Drag and resize interactions
   overlay.style.left = '100px';
   overlay.style.top = '100px';
   assert.equal(overlay.style.left, '100px');
   assert.equal(overlay.style.top, '100px');
 
-  // 9. Disposal cleans up
+  // 8. Disposal cleans up
   controller.dispose();
   assert.equal(toggle.dataset.state, 'idle');
   assert.equal(overlay.hidden, true);

@@ -60,7 +60,7 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
   };
   const render = () => {
     const live = Boolean(remote?.srcObject);
-    dot.dataset.live = String(live);
+    if (dot) dot.dataset.live = String(live);
     placeholder.textContent = live ? '' : note || (peerActive ? label('En attente de la caméra…') : '');
     overlay.hidden = dismissed || (!live && !stream && !placeholder.textContent);
     if (preview) preview.hidden = !stream;
@@ -112,7 +112,7 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
   };
   const resetRemote = reconnect => {
     peerActive = false; peerId = null;
-    peerName.textContent = '';
+    if (peerName) peerName.textContent = '';
     if (remote) {
       remote.srcObject = null;
       remote.remove?.();
@@ -135,7 +135,7 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
     if (!event) return resetRemote(true);
     if (event.action === 'signal') {
       peerId = event.from;
-      if (event.name) peerName.textContent = event.name;
+      if (peerName && event.name) peerName.textContent = event.name;
       const conn = connect();
       const signal = event.signal ?? {};
       try {
@@ -157,7 +157,7 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
     }
     if (event.action === 'status') {
       peerId = event.from;
-      if (event.name) peerName.textContent = event.name;
+      if (peerName && event.name) peerName.textContent = event.name;
       peerActive = !!event.active;
       if (!peerActive && remote) {
         remote.srcObject = null;
@@ -210,14 +210,14 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
   // Déplacement borné à la scène : la vignette ne peut jamais sortir de
   // l'écran, en lecture normale comme en plein écran.
   const beginDrag = event => {
-    if (event.target.closest('button')) return;
+    if (event.target.closest('#webcam-resize') || event.target.closest('button')) return;
     event.preventDefault();
     const rect = overlay.getBoundingClientRect(), bounds = stage.getBoundingClientRect();
     overlay.style.left = `${rect.left - bounds.left}px`;
     overlay.style.top = `${rect.top - bounds.top}px`;
     overlay.style.right = 'auto';
     const dx = event.clientX - rect.left, dy = event.clientY - rect.top;
-    header.setPointerCapture(event.pointerId);
+    overlay.setPointerCapture(event.pointerId);
     const move = e => {
       const box = stage.getBoundingClientRect();
       const x = Math.max(0, Math.min(e.clientX - box.left - dx, box.width - rect.width));
@@ -226,23 +226,33 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
       overlay.style.top = `${y}px`;
     };
     const end = () => {
-      header.removeEventListener('pointermove', move);
-      header.removeEventListener('pointerup', end);
-      header.removeEventListener('pointercancel', end);
+      overlay.removeEventListener('pointermove', move);
+      overlay.removeEventListener('pointerup', end);
+      overlay.removeEventListener('pointercancel', end);
     };
-    header.addEventListener('pointermove', move);
-    header.addEventListener('pointerup', end);
-    header.addEventListener('pointercancel', end);
+    overlay.addEventListener('pointermove', move);
+    overlay.addEventListener('pointerup', end);
+    overlay.addEventListener('pointercancel', end);
   };
-  header.addEventListener('pointerdown', beginDrag);
+  overlay.addEventListener('pointerdown', beginDrag);
+  if (header && header !== overlay) header.addEventListener('pointerdown', beginDrag);
   const beginResize = event => {
     event.preventDefault();
+    event.stopPropagation();
     const rect = overlay.getBoundingClientRect();
     grip.setPointerCapture(event.pointerId);
     const move = e => {
       const box = stage.getBoundingClientRect();
-      overlay.style.width = `${Math.max(MIN_W, Math.min(e.clientX - rect.left, MAX_W, box.width - (rect.left - box.left)))}px`;
-      overlay.style.height = `${Math.max(MIN_H, Math.min(e.clientY - rect.top, MAX_H, box.height - (rect.top - box.top)))}px`;
+      const maxW = Math.min(MAX_W, box.width - (rect.left - box.left));
+      const maxH = box.height - (rect.top - box.top);
+      let w = Math.max(MIN_W, Math.min(e.clientX - rect.left, maxW));
+      let h = Math.round(w * 3 / 4);
+      if (h > maxH) {
+        h = maxH;
+        w = Math.round(h * 4 / 3);
+      }
+      overlay.style.width = `${w}px`;
+      overlay.style.height = `${h}px`;
     };
     const end = () => {
       grip.removeEventListener('pointermove', move);
@@ -253,20 +263,20 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
     grip.addEventListener('pointerup', end);
     grip.addEventListener('pointercancel', end);
   };
-  grip.addEventListener('pointerdown', beginResize);
-  minimize.addEventListener('click', () => {
+  grip?.addEventListener('pointerdown', beginResize);
+  minimize?.addEventListener('click', () => {
     const minimized = overlay.dataset.minimized === 'true';
     overlay.dataset.minimized = String(!minimized);
     if (minimized) overlay.style.height = savedHeight;
     else { savedHeight = overlay.style.height; overlay.style.height = 'auto'; }
     minimize.setAttribute('aria-label', label(minimized ? 'Réduire' : 'Agrandir'));
   });
-  close.addEventListener('click', () => { dismissed = true; render(); });
+  close?.addEventListener('click', () => { dismissed = true; render(); });
   toggle.addEventListener('click', tap);
   const rename = () => {
     setState(state);
-    minimize.setAttribute('aria-label', label(overlay.dataset.minimized === 'true' ? 'Agrandir' : 'Réduire'));
-    close.setAttribute('aria-label', label('Fermer'));
+    minimize?.setAttribute('aria-label', label(overlay.dataset.minimized === 'true' ? 'Agrandir' : 'Réduire'));
+    close?.setAttribute('aria-label', label('Fermer'));
     render();
   };
   rename();
@@ -277,8 +287,9 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
     dispose() {
       disposed = true;
       toggle.removeEventListener('click', tap);
-      header.removeEventListener('pointerdown', beginDrag);
-      grip.removeEventListener('pointerdown', beginResize);
+      overlay.removeEventListener('pointerdown', beginDrag);
+      header?.removeEventListener('pointerdown', beginDrag);
+      grip?.removeEventListener('pointerdown', beginResize);
       clearTimeout(noteTimer);
       stopCamera(false);
       try { pc?.close(); } catch {}
