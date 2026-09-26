@@ -37,6 +37,9 @@ services:
     # links viewers sit behind. The container netns needs it set explicitly.
     sysctls:
       net.ipv4.tcp_congestion_control: bbr
+      net.ipv4.tcp_slow_start_after_idle: 0
+      net.ipv4.tcp_rmem: "4096 87380 16777216"
+      net.ipv4.tcp_wmem: "4096 65536 16777216"
     environment:
       DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
     ports:
