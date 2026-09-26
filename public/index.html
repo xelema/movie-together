@@ -83,6 +83,11 @@
           <button id="voice-mic" type="button" hidden><svg class="voice-icon" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg><span class="voice-spectrogram" aria-hidden="true"><span class="voice-bar"></span><span class="voice-bar"></span><span class="voice-bar"></span><span class="voice-bar"></span></span></button>
           <div id="voice-local" role="status" aria-live="polite" hidden></div>
           <div id="voice-result" role="status" aria-live="polite" hidden></div>
+          <button id="webcam-toggle" type="button" hidden aria-label="Caméra"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg></button>
+          <div id="webcam-overlay" hidden>
+            <div class="webcam-body"><div id="webcam-placeholder" role="status"></div></div>
+            <span id="webcam-resize" aria-hidden="true"></span>
+          </div>
         </div>
         <div id="player-settings" class="track-controls" role="region" hidden>
           <div class="heading"><strong data-fr="Réglages" data-ko="설정"></strong><button id="close-settings" type="button" aria-label="Fermer / 닫기">×</button></div>
@@ -116,6 +121,7 @@
       <label><span class="eyebrow" data-fr="Code à partager" data-ko="공유할 코드"></span><input id="create-code" required minlength="4" maxlength="32" pattern="[A-Za-z0-9-]{4,32}" autocomplete="off" spellcheck="false"></label>
       <p data-fr="4 à 32 lettres, chiffres ou tirets." data-ko="영문, 숫자, 하이픈 4~32자."></p>
       <label class="check"><input id="create-voice" type="checkbox"><span data-fr="Traduction vocale (français ↔ coréen)" data-ko="음성 번역 (프랑스어 ↔ 한국어)"></span></label>
+      <label class="check"><input id="create-webcam" type="checkbox"><span data-fr="Caméra (face-à-face à 2)" data-ko="웹캠 (2인용)"></span></label>
       <div class="dialog-actions"><button id="random-code" class="secondary" type="button" data-fr="Aléatoire" data-ko="무작위"></button><button data-fr="Créer" data-ko="만들기"></button></div>
     </form></dialog>
   </main>

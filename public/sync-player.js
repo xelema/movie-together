@@ -23,8 +23,8 @@ export function bufferEnd(video) {
 }
 
 export class SyncPlayer {
-  constructor({ video, roomId, name = '', forceShader = false, onStatus, onState, onTracks, onActivation, onVoice }) {
-    Object.assign(this, { video, roomId, forceShader, onStatus, onState, onTracks, onActivation, onVoice });
+  constructor({ video, roomId, name = '', forceShader = false, onStatus, onState, onTracks, onActivation, onVoice, onWebcam }) {
+    Object.assign(this, { video, roomId, forceShader, onStatus, onState, onTracks, onActivation, onVoice, onWebcam });
     this.offset = 0; this.audioChoice = 0; this.subtitleChoice = -1;
     this.name = name;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
@@ -159,6 +159,7 @@ export class SyncPlayer {
       this.lastMessage = performance.now();
       if (message.type === 'pong') this.clock.sample(message.sentAt, performance.now(), message.serverNow);
       if (message.type === 'voice') this.onVoice?.(message);
+      if (message.type === 'webcam') this.onWebcam?.(message);
       if (message.type === 'welcome') {
         this.memberId = message.id;
         this.applySync(message.sync);
@@ -179,6 +180,7 @@ export class SyncPlayer {
     this.ws.onclose = event => {
       if (this.disposed) return;
       this.onVoice?.(null);
+      this.onWebcam?.(null);
       clearInterval(this.initialPings); this.pauseLocal(); clearTimeout(this.startTimer); this.state = null;
       if ([1000, 1008].includes(event.code)) this.failure = 'Room fermée ou session expirée.';
       this.onStatus(event.code === 1000 || event.code === 1008 ? 'Room fermée ou session expirée.' : 'Connexion perdue. Séance en pause, reconnexion…');
