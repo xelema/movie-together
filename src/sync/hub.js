@@ -36,13 +36,14 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
 
   // Waiting diagnostics are for the host: guests only need the shared bit.
   const state = (room, { details = true } = {}) => ({ type: 'state', roomId: room.id, code: room.code,
-    probe: !!room.probe, ...(room.voice ? { voice: room.voice } : {}), ...(room.webcam ? { webcam: room.webcam } : {}),
+    probe: !!room.probe, languages: room.languages ?? room.voice?.pair ?? ['fr', 'ko'],
+    ...(room.voice ? { voice: room.voice } : {}), ...(room.webcam ? { webcam: room.webcam } : {}),
     state: room.engine.snapshot(), movie: room.movieId ? movieFor(room.movieId) : null,
     sync: { minBuffer: room.engine.minBuffer, lowBuffer: room.engine.lowBuffer },
     members: [...room.engine.members.keys()].map(id => {
       const status = room.engine.memberStatus(id);
       return { id,
-        name: [...room.clients].find(client => client.memberId === id)?.displayName ?? 'Invité / 게스트',
+        name: [...room.clients].find(client => client.memberId === id)?.displayName ?? ((room.languages ?? room.voice?.pair)?.includes('vi') ? 'Invité / Khách' : 'Invité / 게스트'),
         ...(details ? status : { waiting: status.waiting }) };
     }),
   });
@@ -282,8 +283,13 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       (heard && heard.length > VOICE_TEXT_MAX)) {
       return failUtterance(room, utterance, 'invalid-response');
     }
-    if (HANGUL.test(translation) !== (utterance.target === 'ko') ||
-      (heard && HANGUL.test(heard) !== (utterance.source === 'ko'))) {
+    // Le contrôle de cohérence dépend de la paire : en fr-ko le hangul
+    // trahit le mauvais sens, en fr-vi il n'a simplement rien à faire là.
+    if (room.voice.pair.includes('ko') && (HANGUL.test(translation) !== (utterance.target === 'ko') ||
+      (heard && HANGUL.test(heard) !== (utterance.source === 'ko')))) {
+      return failUtterance(room, utterance, 'inconsistent');
+    }
+    if (room.voice.pair.includes('vi') && (HANGUL.test(translation) || (heard && HANGUL.test(heard)))) {
       return failUtterance(room, utterance, 'inconsistent');
     }
     utterance.resultSent = true;
@@ -293,7 +299,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       speaker: utterance.speaker, text: translation });
   };
 
-  const create = ({ movieId, duration, code, probe, voice, webcam }) => {
+  const create = ({ movieId, duration, code, probe, voice, webcam, languages = ['fr', 'ko'] }) => {
     if (rooms.size >= settings.get('maxRooms')) throw fail(409, 'Fermer une room avant d’en créer une autre.');
     if (code !== undefined && (typeof code !== 'string' || !/^[a-z0-9-]{4,32}$/i.test(code.trim()))) throw fail(400, 'Code : 4 à 32 lettres, chiffres ou tirets.');
     code = code?.trim().toLowerCase() || randomBytes(8).toString('hex');
@@ -305,10 +311,11 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       engine: new Room({ ...thresholds, reportTimeout: settings.get('reportTimeout') * 1000,
         startDelay: settings.get('startDelay') * 1000 }), clients: new Set(),
       probe: !!probe, logged: new Map(), loggedPhase: null };
+    room.languages = Object.freeze([...languages]);
     // Traduction vocale : capacité figée à la création. La disponibilité reflète
     // le service injecté, absent tant qu'aucun fournisseur n'est câblé.
     if (voice) {
-      room.voice = Object.freeze({ enabled: true, pair: Object.freeze(['fr', 'ko']), available: !!voiceService });
+      room.voice = Object.freeze({ enabled: true, pair: Object.freeze([...languages]), available: !!voiceService });
       // Quotas et délais copiés à la création (#39) : immuables pendant la séance.
       room.voiceLimits = { quota: settings.get('voiceQuota'), windowMs: settings.get('voiceWindow') * 1000,
         cooldownMs: settings.get('voiceCooldown') * 1000 };
@@ -366,12 +373,14 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     wss.handleUpgrade(request, socket, head, ws => {
       const id = randomUUID(); let messages = 0, frames = 0, windowAt = Date.now();
       ws.session = session; ws.alive = true; ws.memberId = id;
-      ws.displayName = session.admin ? 'Hôte / 호스트' : 'Invité / 게스트';
+      const isVi = room.languages?.includes('vi');
+      ws.displayName = session.admin ? (isVi ? 'Hôte / Chủ nhà' : 'Hôte / 호스트') : (isVi ? 'Invité / Khách' : 'Invité / 게스트');
       room.clients.add(ws); room.engine.join(id);
       // The client derives its cadence and buffer targets from these thresholds:
       // shipping them keeps the timing contract explicit instead of hardcoded twice.
       const { minBuffer, lowBuffer, reportTimeout, startDelay } = room.engine;
       ws.send(JSON.stringify({ type: 'welcome', id, probe: !!room.probe,
+        languages: room.languages,
         ...(room.voice ? { voice: room.voice } : {}),
         ...(room.webcam ? { webcam: room.webcam } : {}),
         sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs: cadence.tickMs } })); broadcast(room);
@@ -453,7 +462,8 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       ? [...rooms.values()].find(room => room.code === code.trim().toLowerCase() && room.expires > Date.now())
       : undefined,
     list: () => [...rooms.values()].map(room => ({ id: room.id, code: room.code, movieId: room.movieId,
-      probe: !!room.probe, expires: room.expires, participants: countSessions(room),
+      probe: !!room.probe, languages: room.languages ?? room.voice?.pair ?? ['fr', 'ko'],
+      expires: room.expires, participants: countSessions(room),
       link: `${origin}/#invite=${room.code}` })),
     setMovie(room, movie) { room.movieId = movie.id; room.engine.load(movie.duration); broadcast(room); },
     remove(id) {

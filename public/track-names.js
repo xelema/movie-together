@@ -5,7 +5,7 @@ const LANGUAGE_NAMES = { fr: 'French', fra: 'French', fre: 'French', en: 'Englis
   it: 'Italian', ita: 'Italian', pt: 'Portuguese', por: 'Portuguese', ja: 'Japanese', jpn: 'Japanese',
   zh: 'Chinese', zho: 'Chinese', chi: 'Chinese', nl: 'Dutch', nld: 'Dutch', dut: 'Dutch',
   ru: 'Russian', rus: 'Russian', ar: 'Arabic', ara: 'Arabic', tr: 'Turkish', tur: 'Turkish',
-  pl: 'Polish', pol: 'Polish', und: 'Other' };
+  pl: 'Polish', pol: 'Polish', vi: 'Vietnamese', vie: 'Vietnamese', und: 'Other' };
 export const languageName = code => LANGUAGE_NAMES[code] || code;
 export const trackName = track => languageName(track.label);
 
