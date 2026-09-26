@@ -12,40 +12,40 @@
 <body>
   <header>
     <a class="brand" href="/">Movie Together</a>
-    <label class="language-picker"><img id="language-flag" src="/flags/fr.svg" alt="" width="21" height="16"><select id="language" aria-label="Langue / 언어"><option value="fr">Français</option><option value="ko">한국어</option></select></label>
-    <button id="logout" class="ghost" data-fr="Déconnexion" data-ko="로그아웃" hidden></button>
+    <label class="language-picker"><img id="language-flag" src="/flags/fr.svg" alt="" width="21" height="16"><select id="language" aria-label="Langue / 언어 / Ngôn ngữ"><option value="fr">Français</option><option value="ko">한국어</option><option value="vi">Tiếng Việt</option></select></label>
+    <button id="logout" class="ghost" data-fr="Déconnexion" data-ko="로그아웃" data-vi="Đăng xuất" hidden></button>
   </header>
   <main>
-    <div id="toast"><p id="notice" role="status" aria-live="polite"></p><button id="notice-close" type="button" aria-label="Fermer / 닫기">×</button></div>
+    <div id="toast"><p id="notice" role="status" aria-live="polite"></p><button id="notice-close" type="button" aria-label="Fermer / 닫기 / Đóng">×</button></div>
 
     <section id="entry">
       <form id="join-form">
-        <h1 data-fr="Entrez le code de la séance" data-ko="시청방 코드를 입력하세요"></h1>
-        <p data-fr="Le code vous est donné par la personne qui organise la séance." data-ko="시청방을 만든 사람에게 코드를 받으세요."></p>
-        <label><span class="eyebrow" data-fr="Code" data-ko="코드"></span><input name="code" required autocomplete="off" maxlength="32" spellcheck="false" placeholder="cinema-123"></label>
-        <button data-fr="Continuer" data-ko="계속"></button>
+        <h1 data-fr="Entrez le code de la séance" data-ko="시청방 코드를 입력하세요" data-vi="Nhập mã buổi xem"></h1>
+        <p data-fr="Le code vous est donné par la personne qui organise la séance." data-ko="시청방을 만든 사람에게 코드를 받으세요." data-vi="Người tổ chức buổi xem sẽ gửi mã cho bạn."></p>
+        <label><span class="eyebrow" data-fr="Code" data-ko="코드" data-vi="Mã"></span><input name="code" required autocomplete="off" maxlength="32" spellcheck="false" placeholder="cinema-123"></label>
+        <button data-fr="Continuer" data-ko="계속" data-vi="Tiếp tục"></button>
       </form>
       <form id="login-form" hidden>
-        <h1 data-fr="Administration" data-ko="관리"></h1>
-        <p data-fr="Réservé à la personne qui gère la bibliothèque." data-ko="영화 목록을 관리하는 사람만 사용합니다."></p>
-        <label><span class="eyebrow" data-fr="Mot de passe" data-ko="비밀번호"></span><input name="password" type="password" required autocomplete="current-password"></label>
-        <button data-fr="Se connecter" data-ko="로그인"></button>
+        <h1 data-fr="Administration" data-ko="관리" data-vi="Quản trị"></h1>
+        <p data-fr="Réservé à la personne qui gère la bibliothèque." data-ko="영화 목록을 관리하는 사람만 사용합니다." data-vi="Chỉ dành cho người quản lý thư viện."></p>
+        <label><span class="eyebrow" data-fr="Mot de passe" data-ko="비밀번호" data-vi="Mật khẩu"></span><input name="password" type="password" required autocomplete="current-password"></label>
+        <button data-fr="Se connecter" data-ko="로그인" data-vi="Đăng nhập"></button>
       </form>
     </section>
 
     <section id="library" hidden>
-      <div class="heading"><h1 data-fr="Bibliothèque" data-ko="영화 목록"></h1><button id="refresh" class="ghost" data-fr="Actualiser" data-ko="새로고침"></button></div>
+      <div class="heading"><h1 data-fr="Bibliothèque" data-ko="영화 목록" data-vi="Thư viện"></h1><button id="refresh" class="ghost" data-fr="Actualiser" data-ko="새로고침" data-vi="Làm mới"></button></div>
       <div id="admin-tabs" role="tablist">
-        <button role="tab" type="button" data-tab="films" aria-controls="tab-films"><span data-fr="Films" data-ko="영화"></span><small id="films-count"></small></button>
-        <button role="tab" type="button" data-tab="rooms" aria-controls="tab-rooms"><span data-fr="Séances" data-ko="시청방"></span><small id="rooms-count"></small></button>
-        <button role="tab" type="button" data-tab="settings" aria-controls="tab-settings"><span data-fr="Réglages" data-ko="설정"></span></button>
+        <button role="tab" type="button" data-tab="films" aria-controls="tab-films"><span data-fr="Films" data-ko="영화" data-vi="Phim"></span><small id="films-count"></small></button>
+        <button role="tab" type="button" data-tab="rooms" aria-controls="tab-rooms"><span data-fr="Séances" data-ko="시청방" data-vi="Buổi xem"></span><small id="rooms-count"></small></button>
+        <button role="tab" type="button" data-tab="settings" aria-controls="tab-settings"><span data-fr="Réglages" data-ko="설정" data-vi="Cài đặt"></span></button>
       </div>
       <section id="tab-films" role="tabpanel">
       <div id="upload-form">
-        <h2 data-fr="Ajouter un film" data-ko="영화 추가"></h2>
+        <h2 data-fr="Ajouter un film" data-ko="영화 추가" data-vi="Thêm phim"></h2>
         <label id="drop-zone">
-          <strong data-fr="Glissez un film ici ou cliquez pour le choisir" data-ko="영화 파일을 여기로 끌어오거나 클릭해서 선택하세요"></strong>
-          <span id="upload-file-label" data-fr="Fichier du film (20 Go maximum)" data-ko="영화 파일 (최대 20GB)"></span>
+          <strong data-fr="Glissez un film ici ou cliquez pour le choisir" data-ko="영화 파일을 여기로 끌어오거나 클릭해서 선택하세요" data-vi="Kéo phim vào đây hoặc nhấn để chọn"></strong>
+          <span id="upload-file-label" data-fr="Fichier du film (20 Go maximum)" data-ko="영화 파일 (최대 20GB)" data-vi="Tệp phim (tối đa 20GB)"></span>
           <input id="upload-file" class="visually-hidden" type="file">
         </label>
         <p id="disk-space" class="hint"></p>
@@ -53,32 +53,33 @@
       </div>
       <div id="pending-uploads"></div>
       <div id="movies">
-        <p id="library-empty" class="empty" data-fr="Aucun film pour l’instant. Glissez un fichier au-dessus pour commencer." data-ko="아직 영화가 없습니다. 위로 파일을 끌어와 시작하세요." hidden></p>
-        <h2 id="pending-heading" class="section-heading" data-fr="À préparer" data-ko="준비 필요" hidden></h2>
+        <p id="library-empty" class="empty" data-fr="Aucun film pour l’instant. Glissez un fichier au-dessus pour commencer." data-ko="아직 영화가 없습니다. 위로 파일을 끌어와 시작하세요." data-vi="Chưa có phim nào. Kéo một tệp lên trên để bắt đầu." hidden></p>
+        <h2 id="pending-heading" class="section-heading" data-fr="À préparer" data-ko="준비 필요" data-vi="Cần chuẩn bị" hidden></h2>
         <div id="movies-pending" class="columns"></div>
-        <h2 id="ready-heading" class="section-heading" data-fr="Prêts" data-ko="준비 완료" hidden></h2>
+        <h2 id="ready-heading" class="section-heading" data-fr="Prêts" data-ko="준비 완료" data-vi="Sẵn sàng" hidden></h2>
         <div id="movies-ready" class="columns"></div>
       </div>
       </section>
-      <section id="tab-rooms" role="tabpanel" hidden><h2 class="visually-hidden" data-fr="Séances ouvertes" data-ko="열린 시청방"></h2>
-        <p id="rooms-empty" class="empty" data-fr="Aucune séance ouverte. Créez-en une depuis un film prêt." data-ko="열린 시청방이 없습니다. 준비된 영화에서 만드세요."></p><div id="rooms"></div></section>
-      <section id="tab-settings" role="tabpanel" hidden><h2 class="visually-hidden" data-fr="Réglages" data-ko="설정"></h2>
+      <section id="tab-rooms" role="tabpanel" hidden><h2 class="visually-hidden" data-fr="Séances ouvertes" data-ko="열린 시청방" data-vi="Buổi xem đang mở"></h2>
+        <p id="rooms-empty" class="empty" data-fr="Aucune séance ouverte. Créez-en une depuis un film prêt." data-ko="열린 시청방이 없습니다. 준비된 영화에서 만드세요." data-vi="Không có buổi xem nào. Hãy tạo một buổi từ phim đã sẵn sàng."></p><div id="rooms"></div></section>
+      <section id="tab-settings" role="tabpanel" hidden><h2 class="visually-hidden" data-fr="Réglages" data-ko="설정" data-vi="Cài đặt"></h2>
         <form id="settings-form"></form>
-        <p class="hint" data-fr="Les seuils de buffer valent aussi pour les séances en cours ; les autres réglages s’appliquent aux nouvelles opérations." data-ko="버퍼 값은 진행 중인 시청방에도 적용되며, 나머지 설정은 새 작업부터 적용됩니다."></p>
+        <p class="hint" data-fr="Les seuils de buffer valent aussi pour les séances en cours ; les autres réglages s’appliquent aux nouvelles opérations." data-ko="버퍼 값은 진행 중인 시청방에도 적용되며, 나머지 설정은 새 작업부터 적용됩니다." data-vi="Ngưỡng buffer cũng áp dụng cho buổi xem đang diễn ra; các cài đặt khác áp dụng cho tác vụ mới."></p>
       </section>
     </section>
 
     <section id="watch" hidden data-chrome="true">
       <div class="watch-top">
-        <span class="eyebrow" data-fr="Séance" data-ko="시청방"></span>
+        <span class="eyebrow" data-fr="Séance" data-ko="시청방" data-vi="Buổi xem"></span>
         <code id="room-code"></code>
-        <button id="copy-invite" class="ghost" type="button" data-fr="Copier l’invitation" data-ko="초대 링크 복사"></button>
-        <button id="leave" class="ghost" data-fr="Quitter" data-ko="나가기"></button>
+        <button id="copy-invite" class="ghost" type="button" data-fr="Copier l’invitation" data-ko="초대 링크 복사" data-vi="Sao chép lời mời"></button>
+        <button id="leave" class="ghost" data-fr="Quitter" data-ko="나가기" data-vi="Rời đi"></button>
       </div>
-      <div id="screen" tabindex="0" aria-label="Lecteur vidéo / 동영상 플레이어">
+      <div id="screen" tabindex="0" aria-label="Lecteur vidéo / 동영상 플레이어 / Trình phát video">
         <div class="video-stage">
           <video id="video" playsinline preload="auto" disablepictureinpicture disableremoteplayback></video>
-          <div id="buffering-overlay" hidden><div class="playback-message"><span id="playback-spinner" class="spinner" aria-hidden="true"></span><span id="buffering-label" role="status" aria-live="polite"></span><button id="allow-sound" type="button" data-fr="Activer le son" data-ko="소리 켜기" hidden></button></div></div>
+          <div id="gecko-overlay-fix" aria-hidden="true"></div>
+          <div id="buffering-overlay" hidden><div class="playback-message"><span id="playback-spinner" class="spinner" aria-hidden="true"></span><span id="buffering-label" role="status" aria-live="polite"></span><button id="allow-sound" type="button" data-fr="Activer le son" data-ko="소리 켜기" data-vi="Bật âm thanh" hidden></button></div></div>
           <div id="bandwidth-badge" hidden></div>
           <button id="voice-mic" type="button" hidden><svg class="voice-icon" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg><span class="voice-spectrogram" aria-hidden="true"><span class="voice-bar"></span><span class="voice-bar"></span><span class="voice-bar"></span><span class="voice-bar"></span></span></button>
           <div id="voice-local" role="status" aria-live="polite" hidden></div>
@@ -90,39 +91,39 @@
           </div>
         </div>
         <div id="player-settings" class="track-controls" role="region" hidden>
-          <div class="heading"><strong data-fr="Réglages" data-ko="설정"></strong><button id="close-settings" type="button" aria-label="Fermer / 닫기">×</button></div>
-          <label><span data-fr="Langue du film" data-ko="음성 언어"></span><select id="audio"></select></label>
-          <label><span data-fr="Sous-titres" data-ko="자막"></span><select id="subtitles"></select></label>
-          <label><span data-fr="Taille des sous-titres" data-ko="자막 크기"></span><select id="subtitle-size"><option value="0.8">S</option><option value="1" selected>M</option><option value="1.25">L</option><option value="1.5">XL</option></select></label>
-          <label id="bandwidth-row" hidden><span data-fr="Débit en direct" data-ko="실시간 속도"></span><input type="checkbox" id="bandwidth-toggle"></label>
+          <div class="heading"><strong data-fr="Réglages" data-ko="설정" data-vi="Cài đặt"></strong><button id="close-settings" type="button" aria-label="Fermer / 닫기 / Đóng">×</button></div>
+          <label><span data-fr="Langue du film" data-ko="음성 언어" data-vi="Ngôn ngữ phim"></span><select id="audio"></select></label>
+          <label><span data-fr="Sous-titres" data-ko="자막" data-vi="Phụ đề"></span><select id="subtitles"></select></label>
+          <label><span data-fr="Taille des sous-titres" data-ko="자막 크기" data-vi="Cỡ phụ đề"></span><select id="subtitle-size"><option value="0.8">S</option><option value="1" selected>M</option><option value="1.25">L</option><option value="1.5">XL</option></select></label>
+          <label id="bandwidth-row" hidden><span data-fr="Débit en direct" data-ko="실시간 속도" data-vi="Tốc độ trực tiếp"></span><input type="checkbox" id="bandwidth-toggle"></label>
         </div>
       </div>
       <div class="watch-info">
         <div class="watch-film"><h1 id="movie-title"></h1><p id="movie-meta"></p></div>
         <div class="watch-presence">
-          <h2 class="visually-hidden" data-fr="Participants" data-ko="참가자"></h2>
+          <h2 class="visually-hidden" data-fr="Participants" data-ko="참가자" data-vi="Người tham gia"></h2>
           <ul id="participants"></ul><span id="member-count"></span>
         </div>
       </div>
       <p id="playback-status" role="status"></p>
-      <form id="choose-film" hidden><label><span data-fr="Changer de film" data-ko="영화 변경"></span><select id="room-movie"></select></label><button data-fr="Choisir" data-ko="선택"></button></form>
+      <form id="choose-film" hidden><label><span data-fr="Changer de film" data-ko="영화 변경" data-vi="Đổi phim"></span><select id="room-movie"></select></label><button data-fr="Choisir" data-ko="선택" data-vi="Chọn"></button></form>
     </section>
 
     <dialog id="name-dialog"><form method="dialog">
       <p id="name-context" class="room-pill" hidden><span class="dot" aria-hidden="true"></span><code id="name-code"></code><span id="name-movie"></span></p>
-      <h2 data-fr="Comment vous appelez-vous ?" data-ko="이름을 알려주세요"></h2>
-      <p data-fr="Ce nom sera visible par les autres participants." data-ko="다른 참가자에게 표시되는 이름입니다."></p>
-      <input id="room-name" required maxlength="40" autocomplete="nickname" aria-label="Pseudo / 닉네임">
-      <button data-fr="Rejoindre la séance" data-ko="입장"></button>
+      <h2 data-fr="Comment vous appelez-vous ?" data-ko="이름을 알려주세요" data-vi="Bạn tên gì?"></h2>
+      <p data-fr="Ce nom sera visible par les autres participants." data-ko="다른 참가자에게 표시되는 이름입니다." data-vi="Người tham gia khác sẽ thấy tên này."></p>
+      <input id="room-name" required maxlength="40" autocomplete="nickname" aria-label="Pseudo / 닉네임 / Biệt danh">
+      <button data-fr="Rejoindre la séance" data-ko="입장" data-vi="Tham gia buổi xem"></button>
     </form></dialog>
 
     <dialog id="create-dialog"><form method="dialog">
-      <h2 data-fr="Créer une séance" data-ko="시청방 만들기"></h2>
-      <label><span class="eyebrow" data-fr="Code à partager" data-ko="공유할 코드"></span><input id="create-code" required minlength="4" maxlength="32" pattern="[A-Za-z0-9-]{4,32}" autocomplete="off" spellcheck="false"></label>
-      <p data-fr="4 à 32 lettres, chiffres ou tirets." data-ko="영문, 숫자, 하이픈 4~32자."></p>
-      <label class="check"><input id="create-voice" type="checkbox"><span data-fr="Traduction vocale (français ↔ coréen)" data-ko="음성 번역 (프랑스어 ↔ 한국어)"></span></label>
-      <label class="check"><input id="create-webcam" type="checkbox"><span data-fr="Caméra (face-à-face à 2)" data-ko="웹캠 (2인용)"></span></label>
-      <div class="dialog-actions"><button id="random-code" class="secondary" type="button" data-fr="Aléatoire" data-ko="무작위"></button><button data-fr="Créer" data-ko="만들기"></button></div>
+      <h2 data-fr="Créer une séance" data-ko="시청방 만들기" data-vi="Tạo buổi xem"></h2>
+      <label><span class="eyebrow" data-fr="Code à partager" data-ko="공유할 코드" data-vi="Mã để chia sẻ"></span><input id="create-code" required minlength="4" maxlength="32" pattern="[A-Za-z0-9-]{4,32}" autocomplete="off" spellcheck="false"></label>
+      <p data-fr="4 à 32 lettres, chiffres ou tirets." data-ko="영문, 숫자, 하이픈 4~32자." data-vi="4 đến 32 chữ cái, số hoặc dấu gạch."></p>
+      <label class="check"><input id="create-voice" type="checkbox"><span id="create-voice-label" data-fr="Traduction vocale (français ↔ coréen)" data-ko="음성 번역 (프랑스어 ↔ 한국어)" data-vi="Dịch giọng nói (tiếng Pháp ↔ tiếng Việt)"></span></label>
+      <label class="check"><input id="create-webcam" type="checkbox"><span data-fr="Caméra (face-à-face à 2)" data-ko="웹캠 (2인용)" data-vi="Camera (2 người đối mặt)"></span></label>
+      <div class="dialog-actions"><button id="random-code" class="secondary" type="button" data-fr="Aléatoire" data-ko="무작위" data-vi="Ngẫu nhiên"></button><button data-fr="Créer" data-ko="만들기" data-vi="Tạo"></button></div>
     </form></dialog>
   </main>
 </body>

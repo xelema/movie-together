@@ -22,9 +22,22 @@ const FLUSH_CHUNK = RATE * 2 / 20;
 // mais Google peut cesser de l'appliquer, c'est la première chose à vérifier
 // si le registre redevient poli.
 const PROMPTS = {
-  ko: 'You interpret between close friends. Translate each spoken utterance into natural spoken Korean banmal, the way close friends talk. Never use jondaemal: no -yo, no -seumnida, no dangsin, no jeo/je. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
-  fr: 'You interpret between close friends. Translate each spoken utterance into natural, friendly spoken French. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
+  ko: 'You interpret between close friends: a French man named Florian and a Korean woman named Yejin (예진). Translate each spoken utterance into natural spoken Korean banmal, the way close friends talk. Never use jondaemal: no -yo, no -seumnida, no dangsin, no jeo/je. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
+  fr: 'You interpret between close friends. Translate each spoken utterance into natural, friendly spoken French, the way close friends talk. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
+  vi: 'You interpret between close friends: a French man named Naïl and a Vietnamese woman. Translate each spoken utterance into natural, informal spoken Vietnamese, the way close friends talk. Never use stiff or overly formal language. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.',
 };
+
+function systemPrompt({ source, target }) {
+  if (target === 'ko') return PROMPTS.ko;
+  if (target === 'vi') return PROMPTS.vi;
+  if (source === 'ko') {
+    return 'You interpret between close friends: a French man named Florian and a Korean woman named Yejin (예진). Translate each spoken utterance into natural, friendly spoken French, the way close friends talk. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.';
+  }
+  if (source === 'vi') {
+    return 'You interpret between close friends: a French man named Naïl and a Vietnamese woman. Translate each spoken utterance into natural, friendly spoken French, the way close friends talk. Be faithful: translate exactly what is said, never add, drop or change details. Keep questions as questions.';
+  }
+  return PROMPTS[target] ?? PROMPTS.fr;
+}
 
 export function createVoiceService({ env = process.env, connect } = {}) {
   const apiKey = env.GEMINI_API_KEY || env.GOOGLE_API_KEY;
@@ -69,7 +82,7 @@ export function createVoiceService({ env = process.env, connect } = {}) {
         },
         inputAudioTranscription: {},
         outputAudioTranscription: {},
-        systemInstruction: { parts: [{ text: PROMPTS[target] ?? PROMPTS.ko }] },
+        systemInstruction: { parts: [{ text: systemPrompt({ source, target }) }] },
       } })));
       ws.on('message', data => {
         let message;
