@@ -15,12 +15,23 @@ export function codecPlayable(rendition, supports) {
   return !codecs || supports(`video/mp4; codecs="${codecs}"`);
 }
 
+// Prefer native HLS on Safari; its media policies and audio track API differ from MSE.
+export function nativeHls(video) {
+  return video.canPlayType('application/vnd.apple.mpegurl') !== '' &&
+    (/Apple/.test(navigator.vendor) || !window.Hls?.isSupported());
+}
+
+// Codec probes must ask the engine that will decode: MediaSource for hls.js,
+// canPlayType for native HLS. Chrome's canPlayType accepts codecs MSE refuses
+// on the first segment.
+export function supportsMime(video) {
+  return nativeHls(video)
+    ? mime => video.canPlayType(mime) !== ''
+    : mime => Boolean(window.MediaSource?.isTypeSupported(mime));
+}
+
 export function createBackend(video, url, options, handlers) {
-  // Prefer native HLS on Safari; its media policies and audio track API differ from MSE.
-  if (video.canPlayType('application/vnd.apple.mpegurl') &&
-    (/Apple/.test(navigator.vendor) || !window.Hls?.isSupported())) {
-    return new NativeHlsBackend(video, url, handlers);
-  }
+  if (nativeHls(video)) return new NativeHlsBackend(video, url, handlers);
   if (window.Hls?.isSupported()) return new HlsJsBackend(video, url, options, handlers);
   return null;
 }
@@ -57,7 +68,10 @@ export class HlsJsBackend {
     this.mediaRecoveries = 0; this.networkRecoveries = 0;
     this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
       maxBufferSize: bufferBytes(bufferSeconds, bitrate), backBufferLength: 60,
-      startFragPrefetch: true, enableWorker: true, progressive: true,
+      startFragPrefetch: true, enableWorker: true,
+      // progressive fetch splits each 10 s fMP4 into chunks and aborts them on
+      // refill; the server logs those as HTTP/2 stream resets. Plain XHR fetches.
+      progressive: false,
       fragLoadingTimeOut: 30_000, fragLoadingMaxRetry: 4, fragLoadingRetryDelay: 1000,
       fragLoadingMaxRetryDelay: 8000, manifestLoadingTimeOut: 15_000, levelLoadingTimeOut: 15_000 });
 

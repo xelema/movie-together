@@ -161,6 +161,47 @@ export function transportMetadata(video) {
   return { args, videoRange: { smpte2084: 'PQ', 'arib-std-b67': 'HLG' }[color.transfer] ?? 'SDR', color };
 }
 
+// ffmpeg leaves CODECS off EXT-X-STREAM-INF for streams it copied without
+// parsing, but the muxer still writes a codec configuration record into the
+// init segment: recover the RFC 6381 string from it so clients can probe the
+// real codec before MSE touches the data.
+export function codecString(bytes) {
+  const hex = (at, n) => bytes.subarray(at, at + n).toString('hex');
+  try {
+    // Only the movie box can hold a configuration record; scanning it avoids
+    // matching the four letters inside unrelated payloads.
+    let start = 0, end = bytes.length;
+    for (let at = 0; at + 8 <= end;) {
+      let size = bytes.readUInt32BE(at), head = 8;
+      if (size === 1) { size = Number(bytes.readBigUInt64BE(at + 8)); head = 16; }
+      if (!size) size = end - at;
+      if (bytes.toString('latin1', at + 4, at + 8) === 'moov') { start = at + head; end = at + size; break; }
+      at += size;
+    }
+    const found = tag => { const at = bytes.indexOf(tag, start); return at >= start && at + 4 < end ? at + 4 : -1; };
+    const hvcC = found('hvcC');
+    if (hvcC > 0 && bytes[hvcC] === 1) {
+      const ptl = bytes[hvcC + 1];
+      // RFC 6381 prints the compatibility flags bit-reversed, and the
+      // constraint bytes as hex with trailing zero bytes dropped.
+      let flags = bytes.readUInt32BE(hvcC + 2), compat = 0;
+      for (let i = 0; i < 32; i++) { compat = compat * 2 + (flags & 1); flags >>>= 1; }
+      const constraint = hex(hvcC + 6, 6).replace(/(00)+$/, '');
+      return `hvc1.${['', 'A', 'B', 'C'][ptl >> 6]}${ptl & 31}.${compat.toString(16)}.${ptl & 32 ? 'H' : 'L'}${bytes[hvcC + 12]}${constraint ? '.' + constraint : ''}`;
+    }
+    const avcC = found('avcC');
+    if (avcC > 0 && bytes[avcC] === 1) return `avc1.${hex(avcC + 1, 3).toUpperCase()}`;
+    const vpcC = found('vpcC');
+    if (vpcC > 0) return `vp09.${String(bytes[vpcC]).padStart(2, '0')}.${String(bytes[vpcC + 1]).padStart(2, '0')}.${String(bytes[vpcC + 2] >> 4).padStart(2, '0')}`;
+    const av1C = found('av1C');
+    if (av1C > 0 && bytes[av1C] & 0x80) {
+      const depth = bytes[av1C + 2] & 0x40 ? (bytes[av1C + 2] & 0x20 ? 12 : 10) : 8;
+      return `av01.${bytes[av1C + 1] >> 5}.${String(bytes[av1C + 1] & 31).padStart(2, '0')}${bytes[av1C + 2] & 0x80 ? 'H' : 'M'}.${String(depth).padStart(2, '0')}`;
+    }
+  } catch { }
+  return '';
+}
+
 export async function writeMaster(directory, audio, subtitles, renditions) {
   const base = await readFile(path.join(directory, 'base.m3u8'), 'utf8');
   let audioIndex = 0;
@@ -187,6 +228,13 @@ export async function writeMaster(directory, audio, subtitles, renditions) {
       info = info.replace(/,VIDEO-RANGE=[^,]+/, '');
       if (rendition.videoRange) info += `,VIDEO-RANGE=${rendition.videoRange}`;
       rendition.codecs = info.match(/CODECS="([^"]+)"/)?.[1] ?? '';
+      if (!rendition.codecs) {
+        const video = codecString(await readFile(path.join(directory, `init_${rendition.streamIndex}.mp4`)));
+        if (video) {
+          rendition.codecs = audio.length ? `${video},mp4a.40.2` : video;
+          info += `,CODECS="${rendition.codecs}"`;
+        }
+      }
       const subs = [];
       for (const track of subtitles) {
         const name = `sub_${track.id}_${rendition.id}`;
