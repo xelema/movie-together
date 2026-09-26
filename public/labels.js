@@ -80,6 +80,16 @@ const korean = {
   'Service de traduction indisponible.': '번역 서비스를 사용할 수 없습니다.',
   'Réponse de traduction invalide.': '번역 응답이 올바르지 않습니다.',
   'La traduction a expiré.': '번역 시간이 초과되었습니다.',
+  'Caméra': '카메라',
+  'Activer la caméra': '카메라 켜기',
+  'Couper la caméra': '카메라 끄기',
+  'Activation de la caméra…': '카메라 켜는 중…',
+  'Caméra indisponible sur cet appareil.': '이 기기에서는 카메라를 사용할 수 없습니다.',
+  'En attente de la caméra…': '카메라 연결 대기 중…',
+  'Caméra (face-à-face à 2)': '웹캠 (2인용)',
+  'Réduire': '축소',
+  'Agrandir': '확대',
+  'Fermer': '닫기',
 };
 
 // Without a saved choice, the first French or Korean browser language wins, then a Seoul clock means Korean.

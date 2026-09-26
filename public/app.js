@@ -4,12 +4,13 @@ import { label, language } from './labels.js';
 import { trackName, defaultTrackNames, sourceTitle, trackLayout } from './track-names.js';
 import { SUBTITLE_EXT, SUBTITLE_ACCEPT, IMAGE_SUBTITLE_CODECS } from './subtitle-formats.js';
 import { attachVoice } from './voice.js';
+import { attachWebcam } from './webcam.js';
 
 const $ = id => document.getElementById(id);
 const t = (fr, ko) => language() === 'ko' ? ko : fr;
 const adminPage = location.pathname === '/admin';
-let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null, diskInfo = null, telemetry = null, voice = null;
-function disposePlayer() { telemetry?.dispose(); telemetry = null; voice?.dispose(); voice = null; player?.dispose(); player = null; window.player = null; refreshBandwidth(); }
+let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null, diskInfo = null, telemetry = null, voice = null, webcam = null;
+function disposePlayer() { telemetry?.dispose(); telemetry = null; voice?.dispose(); voice = null; webcam?.dispose(); webcam = null; player?.dispose(); player = null; window.player = null; refreshBandwidth(); }
 const movieCards = new Map(), openPanels = new Set(), closedPanels = new Set();
 const playbackUI = new window.Plyr($('video'), {
   controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'fullscreen'],
@@ -112,22 +113,24 @@ const micHold = held => event => {
   // first tap can reach the mic before Plyr's touch flag is even set.
   // Firefox still matches :hover while it dispatches pointerleave, so a leave
   // trusts the event itself and only a blur asks whether the pointer stayed.
+  const target = event.currentTarget;
   if (controls) controls.hover = event.pointerType !== 'touch' && !playbackUI.touch &&
-    (held || (event.type !== 'pointerleave' && $('voice-mic').matches(':hover')) || $('voice-mic').matches(':focus-visible'));
+    (held || (event.type !== 'pointerleave' && target.matches(':hover')) || target.matches(':focus-visible'));
   const container = playbackUI.elements.container, inside = event.relatedTarget && container.contains(event.relatedTarget);
   container.dispatchEvent(new Event(held || inside ? 'mousemove' : 'mouseleave'));
 };
-for (const [type, held] of [['pointerenter', true], ['focusin', true], ['pointerleave', false], ['focusout', false]])
-  $('voice-mic').addEventListener(type, micHold(held));
+for (const toggle of [$('voice-mic'), $('webcam-toggle')])
+  for (const [type, held] of [['pointerenter', true], ['focusin', true], ['pointerleave', false], ['focusout', false]])
+    toggle.addEventListener(type, micHold(held));
 // A straight jump from the bar onto the mic is a single hit-test step: the
 // mic's enter runs before the bar's own leave, and that leave clears the
 // latch it just set. Bound after Plyr's listener, this hands the hold back
 // whenever the mic still owns it: the pointer landing on it (relatedTarget
 // covers leave-before-enter engines) or keyboard focus holding it.
 playbackUI.elements.controls.addEventListener('mouseleave', event => {
-  const mic = $('voice-mic');
-  if (!playbackUI.touch && (mic.contains(event.relatedTarget) || mic.matches(':hover') || mic.matches(':focus-visible')))
-    playbackUI.elements.controls.hover = true;
+  const held = [$('voice-mic'), $('webcam-toggle')].some(mic =>
+    mic.contains(event.relatedTarget) || mic.matches(':hover') || mic.matches(':focus-visible'));
+  if (!playbackUI.touch && held) playbackUI.elements.controls.hover = true;
 });
 // Route transport shortcuts through the shared clock, not Plyr's local playback.
 $('screen').addEventListener('keydown', event => {
@@ -188,6 +191,7 @@ function translate() {
   $('room-name').setAttribute('aria-label', t('Votre pseudo', '닉네임'));
   $('screen').setAttribute('aria-label', t('Lecteur vidéo', '동영상 플레이어'));
   if (voice) voice.rename(); else $('voice-mic').setAttribute('aria-label', t('Parler', '말하기'));
+  if (webcam) webcam.rename(); else $('webcam-toggle').setAttribute('aria-label', t('Activer la caméra', '카메라 켜기'));
   if (player) player.tracks();
   updatePlayback(player); updateFilmMeta();
 }
@@ -404,9 +408,9 @@ function movieCard(movie) {
       .filter(Boolean).join(' · ');
     if (meta) card.append(el('p', meta, 'hint'));
     const create = async () => {
-      randomCode(); $('create-voice').checked = false;
+      randomCode(); $('create-voice').checked = $('create-webcam').checked = false;
       const code = await askDialog('create-dialog', 'create-code'); if (!code) return;
-      const room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code, voice: $('create-voice').checked } });
+      const room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code, voice: $('create-voice').checked, webcam: $('create-webcam').checked } });
       await enterRoom(room.id, undefined, { code: room.code, title: movie.title });
     };
     card.append(button(t('Créer une séance', '시청방 만들기'), create));
@@ -530,11 +534,13 @@ async function enterRoom(id, name, context = {}) {
   await api(`/api/rooms/${id}`); session = await api('/api/session');
   disposePlayer(); activeRoom = id; roomMessage = null;
   $('voice-mic').hidden = $('voice-local').hidden = $('voice-result').hidden = true;
+  $('webcam-toggle').hidden = $('webcam-overlay').hidden = true;
   $('entry').hidden = true; $('library').hidden = true; $('watch').hidden = false; $('choose-film').hidden = !session.admin;
   history.replaceState(null, '', `${adminPage ? '/admin' : '/'}#room=${id}`);
   player = window.player = new SyncPlayer({ video: $('video'), roomId: id, name,
     forceShader: sessionStorage.getItem('hdr') === 'shader',
     onVoice: message => voice?.message(message),
+    onWebcam: message => webcam?.message(message),
     onStatus: message => { telemetry?.event('status', { msg: message }); $('playback-status').textContent = label(message); updatePlayback(player); },
     onActivation: () => updatePlayback(player),
     onTracks: (audio, subtitles) => {
@@ -552,6 +558,8 @@ async function enterRoom(id, name, context = {}) {
         $('voice-mic').disabled = !voice.available;
         $('voice-mic').title = voice.available ? '' : t('Traduction vocale indisponible', '음성 번역을 사용할 수 없습니다');
       }
+      $('webcam-toggle').hidden = !message.webcam?.enabled;
+      webcam?.announce();
       const key = JSON.stringify([message.movie?.id, message.movie?.title, message.code, controller.memberId,
         t('fr', 'ko'), message.members.map(({ id, name, waiting, reason, blockers, failure, buffered }) => [id, name, waiting, reason, blockers, failure, Math.round(buffered ?? 0)])]);
       if (controller.roomUIKey === key) return;
@@ -572,6 +580,7 @@ async function enterRoom(id, name, context = {}) {
     },
   });
   voice = attachVoice({ mic: $('voice-mic'), local: $('voice-local'), supertitle: $('voice-result'), player, t, label });
+  webcam = attachWebcam({ toggle: $('webcam-toggle'), overlay: $('webcam-overlay'), player, t, label });
   refreshBandwidth();
   if (session.admin) { movies = await api('/api/movies'); selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title])); }
 }
