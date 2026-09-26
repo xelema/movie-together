@@ -13,8 +13,7 @@ Movie Night propose une fonctionnalité optionnelle de caméra en face-à-face, 
    - Les flux vidéo circulent directement entre les navigateurs des participants via WebRTC, sans consommer de bande passante vidéo sur le serveur.
 
 3. **Orientation et géométrie vidéo** :
-   - **Flux distant (vu par l'autre)** : affiché en vue naturelle directe (`transform: none`, sans aucune symétrie ni effet miroir). L'autre participant vous voit tel que dans la réalité (un t-shirt avec du texte ou un livre se lit normalement de gauche à droite).
-   - **Retour caméra local (Picture-in-Picture)** : affiché en miroir (`transform: scaleX(-1)`) dans le coin inférieur droit de l'overlay, pour reproduire le réflexe naturel d'un miroir (standard ergonomique de Zoom, FaceTime, Google Meet).
+   - **Flux distant et retour local (effet miroir unifié)** : le flux distant (`#webcam-remote-video`) et le retour caméra local (`#webcam-self-preview`) partagent tous deux la même transformation en miroir (`transform: scaleX(-1)`). Les mouvements et l'orientation sont ainsi parfaitement symétriques et cohérents entre ce que l'on voit de soi-même et ce que l'autre voit.
    - **Overlay flottant** :
      - Déplaçable librement par glisser-déposer sur toute la surface de la scène vidéo (`cursor: grab`), borné aux dimensions de l'écran.
      - Redimensionnable via l'encoche discrète en bas à droite, avec verrouillage automatique du ratio 4:3 (de 140×105 px à 480×360 px) pour éviter toute déformation.

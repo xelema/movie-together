@@ -344,6 +344,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
         const u = new URL(headerOrigin);
         if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return true;
         if (request?.headers?.host && u.host === request.headers.host) return true;
+        if (u.hostname.endsWith('.loca.lt') || u.hostname.endsWith('.trycloudflare.com') || u.hostname.endsWith('.ngrok-free.app')) return true;
       } catch {}
     }
     return false;
