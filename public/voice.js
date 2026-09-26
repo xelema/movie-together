@@ -2,15 +2,17 @@
 // Le micro et l'AudioContext s'arment dans le geste même : iOS suspend tout
 // contexte audio né hors appui. La permission n'est jamais demandée à
 // l'entrée de la séance. États intermédiaires et erreurs restent locaux.
+import { language } from './labels.js';
+
 const LISTEN_MS = 20_000, PROCESS_GRACE_MS = 15_000, RESULT_MS = 8_000;
 // Chaque état porte un nom annoncé : le bouton reste le seul contrôle et les
 // lecteurs d'écran entendent la transition comme les voyants voient la couleur.
 const STATE_NAMES = {
-  idle: ['Parler', '말하기'],
-  starting: ['Activation du micro…', '마이크 켜는 중…'],
-  listening: ['Écoute en cours, appuyer pour terminer', '듣는 중입니다. 눌러서 마치기'],
-  processing: ['Traduction en cours…', '번역 중…'],
-  error: ['Réessayer de parler', '다시 말하기'],
+  idle: ['Parler', '말하기', 'Nói'],
+  starting: ['Activation du micro…', '마이크 켜는 중…', 'Đang bật micro…'],
+  listening: ['Écoute en cours, appuyer pour terminer', '듣는 중입니다. 눌러서 마치기', 'Đang nghe, nhấn để kết thúc'],
+  processing: ['Traduction en cours…', '번역 중…', 'Đang dịch…'],
+  error: ['Réessayer de parler', '다시 말하기', 'Thử nói lại'],
 };
 
 export function attachVoice({ mic, local, supertitle, player, t, label }) {
@@ -29,8 +31,8 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     state = next;
     mic.dataset.state = next;
     mic.setAttribute('aria-pressed', String(next === 'listening'));
-    const [fr, ko] = STATE_NAMES[next] ?? STATE_NAMES.idle;
-    mic.setAttribute('aria-label', t(fr, ko));
+    const [fr, ko, vi] = STATE_NAMES[next] ?? STATE_NAMES.idle;
+    mic.setAttribute('aria-label', t(fr, ko, vi));
   };
   // Pendant l'écoute le bouton devient un rond rouge : quatre barres blanches
   // animées par le niveau réel du micro prouvent que la capture fonctionne.
@@ -137,7 +139,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
         // Le seuil de bufferedAmount décidé dans #39 arrête la prise proprement :
         // aucune trame n'est perdue silencieusement et la page ne se bloque pas.
         worklet.port.onmessage = event => {
-          if (!player.sendFrame(event.data)) abort(t('Connexion lente, prise interrompue.', '연결이 느려 발화를 중단했습니다.'));
+          if (!player.sendFrame(event.data)) abort(t('Connexion lente, prise interrompue.', '연결이 느려 발화를 중단했습니다.', 'Kết nối chậm, đã ngắt lượt nói.'));
         };
       }
       return true;
@@ -148,8 +150,8 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       // Un refus déjà affiché (occupé, quota…) prime une panne matérielle tardive.
       if (state !== 'error') {
         show(local, error.name === 'NotAllowedError'
-          ? t('Micro refusé.', '마이크 사용이 거부되었습니다.')
-          : t('Micro indisponible.', '마이크를 사용할 수 없습니다.'), RESULT_MS);
+          ? t('Micro refusé.', '마이크 사용이 거부되었습니다.', 'Quyền micro bị từ chối.')
+          : t('Micro indisponible.', '마이크를 사용할 수 없습니다.', 'Micro không khả dụng.'), RESULT_MS);
         setState('error');
       }
       return false;
@@ -161,7 +163,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     player.send({ type: 'voice', action: 'stop' });
     setState('processing');
     clearTimeout(watchdog);
-    watchdog = setTimeout(() => abort(t('La traduction a expiré.', '번역 시간이 초과되었습니다.')), PROCESS_GRACE_MS);
+    watchdog = setTimeout(() => abort(t('La traduction a expiré.', '번역 시간이 초과되었습니다.', 'Bản dịch đã hết thời gian.')), PROCESS_GRACE_MS);
   };
   const tap = () => {
     if (state === 'listening') return stopSpeaking();
@@ -170,7 +172,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     // La langue d'interface au moment de l'appui fixe le sens de la prise :
     // le serveur la fige, un changement de langue en cours d'écoute n'y
     // touche pas.
-    player.send({ type: 'voice', action: 'start', lang: t('fr', 'ko') });
+    player.send({ type: 'voice', action: 'start', lang: language() });
     setState('starting');
   };
   const message = async event => {
@@ -202,7 +204,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       // Un échec identifié ne vaut que pour la prise courante. Un refus sans
       // identifiant ne s'applique qu'à une demande en attente d'accord.
       if (event.utterance ? event.utterance !== utterance : state !== 'starting') return;
-      const suffix = event.retryAfter ? t(` · ${Math.ceil(event.retryAfter)} s`, ` · ${Math.ceil(event.retryAfter)}초`) : '';
+      const suffix = event.retryAfter ? t(` · ${Math.ceil(event.retryAfter)} s`, ` · ${Math.ceil(event.retryAfter)}초`, ` · ${Math.ceil(event.retryAfter)} giây`) : '';
       fail(event.message ? label(event.message) + suffix : undefined);
       return;
     }

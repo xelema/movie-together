@@ -49,16 +49,27 @@ const publicMovie = movie => ({ id: movie.id, title: movie.title, status: movie.
   duration: movie.duration, audio: movie.audio, subtitles: movie.subtitles,
   maxSegmentSeconds: movie.maxSegmentSeconds, bitrate: movie.probe?.bitrate, renditions: movie.renditions, generation: movie.generation });
 
-export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
+// Deux comptes admin dédiés : chaque rôle fige la paire de langues des
+// séances qu'il ouvre et des listes qu'il voit. `password` seul reste
+// l'unique compte fr-ko historique.
+const ACCOUNT_LANGUAGES = { 'fr-ko': ['fr', 'ko'], 'fr-vi': ['fr', 'vi'] };
+export function createApplication({ dataDir = path.join(ROOT, 'data'), password, passwords,
   origin = 'http://localhost:3000', secure = false, trustProxy = false, env = process.env,
   voiceService = null, voiceTiming } = {}) {
-  if (!password || password.length < 16) throw new Error('ADMIN_PASSWORD doit contenir au moins 16 caractères.');
+  const accounts = passwords ?? { 'fr-ko': password };
+  const salt = randomBytes(32), hashes = {};
+  for (const role of Object.keys(ACCOUNT_LANGUAGES)) {
+    const secret = accounts[role];
+    if (secret === undefined) continue;
+    if (typeof secret !== 'string' || secret.length < 16) throw new Error('ADMIN_PASSWORD doit contenir au moins 16 caractères.');
+    hashes[role] = scryptSync(secret, salt, 64);
+  }
+  if (!Object.keys(hashes).length) throw new Error('ADMIN_PASSWORD doit contenir au moins 16 caractères.');
   if (secure && !origin.startsWith('https://')) throw new Error('APP_ORIGIN doit utiliser HTTPS en production.');
   const app = express();
   const server = createServer(app);
   const store = createStore(dataDir);
   const sessions = new Map();
-  const salt = randomBytes(32), hash = scryptSync(password, salt, 64);
   app.disable('x-powered-by');
   if (trustProxy) app.set('trust proxy', 1);
   app.use(helmet({ contentSecurityPolicy: { directives: {
@@ -121,7 +132,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   // recreated as long as their film is still playable.
   const persistRoom = room => {
     store.saveRooms([...store.rooms().filter(saved => saved.code !== room.code),
-      { code: room.code, movieId: room.movieId, probe: true, ...(room.voice ? { voice: true } : {}), ...(room.webcam ? { webcam: true } : {}) }]);
+      { code: room.code, movieId: room.movieId, probe: true, languages: [...room.languages], ...(room.voice ? { voice: true } : {}), ...(room.webcam ? { webcam: true } : {}) }]);
   };
   const forgetRoom = room => {
     if (room?.probe) store.saveRooms(store.rooms().filter(saved => saved.code !== room.code));
@@ -129,7 +140,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   for (const saved of store.rooms()) {
     const movie = store.movies.get(saved?.movieId);
     try {
-      if (saved?.probe && movie && jobs.playable(movie)) hub.create({ movieId: movie.id, duration: movie.duration, code: saved.code, probe: true, voice: saved.voice === true, webcam: saved.webcam === true });
+      if (saved?.probe && movie && jobs.playable(movie)) hub.create({ movieId: movie.id, duration: movie.duration, code: saved.code, probe: true, voice: saved.voice === true, webcam: saved.webcam === true, languages: saved.languages });
     } catch { }
   }
   const cookie = (res, session) => {
@@ -140,11 +151,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   const loginLimiter = rateLimit({ windowMs: 15 * 60_000, limit: () => settings.get('loginLimit'), standardHeaders: 'draft-8', legacyHeaders: false });
   const inviteLimiter = rateLimit({ windowMs: 60_000, limit: () => settings.get('inviteLimit'), standardHeaders: 'draft-8', legacyHeaders: false });
   app.get('/healthz', (req, res) => res.json({ ok: true }));
-  app.get('/api/session', (req, res) => res.json({ authenticated: !!req.session, admin: !!req.session?.admin }));
+  app.get('/api/session', (req, res) => res.json({ authenticated: !!req.session, admin: !!req.session?.admin, adminRole: req.session?.adminRole ?? null, adminLanguages: req.session?.adminLanguages ?? null }));
   app.post('/api/login', loginLimiter, (req, res) => {
-    if (typeof req.body.password !== 'string' || req.body.password.length > 512 ||
-      !timingSafeEqual(hash, scryptSync(req.body.password, salt, 64))) throw fail(401, 'Mot de passe incorrect.');
-    cookie(res, { admin: true, rooms: new Set(), expires: Date.now() + ttlMs() });
+    const attempt = typeof req.body.password === 'string' && req.body.password.length <= 512 ? req.body.password : null;
+    const role = attempt && Object.keys(hashes).find(role => timingSafeEqual(hashes[role], scryptSync(attempt, salt, 64)));
+    if (!role) throw fail(401, 'Mot de passe incorrect.');
+    cookie(res, { admin: true, adminRole: role, adminLanguages: ACCOUNT_LANGUAGES[role], rooms: new Set(), expires: Date.now() + ttlMs() });
     res.json({ ok: true });
   });
   app.post('/api/logout', (req, res) => {
@@ -160,11 +172,14 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.post('/api/rooms', admin, (req, res) => {
     const movie = getMovie(req.body.movieId);
     if (!jobs.playable(movie)) throw fail(409, 'Film non préparé.');
-    const room = hub.create({ movieId: movie.id, duration: movie.duration, code: req.body.code, probe: req.body.probe === true, voice: req.body.voice === true, webcam: req.body.webcam === true });
+    const room = hub.create({ movieId: movie.id, duration: movie.duration, code: req.body.code, probe: req.body.probe === true, voice: req.body.voice === true, webcam: req.body.webcam === true, languages: req.session?.adminLanguages ?? ['fr', 'ko'] });
     if (room.probe) persistRoom(room);
     res.status(201).json({ id: room.id, code: room.code, link: `${origin}/#invite=${room.code}` });
   });
-  app.get('/api/rooms', admin, (req, res) => res.json(hub.list()));
+  app.get('/api/rooms', admin, (req, res) => {
+    const scope = req.session.adminLanguages ?? ['fr', 'ko'];
+    res.json(hub.list().filter(room => (room.languages ?? ['fr', 'ko']).every(code => scope.includes(code))));
+  });
   app.get('/api/settings', admin, (req, res) => res.json({ fields: settings.describe() }));
   app.patch('/api/settings', admin, (req, res) => {
     settings.update(req.body);
