@@ -1,13 +1,20 @@
 import { SyncPlayer } from './sync-player.js';
 import { attachTelemetry } from './telemetry.js';
-import { label, language } from './labels.js';
-import { trackName, defaultTrackNames, sourceTitle, trackLayout } from './track-names.js';
+import { label, language, setScopeLanguages, scopeLanguages, vietnamese } from './labels.js';
+import { trackName, defaultTrackNames, sourceTitle, trackLayout, languageName } from './track-names.js';
 import { SUBTITLE_EXT, SUBTITLE_ACCEPT, IMAGE_SUBTITLE_CODECS } from './subtitle-formats.js';
 import { attachVoice } from './voice.js';
 import { attachWebcam } from './webcam.js';
 
 const $ = id => document.getElementById(id);
-const t = (fr, ko) => language() === 'ko' ? ko : fr;
+const LANGUAGE_OPTIONS = { fr: 'Français', ko: '한국어', vi: 'Tiếng Việt' };
+// Le vietnamien passe par le troisième argument ou retombe sur le
+// dictionnaire des libellés ; jamais sur le coréen.
+const t = (fr, ko, vi) => language() === 'vi' ? vi ?? vietnamese[fr] ?? fr : language() === 'ko' ? ko : fr;
+let roomLanguages = null;
+function updateLanguagePicker() {
+  selectOptions($('language'), scopeLanguages().map(code => [code, LANGUAGE_OPTIONS[code] ?? code]));
+}
 const adminPage = location.pathname === '/admin';
 let session = {}, movies = [], player = null, activeRoom = null, uploadBusy = false, roomMessage = null, diskInfo = null, telemetry = null, voice = null, webcam = null;
 function disposePlayer() { telemetry?.dispose(); telemetry = null; voice?.dispose(); voice = null; webcam?.dispose(); webcam = null; player?.dispose(); player = null; window.player = null; refreshBandwidth(); }
@@ -160,16 +167,17 @@ $('screen').addEventListener('keydown', event => {
   playbackUI.toggleControls(true);
 });
 function translate() {
+  updateLanguagePicker();
   const lang = language();
   document.documentElement.lang = lang; $('language').value = lang;
   $('language-flag').src = `/flags/${lang}.svg`;
-  for (const node of document.querySelectorAll('[data-fr]')) node.textContent = node.dataset[lang];
+  for (const node of document.querySelectorAll('[data-fr]')) node.textContent = node.dataset[lang] ?? node.dataset.fr;
   bandwidthBadge.title = bandwidthBadge.ariaLabel = t('Débit en direct', '실시간 속도');
   const words = { play: t('Lecture', '재생'), pause: t('Pause', '일시정지'), seek: t('Avancer ou reculer', '재생 위치'),
     currentTime: t('Position', '재생 위치'), duration: t('Durée', '길이'), volume: t('Volume', '음량'),
     mute: t('Couper le son', '음소거'), unmute: t('Activer le son', '소리 켜기'),
     enterFullscreen: t('Plein écran', '전체 화면'), exitFullscreen: t('Quitter le plein écran', '전체 화면 종료'),
-    seekLabel: t('{currentTime} sur {duration}', '{duration} 중 {currentTime}'),
+    seekLabel: t('{currentTime} sur {duration}', '{duration} 중 {currentTime}', '{currentTime} trên {duration}'),
     played: t('Lu', '재생됨'), buffered: t('Chargé', '버퍼링됨') };
   Object.assign(playbackUI.config.i18n, words);
   for (const [key, text] of Object.entries(words)) {
@@ -208,10 +216,10 @@ function updatePlayback(controller) {
   const message = controller.failure ? label(controller.failure) : navigator.onLine === false ? t('Connexion perdue. Séance en pause.', '연결이 끊겨 일시정지되었습니다.') : !phase ? t('Reconnexion…', '다시 연결 중…') :
     needsSound ? t('Un clic pour activer le son', '클릭하여 소리를 켜세요') :
     loading ? t('Chargement du film…', '영화를 불러오는 중…') :
-    phase === 'buffering' ? waiting.length ? t(`En attente de ${waiting.join(', ')}…`, `${waiting.join(', ')} 님을 기다리는 중…`) : t('La séance va commencer…', '곧 재생됩니다…') : '';
+    phase === 'buffering' ? waiting.length ? t(`En attente de ${waiting.join(', ')}…`, `${waiting.join(', ')} 님을 기다리는 중…`, `Đang chờ ${waiting.join(', ')}…`) : t('La séance va commencer…', '곧 재생됩니다…', 'Buổi xem sắp bắt đầu…') : '';
   const overlay = !!message;
   const playing = controller.activated && ['playing', 'buffering'].includes(phase);
-  const key = JSON.stringify([message, controller.failure, needsSound, phase, playing, t('fr', 'ko')]);
+  const key = JSON.stringify([message, controller.failure, needsSound, phase, playing, language()]);
   if (controller.playbackUIKey === key) return;
   controller.playbackUIKey = key;
   $('buffering-overlay').hidden = !overlay;
@@ -292,23 +300,25 @@ function trackInfo(track, kind) {
 }
 function runtime(seconds) {
   const total = Math.round(seconds / 60), hours = Math.floor(total / 60), minutes = total % 60;
-  return hours ? t(`${hours} h ${String(minutes).padStart(2, '0')}`, `${hours}시간 ${minutes}분`) : t(`${minutes} min`, `${minutes}분`);
+  return hours ? t(`${hours} h ${String(minutes).padStart(2, '0')}`, `${hours}시간 ${minutes}분`, `${hours} giờ ${minutes} phút`) : t(`${minutes} min`, `${minutes}분`, `${minutes} phút`);
 }
 function formatSize(bytes) {
   const gb = bytes / 1024 ** 3;
   const text = gb >= 1 ? gb.toFixed(gb < 10 ? 1 : 0) : String(Math.max(1, Math.round(bytes / 1024 ** 2)));
-  return gb >= 1 ? t(`${text} Go`, `${text}GB`) : t(`${text} Mo`, `${text}MB`);
+  return gb >= 1 ? t(`${text} Go`, `${text}GB`, `${text}GB`) : t(`${text} Mo`, `${text}MB`, `${text}MB`);
 }
 function renderDisk() {
   if (!diskInfo) return;
   // Same margin as POST /api/uploads: the server needs room for the original plus its preparation.
   const needed = ($('upload-file').files[0]?.size ?? 0) * 2.2;
   const space = t(`${formatSize(diskInfo.free)} libres sur ${formatSize(diskInfo.total)}`,
-    `${formatSize(diskInfo.total)} 중 ${formatSize(diskInfo.free)} 사용 가능`);
+    `${formatSize(diskInfo.total)} 중 ${formatSize(diskInfo.free)} 사용 가능`,
+  `Còn ${formatSize(diskInfo.free)} trên ${formatSize(diskInfo.total)}`);
   const insufficient = needed > diskInfo.free;
   $('disk-space').textContent = insufficient
     ? t(`${space}. Espace insuffisant : il faut environ ${formatSize(needed)} pour ce film et sa préparation.`,
-        `${space}. 공간 부족: 이 영화와 준비에는 약 ${formatSize(needed)}가 필요합니다.`)
+        `${space}. 공간 부족: 이 영화와 준비에는 약 ${formatSize(needed)}가 필요합니다.`,
+        `${space}. Thiếu dung lượng: phim và việc chuẩn bị cần khoảng ${formatSize(needed)}.`)
     : space;
   $('disk-space').classList.toggle('insufficient', insufficient);
 }
@@ -320,6 +330,17 @@ function updateFilmMeta() {
 }
 async function refresh() {
   session = await api('/api/session');
+  setScopeLanguages(player ? roomLanguages ?? ['fr', 'ko', 'vi']
+    : adminPage && session.admin ? session.adminLanguages ?? ['fr', 'ko']
+    : ['fr', 'ko', 'vi']);
+  if (session.admin) {
+    const voiceLabel = $('create-voice-label');
+    const viPair = session.adminLanguages?.includes('vi');
+    voiceLabel.dataset.fr = viPair ? 'Traduction vocale (français ↔ vietnamien)' : 'Traduction vocale (français ↔ coréen)';
+    voiceLabel.dataset.ko = '음성 번역 (프랑스어 ↔ 한국어)';
+    voiceLabel.dataset.vi = viPair ? 'Dịch giọng nói (tiếng Pháp ↔ tiếng Việt)' : 'Dịch giọng nói (tiếng Pháp ↔ tiếng Hàn)';
+  }
+  translate();
   $('logout').hidden = !session.authenticated; $('entry').hidden = !!player || (adminPage && session.admin);
   $('join-form').hidden = adminPage; $('login-form').hidden = !adminPage;
   $('library').hidden = !adminPage || !session.admin || !!player;
@@ -405,8 +426,8 @@ function movieCard(movie) {
   if (['processing', 'probing'].includes(movie.status)) return card;
   if (movie.status === 'ready') {
     const meta = [movie.duration ? runtime(movie.duration) : '',
-      movie.audio?.length ? t(`${movie.audio.length} audio`, `음성 ${movie.audio.length}개`) : '',
-      movie.subtitles?.length ? t(`${movie.subtitles.length} sous-titres`, `자막 ${movie.subtitles.length}개`) : '']
+      movie.audio?.length ? t(`${movie.audio.length} audio`, `음성 ${movie.audio.length}개`, `${movie.audio.length} âm thanh`) : '',
+      movie.subtitles?.length ? t(`${movie.subtitles.length} sous-titres`, `자막 ${movie.subtitles.length}개`, `${movie.subtitles.length} phụ đề`) : '']
       .filter(Boolean).join(' · ');
     if (meta) card.append(el('p', meta, 'hint'));
     const create = async () => {
@@ -489,13 +510,14 @@ function manageDetails(movie, selection) {
   }
   const subFile = el('input'); subFile.type = 'file'; subFile.accept = SUBTITLE_ACCEPT;
   const subLang = el('select'); subLang.setAttribute('aria-label', t('Langue', '언어'));
-  selectOptions(subLang, [['fr', 'French'], ['ko', 'Korean'], ['en', 'English'], ['und', 'Other']]);
+  const second = (session.adminLanguages ?? ['fr', 'ko']).find(code => code !== 'fr') ?? 'ko';
+  selectOptions(subLang, [['fr', 'French'], [second, languageName(second)], ['en', 'English'], ['und', 'Other']]);
   const subName = el('input'); subName.maxLength = 100; subName.placeholder = 'Ex. Korean'; subName.setAttribute('aria-label', t('Nom affiché', '표시 이름'));
   const addRow = el('div', undefined, 'add-row'); addRow.append(subLang, subName,
     button(t('Ajouter', '추가'), async () => {
       const file = subFile.files[0];
       const maxSubMb = settingsValues.maxSubtitleMb ?? 2;
-      if (!file || !SUBTITLE_EXT.test(file.name) || file.size > maxSubMb * 1024 ** 2) throw new Error(t(`Choisir un fichier de sous-titres de moins de ${maxSubMb} Mo (SRT, VTT, SMI, ASS, SUB…).`, `자막 파일을 선택하세요 (SRT, VTT, SMI, ASS, SUB 등, 최대 ${maxSubMb}MB).`));
+      if (!file || !SUBTITLE_EXT.test(file.name) || file.size > maxSubMb * 1024 ** 2) throw new Error(t(`Choisir un fichier de sous-titres de moins de ${maxSubMb} Mo (SRT, VTT, SMI, ASS, SUB…).`, `자막 파일을 선택하세요 (SRT, VTT, SMI, ASS, SUB 등, 최대 ${maxSubMb}MB).`, `Chọn tệp phụ đề nhỏ hơn ${maxSubMb}MB (SRT, VTT, SMI, ASS, SUB…).`));
       const trackLabel = subName.value.trim() || subLang.selectedOptions[0].textContent;
       if (movie.status === 'ready') {
         const response = await fetch(`/api/movies/${movie.id}/subtitles?label=${encodeURIComponent(trackLabel)}&language=${subLang.value}&name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: file });
@@ -505,7 +527,7 @@ function manageDetails(movie, selection) {
       } else await upload(file, { kind: 'subtitle', movieId: movie.id, label: trackLabel, language: subLang.value });
       await refresh();
     }));
-  details.append(field(t(`Fichier de sous-titres (${settingsValues.maxSubtitleMb ?? 2} Mo maximum)`, `자막 파일 (최대 ${settingsValues.maxSubtitleMb ?? 2}MB)`), subFile), addRow);
+  details.append(field(t(`Fichier de sous-titres (${settingsValues.maxSubtitleMb ?? 2} Mo maximum)`, `자막 파일 (최대 ${settingsValues.maxSubtitleMb ?? 2}MB)`, `Tệp phụ đề (tối đa ${settingsValues.maxSubtitleMb ?? 2}MB)`), subFile), addRow);
   details.append(el('p', selection
     ? t('La préparation applique la sélection ci-dessus.', '준비하면 위에서 선택한 트랙이 적용됩니다.')
     : t('Préparer à nouveau reconduit les pistes déjà choisies.', '다시 준비하면 선택한 트랙이 그대로 적용됩니다.'), 'hint'));
@@ -517,7 +539,7 @@ function manageDetails(movie, selection) {
     await api(`/api/movies/${movie.id}/prepare`, { method: 'POST', body: {} }); await refresh();
   }));
   actions.append(button(t('Supprimer le film', '영화 삭제'), async () => {
-    if (confirm(t(`Supprimer définitivement « ${movie.title} » ?`, `« ${movie.title} » 영화를 영구 삭제할까요?`))) { await api(`/api/movies/${movie.id}`, { method: 'DELETE' }); await refresh(); }
+    if (confirm(t(`Supprimer définitivement « ${movie.title} » ?`, `« ${movie.title} » 영화를 영구 삭제할까요?`, `Xóa vĩnh viễn « ${movie.title} » ?`))) { await api(`/api/movies/${movie.id}`, { method: 'DELETE' }); await refresh(); }
   }, 'danger'));
   details.append(actions);
   return details;
@@ -533,7 +555,9 @@ async function enterRoom(id, name, context = {}) {
   }
   $('room-code').textContent = context.code ?? '';
   localStorage.setItem('nickname', name); showSettings(false);
-  await api(`/api/rooms/${id}`); session = await api('/api/session');
+  const roomState = await api(`/api/rooms/${id}`); session = await api('/api/session');
+  roomLanguages = roomState.languages ?? null;
+  setScopeLanguages(roomLanguages ?? ['fr', 'ko', 'vi']); translate();
   disposePlayer(); activeRoom = id; roomMessage = null;
   $('voice-mic').hidden = $('voice-local').hidden = $('voice-result').hidden = true;
   $('webcam-toggle').hidden = $('webcam-overlay').hidden = true;
@@ -563,14 +587,14 @@ async function enterRoom(id, name, context = {}) {
       $('webcam-toggle').hidden = !message.webcam?.enabled;
       webcam?.announce();
       const key = JSON.stringify([message.movie?.id, message.movie?.title, message.code, controller.memberId,
-        t('fr', 'ko'), message.members.map(({ id, name, waiting, reason, blockers, failure, buffered }) => [id, name, waiting, reason, blockers, failure, Math.round(buffered ?? 0)])]);
+        language(), message.members.map(({ id, name, waiting, reason, blockers, failure, buffered }) => [id, name, waiting, reason, blockers, failure, Math.round(buffered ?? 0)])]);
       if (controller.roomUIKey === key) return;
       controller.roomUIKey = key;
       $('movie-title').textContent = message.movie?.title ?? ''; $('room-movie').value = message.movie?.id ?? '';
       if (message.code) $('room-code').textContent = message.code;
       updateFilmMeta();
       const ready = message.members.filter(member => !member.waiting).length, total = message.members.length;
-      $('member-count').textContent = total ? t(`${ready} personne${ready > 1 ? 's' : ''} prête${ready > 1 ? 's' : ''} sur ${total}`, `${total}명 중 ${ready}명 준비 완료`) : '';
+      $('member-count').textContent = total ? t(`${ready} personne${ready > 1 ? 's' : ''} prête${ready > 1 ? 's' : ''} sur ${total}`, `${total}명 중 ${ready}명 준비 완료`, `${ready}/${total} người sẵn sàng`) : '';
       $('participants').replaceChildren(...message.members.map(member => {
         const item = el('li'); item.dataset.ready = String(!member.waiting);
         item.append(el('span', ([...member.name.trim()][0] ?? '?').toUpperCase(), 'avatar'),
@@ -599,7 +623,7 @@ $('join-form').elements.code.addEventListener('paste', event => {
   if (!code) return;
   event.preventDefault(); event.target.value = code;
 });
-$('logout').addEventListener('click', handle(async () => { disposePlayer(); $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await api('/api/logout', { method: 'POST', body: {} }); await refresh(); }));
+$('logout').addEventListener('click', handle(async () => { disposePlayer(); activeRoom = null; roomLanguages = null; $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await api('/api/logout', { method: 'POST', body: {} }); await refresh(); }));
 $('refresh').addEventListener('click', handle(refresh));
 const tabs = [...document.querySelectorAll('#admin-tabs [role=tab]')];
 function showTab(name) {
@@ -649,7 +673,7 @@ const subtitleScale = () => { $('screen').style.setProperty('--subtitle-scale', 
 if ([...$('subtitle-size').options].some(option => option.value === localStorage.getItem('subtitle-scale'))) $('subtitle-size').value = localStorage.getItem('subtitle-scale');
 subtitleScale();
 $('subtitle-size').addEventListener('change', subtitleScale);
-$('leave').addEventListener('click', handle(async () => { disposePlayer(); activeRoom = null; $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await refresh(); }));
+$('leave').addEventListener('click', handle(async () => { disposePlayer(); activeRoom = null; roomLanguages = null; $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await refresh(); }));
 $('choose-film').addEventListener('submit', handle(() => api(`/api/rooms/${activeRoom}/movie`, { method: 'POST', body: { movieId: $('room-movie').value } })));
 const SETTING_LABELS = {
   minBuffer: ['Buffer de démarrage (s)', '시작 버퍼 (초)'],
@@ -743,12 +767,13 @@ function renderSettings(payload) {
   for (const field of payload.fields) {
     const { input, hint } = settingInputs.get(field.key);
     if (document.activeElement !== input) input.value = field.value;
-    hint.textContent = field.overridden ? t(`défaut : ${field.default}`, `기본값: ${field.default}`) : '';
+    hint.textContent = field.overridden ? t(`défaut : ${field.default}`, `기본값: ${field.default}`, `mặc định: ${field.default}`) : '';
   }
   const fileLabel = $('upload-file-label');
   fileLabel.dataset.fr = `Fichier du film (${settingsValues.maxMovieGb} Go maximum)`;
   fileLabel.dataset.ko = `영화 파일 (최대 ${settingsValues.maxMovieGb}GB)`;
-  fileLabel.textContent = t(fileLabel.dataset.fr, fileLabel.dataset.ko);
+  fileLabel.dataset.vi = `Tệp phim (tối đa ${settingsValues.maxMovieGb}GB)`;
+  fileLabel.textContent = fileLabel.dataset[language()] ?? fileLabel.dataset.fr;
 }
 $('settings-form').addEventListener('submit', handle(async () => {
   const body = Object.fromEntries([...settingInputs].map(([key, { input }]) => [key, Number(input.value)]));
@@ -760,7 +785,7 @@ setInterval(() => { if (!player && !uploadBusy && movies.some(movie => ['process
 translate();
 await handle(async () => {
   await refresh(); const params = new URLSearchParams(location.hash.slice(1));
-  if (['fr', 'ko'].includes(params.get('lang'))) { localStorage.setItem('language', params.get('lang')); translate(); }
+  if (['fr', 'ko', 'vi'].includes(params.get('lang'))) { localStorage.setItem('language', params.get('lang')); translate(); }
   if (params.has('hdr')) sessionStorage.setItem('hdr', params.get('hdr'));
   if (params.has('invite')) $('join-form').elements.code.value = params.get('invite');
   else if (params.has('room')) await enterRoom(params.get('room'));
@@ -805,11 +830,11 @@ async function upload(file, extra = {}) {
         const rate = (offset - startOffset) / ((performance.now() - started) / 1000);
         const left = rate > 0 ? Math.round((file.size - offset) / rate) : 0;
         $('upload-status').textContent = [`${formatSize(offset)} / ${formatSize(file.size)}`,
-          rate > 0 ? t(`${formatSize(rate)}/s`, `${formatSize(rate)}/초`) : '',
-          left ? t(`encore ${left < 60 ? `${left} s` : runtime(left)}`, `${left < 60 ? `${left}초` : runtime(left)} 남음`) : ''].filter(Boolean).join(' · ');
+          rate > 0 ? t(`${formatSize(rate)}/s`, `${formatSize(rate)}/초`, `${formatSize(rate)}/s`) : '',
+          left ? t(`encore ${left < 60 ? `${left} s` : runtime(left)}`, `${left < 60 ? `${left}초` : runtime(left)} 남음`, `còn ${left < 60 ? `${left} giây` : runtime(left)}`) : ''].filter(Boolean).join(' · ');
       } catch (error) {
         if (++retries > 5) throw error;
-        $('upload-status').textContent = t(`Nouvel essai ${retries}/5…`, `다시 시도 중 ${retries}/5…`);
+        $('upload-status').textContent = t(`Nouvel essai ${retries}/5…`, `다시 시도 중 ${retries}/5…`, `Thử lại lần ${retries}/5…`);
         await new Promise(resolve => setTimeout(resolve, retries * 1000));
         offset = (await api(`/api/uploads/${info.id}`)).offset;
       }
