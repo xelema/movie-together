@@ -45,6 +45,8 @@ const fakeHls = () => {
     loadSource() {}, attachMedia() {},
     on(name, fn) { (this.handlers[name] ??= []).push(fn); },
     emit(name, data) { for (const fn of this.handlers[name] ?? []) fn(name, data); },
+    triggers: [],
+    trigger(name, data) { this.triggers.push({ name, data }); },
   };
   controller.hls = hls;
   let selected = -1;
@@ -178,4 +180,70 @@ test('a saturated SourceBuffer purges the back buffer then restores the target',
   } finally {
     saved === undefined ? delete globalThis.window : globalThis.window = saved;
   }
+});
+
+// Deux TimeRanges factices : start() renvoie le début du premier range bufferisé.
+const fakeRanges = (start, end) => ({ length: 1, start: () => start, end: () => end });
+
+const withFakeHls = (fn) => {
+  const { hls } = fakeHls();
+  const saved = globalThis.window;
+  globalThis.window = { Hls: class { constructor() { return hls; } } };
+  window.Hls.Events = { FRAG_BUFFERED: 'fb', MANIFEST_PARSED: 'mp', AUDIO_TRACKS_UPDATED: 'au',
+    SUBTITLE_TRACKS_UPDATED: 'su', ERROR: 'err', BUFFER_FLUSHING: 'flushing' };
+  window.Hls.ErrorTypes = { MEDIA_ERROR: 'media', NETWORK_ERROR: 'network' };
+  try { fn(hls); } finally {
+    saved === undefined ? delete globalThis.window : globalThis.window = saved;
+  }
+};
+
+test('rolling eviction flushes the buffer behind currentTime', () => {
+  withFakeHls(hls => {
+    const video = { currentTime: 19.5, buffered: fakeRanges(0, 23.7) };
+    new HlsJsBackend(video, 'u', { backBufferSeconds: 15 });
+    hls.emit('fb');
+    assert.deepEqual(hls.triggers, [{ name: 'flushing',
+      data: { startOffset: 0, endOffset: 4.5, type: undefined } }]);
+  });
+});
+
+test('rolling eviction leaves a fresh buffer alone', () => {
+  withFakeHls(hls => {
+    // currentTime < backBufferSeconds : rien à purger.
+    let video = { currentTime: 8, buffered: fakeRanges(0, 20) };
+    new HlsJsBackend(video, 'u', { backBufferSeconds: 15 });
+    hls.emit('fb');
+    // Tête de lecture déjà dégagée : buffered.start(0) == purgeEnd - marge.
+    video = { currentTime: 30, buffered: fakeRanges(15, 50) };
+    hls.emit('fb');
+    assert.deepEqual(hls.triggers, []);
+  });
+});
+
+test('a quota error evicts now and restores maxBufferLength', () => {
+  withFakeHls(hls => {
+    const video = { currentTime: 19.5, buffered: fakeRanges(0, 23.7) };
+    new HlsJsBackend(video, 'u', { bufferSeconds: 30, backBufferSeconds: 15 });
+    for (const details of ['bufferAppendError', 'bufferFullError']) {
+      // reduceLengthAndFlushBuffer() de hls.js a bridé les plafonds.
+      hls.config.maxBufferLength = 5; hls.config.maxMaxBufferLength = 5;
+      hls.triggers.length = 0;
+      hls.emit('err', { fatal: false, details });
+      assert.deepEqual(hls.triggers, [{ name: 'flushing',
+        data: { startOffset: 0, endOffset: 18.5, type: undefined } }], details);
+      assert.equal(hls.config.maxBufferLength, 30, details);
+      assert.equal(hls.config.maxMaxBufferLength, 60, details);
+      assert.equal(hls.config.backBufferLength, 0, details);
+      hls.emit('fb');
+      assert.equal(hls.config.backBufferLength, 15, details);
+    }
+  });
+});
+
+test('a quota error at t=0 does not flush', () => {
+  withFakeHls(hls => {
+    new HlsJsBackend({ currentTime: 0, buffered: fakeRanges(0, 10) }, 'u');
+    hls.emit('err', { fatal: false, details: 'bufferFullError' });
+    assert.deepEqual(hls.triggers, []);
+  });
 });
