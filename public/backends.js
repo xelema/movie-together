@@ -106,6 +106,16 @@ export class HlsJsBackend {
         this.applyBufferCap();
         return;
       }
+      // Append sans progrès : le fragment reste compté OK dans le tracker et
+      // hls.js charge le suivant — le trou qu'il laisse fige la tête. On rend
+      // la place autour du point de chute puis on le remet en file pour que
+      // l'append soit retenté dans un tampon dégagé.
+      if (!data.fatal && data.details === window.Hls.ErrorDetails?.BUFFER_APPEND_NO_PROGRESS &&
+          data.frag && data.parent !== 'audio') {
+        this.makeRoomFor(data.frag);
+        this.applyBufferCap();
+        return;
+      }
       if (!data.fatal) return;
       onStalled?.();
       // Hls.js already retries transient requests. Bound recovery after a fatal error.
@@ -147,6 +157,30 @@ export class HlsJsBackend {
       this.hls.trigger(window.Hls.Events.BUFFER_FLUSHING,
         { startOffset: 0, endOffset: end, type: 'video' });
     }
+  }
+
+  // Rend la place pour un fragment dont l'append n'a pas agrandi la
+  // couverture : back-buffer profond, puis tout îlot commençant au-delà de la
+  // tête — séparé d'elle par un trou, il occupe le quota sans pouvoir être
+  // lu, et c'est lui qui bloque quand le point de chute y est déjà couvert.
+  // Jamais une coupe dans un range (la queue de GOP restante n'aurait plus sa
+  // keyframe) : un îlot est purgé entier, l'append retenté le recouvre. Enfin
+  // le fragment est remis en file — sorti du tracker et recalé comme le fait
+  // reduceLengthAndFlushBuffer(), sinon hls.js ne le chargera jamais plus.
+  makeRoomFor(frag) {
+    this.evictBehind(true);
+    const buffered = this.video.buffered;
+    for (let i = 0; buffered && i < buffered.length; i++) {
+      if (buffered.start(i) > this.video.currentTime) {
+        this.hls.trigger(window.Hls.Events.BUFFER_FLUSHING,
+          { startOffset: buffered.start(i), endOffset: Infinity, type: 'video' });
+        break;
+      }
+    }
+    const ctl = this.hls.streamController;
+    ctl?.fragmentTracker?.removeFragment?.(frag);
+    if (ctl) ctl.nextLoadPosition = frag.start;
+    ctl?.resetLoadingState?.();
   }
 
   // The room's thresholds can change at runtime; hls.js reads its config live.

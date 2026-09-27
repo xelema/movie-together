@@ -169,7 +169,8 @@ const withFakeHls = (fn) => {
   window.Hls.Events = { FRAG_BUFFERED: 'fb', MANIFEST_PARSED: 'mp', AUDIO_TRACKS_UPDATED: 'au',
     SUBTITLE_TRACKS_UPDATED: 'su', ERROR: 'err', LEVEL_SWITCHED: 'ls', BUFFER_FLUSHING: 'flushing' };
   window.Hls.ErrorTypes = { MEDIA_ERROR: 'media', NETWORK_ERROR: 'network' };
-  window.Hls.ErrorDetails = { BUFFER_FULL_ERROR: 'bufferFullError' };
+  window.Hls.ErrorDetails = { BUFFER_FULL_ERROR: 'bufferFullError',
+    BUFFER_APPEND_NO_PROGRESS: 'bufferAppendNoProgress' };
   try { fn(hls); } finally {
     saved === undefined ? delete globalThis.window : globalThis.window = saved;
   }
@@ -266,5 +267,66 @@ test('a finished video fragment is flushed once the head leaves it', () => {
     hls.streamController = { getAppendedFrag: () => ({ start: 0 }) };
     hls.emit('fb');
     assert.equal(hls.triggers.length, 1);
+  });
+});
+
+// Un append qui n'agrandit pas la couverture laisse un trou : hls.js compte
+// le fragment OK dans le tracker, charge le suivant et la tête se fige au
+// bord du trou. On purge le back-buffer et tout îlot coupé de la tête — le
+// range qui reçoit frag.start est celui qui bloque, purgé entier pour que la
+// queue de GOP ne reste pas sans keyframe — puis le fragment est remis en
+// file comme le fait reduceLengthAndFlushBuffer(), sinon il n'est jamais
+// retenté.
+test('a no-progress append frees space and requeues the fragment', () => {
+  withFakeHls(hls => {
+    const ranges = [[13.8, 23.61], [33.7, 36.01]];
+    const video = { currentTime: 20,
+      buffered: { length: ranges.length, start: i => ranges[i][0], end: i => ranges[i][1] },
+      addEventListener() {}, removeEventListener() {} };
+    new HlsJsBackend(video, 'u', { backBufferSeconds: 5 });
+    const calls = [];
+    hls.streamController = {
+      getAppendedFrag: () => ({ start: 20 }),
+      fragmentTracker: { removeFragment: frag => calls.push(frag) },
+      nextLoadPosition: 43.75,
+      resetLoadingState() { calls.push('reset'); },
+    };
+    const frag = { start: 33.74, end: 43.75 };
+    hls.emit('err', { fatal: false, details: 'bufferAppendNoProgress', frag, parent: 'main' });
+    assert.deepEqual(hls.triggers, [
+      { name: 'flushing', data: { startOffset: 0, endOffset: 19.5, type: 'video' } },
+      { name: 'flushing', data: { startOffset: 33.7, endOffset: Infinity, type: 'video' } },
+    ]);
+    assert.deepEqual(calls, [frag, 'reset']);
+    assert.equal(hls.streamController.nextLoadPosition, 33.74);
+    // Le plafond est restauré pour que la retentive ne soit pas bridée.
+    assert.equal(hls.config.maxBufferLength, 30);
+  });
+});
+
+// Fragment devant sans îlot : seul le back-buffer rend de la place. Un
+// fragment audio ou un événement sans frag est laissé à hls.js.
+test('a no-progress append without an island only trims the back-buffer', () => {
+  withFakeHls(hls => {
+    const video = { currentTime: 9.91, buffered: { length: 1, start: () => 0.08, end: () => 23.61 },
+      addEventListener() {}, removeEventListener() {} };
+    new HlsJsBackend(video, 'u');
+    const calls = [];
+    hls.streamController = {
+      getAppendedFrag: () => ({ start: 0 }),
+      fragmentTracker: { removeFragment: frag => calls.push(frag) },
+      resetLoadingState() { calls.push('reset'); },
+    };
+    const frag = { start: 23.73, end: 33.74 };
+    hls.emit('err', { fatal: false, details: 'bufferAppendNoProgress', frag, parent: 'main' });
+    assert.deepEqual(hls.triggers,
+      [{ name: 'flushing', data: { startOffset: 0, endOffset: 8.91, type: 'video' } }]);
+    assert.deepEqual(calls, [frag, 'reset']);
+    assert.equal(hls.streamController.nextLoadPosition, 23.73);
+    hls.triggers.length = 0; calls.length = 0;
+    hls.emit('err', { fatal: false, details: 'bufferAppendNoProgress', frag, parent: 'audio' });
+    hls.emit('err', { fatal: false, details: 'bufferAppendNoProgress' });
+    assert.deepEqual(hls.triggers, []);
+    assert.deepEqual(calls, []);
   });
 });
