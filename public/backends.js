@@ -61,7 +61,7 @@ export class HlsJsBackend {
       backBufferSeconds = 15, maxBufferMb = 80 } = {},
     { onTracksChanged, onBuffered, onStalled, onFatal } = {}) {
     this.video = video; this.timelineOffset = timelineOffset; this.bitrate = bitrate;
-    this.backBufferSeconds = backBufferSeconds;
+    this.bufferSeconds = bufferSeconds; this.backBufferSeconds = backBufferSeconds;
     this.mediaRecoveries = 0; this.networkRecoveries = 0;
     this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
       maxBufferSize: maxBufferMb * 1024 * 1024, backBufferLength: backBufferSeconds,
@@ -80,6 +80,7 @@ export class HlsJsBackend {
       // Fin de purge : la rétention arrière retrouve sa cible une fois le
       // back-buffer saturant évacué par l'append qui vient de se terminer.
       if (this.purging) { this.purging = false; this.hls.config.backBufferLength = this.backBufferSeconds; }
+      this.evictBackBuffer();
       onBuffered?.();
     });
     for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) {
@@ -91,8 +92,14 @@ export class HlsJsBackend {
       // fragment, au lieu de saturer le quota à nouveau.
       if (!data.fatal) {
         if (data.details === 'bufferAppendError' || data.details === 'bufferFullError') {
+          // Quota plein : hls.js a réduit maxMaxBufferLength pour débloquer
+          // l'append (reduceLengthAndFlushBuffer), on restaure la cible et on
+          // purge nous-mêmes derrière la tête de lecture.
           this.purging = true;
           this.hls.config.backBufferLength = 0;
+          this.hls.config.maxBufferLength = this.bufferSeconds;
+          this.hls.config.maxMaxBufferLength = this.bufferSeconds * 2;
+          this.evictBehind(this.video.currentTime - 1);
         }
         return;
       }
@@ -104,8 +111,30 @@ export class HlsJsBackend {
     });
   }
 
+  // Purge manuelle derrière la tête de lecture, seulement s'il reste des
+  // données à supprimer. BUFFER_FLUSHING sans type vide tous les
+  // SourceBuffers sur [0, endOffset]. hls.js n'évicte de lui-même que des
+  // fragments entiers terminés avant currentTime, et sa formule de trim
+  // (floor(currentTime/targetDuration)*targetDuration - max(backBufferLength,
+  // targetDuration)) n'agit qu'au-delà de 2×targetDuration : un segment à
+  // cheval sur la tête de lecture n'est jamais purgé, le SourceBuffer saturé
+  // bloque tout append — deadlock.
+  evictBehind(purgeEnd) {
+    const buffered = this.video.buffered;
+    if (purgeEnd > 0 && buffered?.length && buffered.start(0) < purgeEnd - 0.5) {
+      this.hls.trigger(window.Hls.Events.BUFFER_FLUSHING,
+        { startOffset: 0, endOffset: purgeEnd, type: undefined });
+    }
+  }
+
+  // Éviction au fil de l'eau, à chaque fragment bufferisé.
+  evictBackBuffer() {
+    this.evictBehind(this.video.currentTime - this.backBufferSeconds);
+  }
+
   // The room's thresholds can change at runtime; hls.js reads its config live.
   setBufferGoal(minBuffer, bufferSeconds, backBufferSeconds, maxBufferMb) {
+    this.bufferSeconds = bufferSeconds;
     Object.assign(this.hls.config, { maxBufferLength: bufferSeconds,
       maxMaxBufferLength: bufferSeconds * 2 });
     if (backBufferSeconds !== undefined) {
