@@ -40,8 +40,20 @@ export function attachTelemetry(player, video, roomId) {
   });
 
   // Transitions repérées entre deux ticks et renvoyées comme événements.
-  const seen = { ws: undefined, act: undefined, blk: undefined, uni: undefined, phase: undefined };
+  const seen = { ws: undefined, act: undefined, blk: undefined, uni: undefined, phase: undefined, hls: undefined };
   const tick = () => {
+    // Erreurs hls.js : aucune ne doit rester invisible — le bridage de
+    // maxBufferLength après QuotaExceededError était muet dans les journaux.
+    const hls = player.backend?.hls;
+    if (hls && seen.hls !== hls) {
+      seen.hls = hls;
+      const details = window.Hls?.ErrorDetails ?? {};
+      const kind = d => d.details === (details.BUFFER_FULL_ERROR ?? 'bufferFullError') ? 'buffer-full'
+        : d.details === (details.BUFFER_APPEND_ERROR ?? 'bufferAppendError') ? 'append-error' : 'hls-error';
+      hls.on(window.Hls?.Events?.ERROR, (event, data) => push(kind(data), {
+        pos: +player.position().toFixed(2), details: data.details, type: data.type,
+        fatal: !!data.fatal, err: data.error?.name, msg: String(data.error?.message ?? '').slice(0, 200) }));
+    }
     const ranges = [];
     for (let i = 0; i < video.buffered.length; i++) ranges.push([+video.buffered.start(i).toFixed(2), +video.buffered.end(i).toFixed(2)]);
     const quality = video.getVideoPlaybackQuality?.();

@@ -95,11 +95,15 @@ export class HlsJsBackend {
     }
     this.hls.on(window.Hls.Events.ERROR, (event, data) => {
       // Quota SourceBuffer dépassé : l'éviction native de hls.js garde encore
-      // un targetDuration entier derrière la tête. Purge d'urgence des
-      // segments terminés pour rendre la place au segment en cours d'append.
+      // un targetDuration entier derrière la tête. Purge d'urgence qui peut
+      // mordre dans le GOP lu — avec des segments de 20-34 Mo, la place ne se
+      // libère jamais sinon sous le quota réel de Chrome. Le plafond bridé par
+      // reduceLengthAndFlushBuffer() est restauré aussitôt pour que le segment
+      // soit retenté dès que la tête de lecture rend la place.
       if (!data.fatal && (data.details === window.Hls.ErrorDetails?.BUFFER_FULL_ERROR ||
           data.error?.name === 'QuotaExceededError')) {
-        this.evictBehind();
+        this.evictBehind(true);
+        this.applyBufferCap();
         return;
       }
       if (!data.fatal) return;
@@ -132,11 +136,13 @@ export class HlsJsBackend {
   // marge, jamais dans son GOP : retirer la keyframe en cours de décodage fige
   // le décodeur). hls.js n'évicte de lui-même qu'au-delà de ~2×targetDuration,
   // délai que le quota SourceBuffer ne permet pas avec des segments de 20-34 Mo.
-  evictBehind() {
+  evictBehind(deep = false) {
     const buffered = this.video.buffered;
     const ctl = this.hls.streamController;
     const frag = ctl?.getAppendedFrag?.(this.video.currentTime) ?? ctl?.fragPlaying;
-    const end = (frag?.start ?? 0) - 0.5;
+    // deep : le quota est plein, on taille jusqu'à 1 s derrière la tête, même
+    // dans le GOP en cours — ses images avant la tête sont déjà décodées.
+    const end = Math.max((frag?.start ?? 0) - 0.5, deep ? this.video.currentTime - 1 : -Infinity);
     if (end > 0 && buffered?.length && buffered.start(0) < end - 0.5) {
       this.hls.trigger(window.Hls.Events.BUFFER_FLUSHING,
         { startOffset: 0, endOffset: end, type: 'video' });
