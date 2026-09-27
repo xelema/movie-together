@@ -24,7 +24,8 @@ const VOICE_MESSAGES = {
 export function createRoomHub({ origin, settings = createSettings(), sessionFor, sessionActive, canAccess, movieFor, moviePlayable, voiceService = null, voiceTiming = {} } = {}) {
   // Les seuils vivent ici pour les nouvelles séances comme pour tune() ; les
   // autres réglages sont relus dans settings au moment de chaque opération.
-  const thresholds = { minBuffer: settings.get('minBuffer'), lowBuffer: settings.get('lowBuffer') };
+  const thresholds = { minBuffer: settings.get('minBuffer'), lowBuffer: settings.get('lowBuffer'),
+    backBufferSeconds: settings.get('backBufferSeconds'), maxBufferMb: settings.get('maxBufferMb') };
   // Les boucles globales gardent leur cadence de démarrage : un client connecté
   // cale son seuil de silence sur le tickMs du welcome, le retimer à chaud
   // désynchroniserait les séances ouvertes. Un nouveau tickMs vaut au relancement.
@@ -39,7 +40,8 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     probe: !!room.probe, languages: room.languages ?? room.voice?.pair ?? ['fr', 'ko'],
     ...(room.voice ? { voice: room.voice } : {}), ...(room.webcam ? { webcam: room.webcam } : {}),
     state: room.engine.snapshot(), movie: room.movieId ? movieFor(room.movieId) : null,
-    sync: { minBuffer: room.engine.minBuffer, lowBuffer: room.engine.lowBuffer },
+    sync: { minBuffer: room.engine.minBuffer, lowBuffer: room.engine.lowBuffer,
+      backBufferSeconds: thresholds.backBufferSeconds, maxBufferMb: thresholds.maxBufferMb },
     members: [...room.engine.members.keys()].map(id => {
       const status = room.engine.memberStatus(id);
       return { id,
@@ -331,12 +333,15 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
 
   // Buffer thresholds are runtime-tunable: live rooms and future ones follow,
   // and the next state broadcast carries them to connected clients.
-  const tune = ({ minBuffer, lowBuffer } = {}) => {
+  const tune = ({ minBuffer, lowBuffer, backBufferSeconds, maxBufferMb } = {}) => {
     if (!Number.isFinite(minBuffer) || !Number.isFinite(lowBuffer) ||
       lowBuffer < 1 || minBuffer > 300 || !validThresholds({ minBuffer, lowBuffer })) {
       throw fail(400, 'Seuils invalides : 1 ≤ réserve < démarrage ≤ 300 s.');
     }
     Object.assign(thresholds, { minBuffer, lowBuffer });
+    // Seuils vidéo côté client : validés par le registre settings, ici simples nombres.
+    if (Number.isFinite(backBufferSeconds)) thresholds.backBufferSeconds = backBufferSeconds;
+    if (Number.isFinite(maxBufferMb)) thresholds.maxBufferMb = maxBufferMb;
     for (const room of rooms.values()) {
       room.engine.minBuffer = minBuffer; room.engine.lowBuffer = lowBuffer;
       broadcast(room);
@@ -383,7 +388,8 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
         languages: room.languages,
         ...(room.voice ? { voice: room.voice } : {}),
         ...(room.webcam ? { webcam: room.webcam } : {}),
-        sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs: cadence.tickMs } })); broadcast(room);
+        sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs: cadence.tickMs,
+          backBufferSeconds: thresholds.backBufferSeconds, maxBufferMb: thresholds.maxBufferMb } })); broadcast(room);
       ws.on('pong', () => { ws.alive = true; });
       ws.on('error', () => {});
       ws.on('message', (data, isBinary) => {

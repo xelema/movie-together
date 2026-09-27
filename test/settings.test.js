@@ -6,13 +6,21 @@ test('defaults come from the registry, env can raise them', () => {
   const plain = createSettings({ env: {} });
   assert.equal(plain.get('minBuffer'), 8);
   assert.equal(plain.get('maxMovieGb'), 20);
-  const tuned = createSettings({ env: { MIN_BUFFER_SECONDS: '20', ENCODE_THREADS: '6' } });
+  assert.equal(plain.get('backBufferSeconds'), 15);
+  assert.equal(plain.get('maxBufferMb'), 80);
+  const tuned = createSettings({ env: { MIN_BUFFER_SECONDS: '20', ENCODE_THREADS: '6',
+    BACK_BUFFER_SECONDS: '30', MAX_BUFFER_MB: '120' } });
   assert.equal(tuned.get('minBuffer'), 20);
   assert.equal(tuned.get('encodeThreads'), 6);
+  assert.equal(tuned.get('backBufferSeconds'), 30);
+  assert.equal(tuned.get('maxBufferMb'), 120);
   // Out-of-bounds or malformed env falls back to the built-in default.
-  const bad = createSettings({ env: { MIN_BUFFER_SECONDS: '9999', ENCODE_THREADS: 'x' } });
+  const bad = createSettings({ env: { MIN_BUFFER_SECONDS: '9999', ENCODE_THREADS: 'x',
+    BACK_BUFFER_SECONDS: '2', MAX_BUFFER_MB: '500' } });
   assert.equal(bad.get('minBuffer'), 8);
   assert.equal(bad.get('encodeThreads'), 2);
+  assert.equal(bad.get('backBufferSeconds'), 15);
+  assert.equal(bad.get('maxBufferMb'), 80);
   // An env pair that breaks a cross-field rule reverts both keys.
   const skewed = createSettings({ env: { MIN_BUFFER_SECONDS: '4', LOW_BUFFER_SECONDS: '9' } });
   assert.equal(skewed.get('minBuffer'), 8);
@@ -44,7 +52,8 @@ test('update validates strictly and rejects atomically', () => {
   }
   assert.throws(() => s.update({ nope: 1 }), /Réglage inconnu/);
   for (const bad of [{ minBuffer: 500 }, { minBuffer: 8.5 }, { minBuffer: 'x' },
-    { startDelay: 40 }, { maxSubtitleMb: 2.3 }, { tickMs: 10 }]) {
+    { startDelay: 40 }, { maxSubtitleMb: 2.3 }, { tickMs: 10 },
+    { backBufferSeconds: 4 }, { backBufferSeconds: 121 }, { maxBufferMb: 10 }, { maxBufferMb: 300 }]) {
     assert.throws(() => s.update(bad), /invalide/i, JSON.stringify(bad));
   }
   assert.equal(s.get('minBuffer'), 8);
@@ -65,6 +74,8 @@ test('describe exposes bounds, defaults and override flags for the admin UI', ()
   const fields = Object.fromEntries(s.describe().map(field => [field.key, field]));
   assert.equal(fields.minBuffer.default, 20);
   assert.equal(fields.minBuffer.dynamic, true);
+  assert.equal(fields.backBufferSeconds.dynamic, true);
+  assert.equal(fields.maxBufferMb.dynamic, true);
   assert.equal(fields.minBuffer.overridden, false);
   assert.equal(fields.lowBuffer.overridden, true);
   assert.equal(fields.lowBuffer.value, 4);

@@ -678,6 +678,8 @@ $('choose-film').addEventListener('submit', handle(() => api(`/api/rooms/${activ
 const SETTING_LABELS = {
   minBuffer: ['Buffer de démarrage (s)', '시작 버퍼 (초)'],
   lowBuffer: ['Réserve de lecture (s)', '재생 예비 버퍼 (초)'],
+  backBufferSeconds: ['Mémoire tampon arrière (s)', '후방 버퍼 (초)', 'Bộ đệm lùi (giây)'],
+  maxBufferMb: ['Taille max du tampon (Mo)', '최대 버퍼 크기 (MB)', 'Dung lượng đệm tối đa (MB)'],
   reportTimeout: ['Expiration des rapports (s)', '보고서 만료 (초)'],
   startDelay: ['Délai avant le départ (s)', '시작 지연 (초)'],
   tickMs: ['Cadence des états (ms)', '상태 전송 주기 (ms)'],
@@ -704,6 +706,8 @@ const SETTING_LABELS = {
 const SETTING_DESCRIPTIONS = {
   minBuffer: 'Secondes de tampon à accumuler avant de lancer ou reprendre la lecture.',
   lowBuffer: 'En dessous de cette réserve pendant la lecture, la séance se met en pause pour recharger.',
+  backBufferSeconds: 'Secondes de vidéo déjà lues conservées en mémoire pour les retours en arrière sans rechargement.',
+  maxBufferMb: 'Plafond mémoire alloué au tampon vidéo (SourceBuffer) pour éviter le dépassement de quota du navigateur.',
   reportTimeout: 'Sans rapport d’un participant pendant ce délai, son état de lecture est ignoré.',
   startDelay: 'Compte à rebours entre le déclenchement de la lecture et le départ effectif.',
   tickMs: 'Intervalle entre deux envois de l’état de lecture aux participants.',
