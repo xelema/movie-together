@@ -57,13 +57,15 @@ export class HlsJsBackend {
   // event must not short-circuit it.
   recoversErrors = true;
 
-  constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 8, bitrate,
-      backBufferSeconds = 15, maxBufferMb = 50 } = {},
+  constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 4, bitrate,
+      backBufferSeconds = 5, maxBufferMb = 50 } = {},
     { onTracksChanged, onBuffered, onStalled, onFatal } = {}) {
     this.video = video; this.timelineOffset = timelineOffset; this.bitrate = bitrate;
     this.bufferSeconds = bufferSeconds; this.minBuffer = minBuffer;
     this.backBufferSeconds = backBufferSeconds; this.maxBufferMb = maxBufferMb;
     this.mediaRecoveries = 0; this.networkRecoveries = 0;
+    this.onTick = () => this.evictBehind();
+    video.addEventListener?.('timeupdate', this.onTick);
     this.hls = new window.Hls({ maxBufferSize: 0, backBufferLength: backBufferSeconds,
       startFragPrefetch: true, enableWorker: true,
       maxBufferHole: 0.5, highBufferWatchdogPeriod: 2, nudgeMaxRetry: 5, nudgeOffset: 0.1,
@@ -80,6 +82,9 @@ export class HlsJsBackend {
     // Le débit de pointe du niveau n'est connu qu'après le manifest.
     this.hls.on(window.Hls.Events.LEVEL_SWITCHED, () => this.applyBufferCap());
     this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => {
+      // Chaque segment peut peser 20-34 Mo : la place doit être rendue dès
+      // que la tête entre dans le suivant.
+      this.evictBehind();
       // Append réussi : la place est revenue, on restaure le plafond que
       // reduceLengthAndFlushBuffer() avait bridé sur erreur de quota.
       this.applyBufferCap();
@@ -89,8 +94,14 @@ export class HlsJsBackend {
       this.hls.on(window.Hls.Events[name], () => onTracksChanged?.());
     }
     this.hls.on(window.Hls.Events.ERROR, (event, data) => {
-      // Quota SourceBuffer dépassé : hls.js évicte lui-même le back-buffer
-      // (fragments entiers avant la tête de lecture) puis retente l'append.
+      // Quota SourceBuffer dépassé : l'éviction native de hls.js garde encore
+      // un targetDuration entier derrière la tête. Purge d'urgence des
+      // segments terminés pour rendre la place au segment en cours d'append.
+      if (!data.fatal && (data.details === window.Hls.ErrorDetails?.BUFFER_FULL_ERROR ||
+          data.error?.name === 'QuotaExceededError')) {
+        this.evictBehind();
+        return;
+      }
       if (!data.fatal) return;
       onStalled?.();
       // Hls.js already retries transient requests. Bound recovery after a fatal error.
@@ -104,14 +115,32 @@ export class HlsJsBackend {
   // réel du niveau (BANDWIDTH du manifest). Sur un flux lourd (peak 34 Mbps),
   // 30 s d'avance dépassent le quota SourceBuffer de Chrome et l'append du
   // prochain segment échoue en boucle ; ~12-15 s suffisent à couvrir minBuffer.
+  // Quand les segments font ~10 s, un plancher à 12 s imposerait d'en garder
+  // deux en mémoire : la cible retombe à un segment.
   applyBufferCap() {
     const level = this.hls.levels?.[this.hls.currentLevel];
     const bps = level?.bitrate || this.bitrate;
-    const floor = Math.min(this.bufferSeconds, Math.max(12, this.minBuffer));
+    const target = level?.details?.targetduration;
+    const floor = Math.min(this.bufferSeconds, Math.max(target >= 8 ? target : 12, this.minBuffer));
     let cap = this.bufferSeconds;
     if (bps) cap = 8 * this.maxBufferMb * 1024 * 1024 / bps;
     cap = Math.min(this.bufferSeconds, Math.max(floor, cap));
     Object.assign(this.hls.config, { maxBufferLength: cap, maxMaxBufferLength: cap });
+  }
+
+  // Purge le back-buffer vidéo jusqu'au début du fragment lu (-0,5 s de
+  // marge, jamais dans son GOP : retirer la keyframe en cours de décodage fige
+  // le décodeur). hls.js n'évicte de lui-même qu'au-delà de ~2×targetDuration,
+  // délai que le quota SourceBuffer ne permet pas avec des segments de 20-34 Mo.
+  evictBehind() {
+    const buffered = this.video.buffered;
+    const ctl = this.hls.streamController;
+    const frag = ctl?.getAppendedFrag?.(this.video.currentTime) ?? ctl?.fragPlaying;
+    const end = (frag?.start ?? 0) - 0.5;
+    if (end > 0 && buffered?.length && buffered.start(0) < end - 0.5) {
+      this.hls.trigger(window.Hls.Events.BUFFER_FLUSHING,
+        { startOffset: 0, endOffset: end, type: 'video' });
+    }
   }
 
   // The room's thresholds can change at runtime; hls.js reads its config live.
@@ -138,7 +167,10 @@ export class HlsJsBackend {
       this.hls.subtitleDisplay = subtitles >= 0;
     }
   }
-  destroy() { this.hls.destroy(); }
+  destroy() {
+    this.video.removeEventListener?.('timeupdate', this.onTick);
+    this.hls.destroy();
+  }
 }
 
 export class NativeHlsBackend {

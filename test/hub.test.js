@@ -18,7 +18,7 @@ test('tune applies thresholds to existing and future rooms', async t => {
   assert.equal(hub.get(room.id).engine.lowBuffer, 3);
   const next = hub.create({ movieId: 'movie', duration: 100, code: 'next-room' });
   assert.equal(next.engine.minBuffer, 8);
-  assert.deepEqual(hub.state(room).sync, { minBuffer: 8, lowBuffer: 3, backBufferSeconds: 15, maxBufferMb: 50 });
+  assert.deepEqual(hub.state(room).sync, { minBuffer: 8, lowBuffer: 3, backBufferSeconds: 5, maxBufferMb: 50 });
 });
 
 test('tune propagates the video buffer targets to the room sync payload', async t => {

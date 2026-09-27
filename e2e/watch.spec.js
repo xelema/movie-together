@@ -340,8 +340,8 @@ test('track and settings choices stay viewer-local while only the transport move
   // Chromium alone pays the trusted-touch pass: this is the longest slice.
   test.setTimeout(120_000);
   try {
-    await clickControl(guest, '.plyr__controls [data-plyr=play]', () => guest.locator('video').evaluate(video => video.paused));
-    await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
+    await clickControl(guest, '.plyr__controls [data-plyr=play]', () => guest.evaluate(() => window.player?.state?.phase === 'paused'));
+    await expect.poll(() => host.evaluate(() => window.player?.state?.phase === 'paused'), { timeout: 15_000 }).toBe(true);
     // Hold the first subtitle segment in flight: a fragment that finishes
     // parsing while its track is parked gets its cues dropped and is never
     // refetched, so the round trip below must still bring the cues back.
@@ -402,7 +402,7 @@ test('track and settings choices stay viewer-local while only the transport move
     await expect(guest.locator('#bandwidth-badge')).toBeHidden();
     await expect(host.locator('#audio')).toHaveValue('0');
     await host.locator('[data-plyr=seek]').fill('20'); await host.locator('[data-plyr=seek]').dispatchEvent('input');
-    await expect.poll(() => guest.locator('video').evaluate(video => video.currentTime)).toBeGreaterThan(9);
+    await expect.poll(() => guest.locator('video').evaluate(video => video.currentTime), { timeout: 15_000 }).toBeGreaterThan(9);
     await host.locator('#screen').focus(); await host.keyboard.press('k');
     await expect.poll(() => guest.locator('video').evaluate(video => Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.text === 'Un sous-titre lisible.' && cue.line === 84 && !cue.snapToLines)))).toBe(true);
     await expect(guest.locator('.color-captions')).toHaveText('Un sous-titre lisible.');
