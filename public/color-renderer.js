@@ -598,7 +598,6 @@ export class ColorRenderer {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
       if (this.programs?.main) this.render(width, height);
       else { gl.viewport(0, 0, width, height); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); }
-      gl.flush();
       // Keep error detection without a synchronous GPU round trip on every frame.
       const now = performance.now();
       // Pendant la reprise (2,5 s après play), aucune sonde synchrone ne doit
