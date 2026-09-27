@@ -42,7 +42,7 @@ export class SyncPlayer {
     this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.pendingPauses = 0;
     this.retries = 0; this.listeners = [];
     // Defaults until the room publishes its sync policy in welcome.
-    this.sync = { minBuffer: 8, tickMs: 200, startDelay: 1000 };
+    this.sync = { minBuffer: 8, tickMs: 200, startDelay: 1000, backBufferSeconds: 15, maxBufferMb: 80 };
     this.silenceMs = 1500; this.bufferSeconds = 30; this.reportEveryMs = 200;
     this.listen(video, 'waiting', () => { if (this.state?.phase === 'playing' && this.serverTime() >= this.state.startsAt) this.report(false); });
     this.listen(video, 'canplay', () => {
@@ -206,7 +206,8 @@ export class SyncPlayer {
   }
   // The room's thresholds arrive with welcome and can change mid-session via state.
   applySync(sync) {
-    const retune = sync.minBuffer !== undefined && sync.minBuffer !== this.sync.minBuffer;
+    const retune = ['minBuffer', 'backBufferSeconds', 'maxBufferMb']
+      .some(key => sync[key] !== undefined && sync[key] !== this.sync[key]);
     this.sync = { ...this.sync, ...sync };
     // Buffer targets must exceed what the room requires to start; silence is
     // declared after several missed ticks; reports must land inside startDelay
@@ -219,7 +220,8 @@ export class SyncPlayer {
       clearInterval(this.interval);
       this.interval = setInterval(() => { this.reconcile(); this.report(); }, cadence);
     }
-    if (retune) this.backend?.setBufferGoal?.(this.sync.minBuffer, this.bufferSeconds);
+    if (retune) this.backend?.setBufferGoal?.(this.sync.minBuffer, this.bufferSeconds,
+      this.sync.backBufferSeconds, this.sync.maxBufferMb);
   }
   // Keeps a phone awake while the film runs; the OS drops the lock when the tab hides.
   async acquireWakeLock() {
@@ -256,7 +258,8 @@ export class SyncPlayer {
     const url = `/media/${movie.id}/${this.rendition.manifest}`;
     this.backend = createBackend(this.video, url,
       { timelineOffset: this.rendition.timelineOffset ?? 0, bufferSeconds: this.bufferSeconds,
-        minBuffer: this.sync.minBuffer, bitrate: movie.bitrate },
+        minBuffer: this.sync.minBuffer, bitrate: movie.bitrate,
+        backBufferSeconds: this.sync.backBufferSeconds, maxBufferMb: this.sync.maxBufferMb },
       { onTracksChanged: () => { this.applyTrackChoices(); this.tracks(); },
         onBuffered: () => { if (this.video.readyState >= 3) this.recovering = false; },
         onStalled: () => { this.pauseLocal(); this.report(false); this.recovering = true; },

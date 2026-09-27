@@ -267,3 +267,59 @@ test('webcam queues ICE candidates until remote description is set', async t => 
 
   controller.dispose();
 });
+
+test('a late-joining peer triggers a fresh offer and a status re-announce', async t => {
+  const savedNav = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const savedRTC = Object.getOwnPropertyDescriptor(globalThis, 'RTCPeerConnection');
+  FakeRTCPeerConnection.instances = [];
+
+  const track = { kind: 'video', stopped: false, stop() { this.stopped = true; } };
+  const fakeStream = { getTracks: () => [track] };
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true, writable: true,
+    value: { mediaDevices: { getUserMedia: async () => fakeStream } },
+  });
+  globalThis.RTCPeerConnection = FakeRTCPeerConnection;
+
+  t.after(() => {
+    if (savedNav) Object.defineProperty(globalThis, 'navigator', savedNav);
+    else delete globalThis.navigator;
+    if (savedRTC) Object.defineProperty(globalThis, 'RTCPeerConnection', savedRTC);
+    else delete globalThis.RTCPeerConnection;
+  });
+
+  const toggle = fakeElement('button', 'webcam-toggle');
+  const { overlay } = createMockOverlay();
+  const sent = [];
+  const player = { memberId: 'mem-1234', send: msg => sent.push(msg) };
+  const controller = attachWebcam({ toggle, overlay, player, t: fr => fr, label: l => l });
+
+  // Without a local camera, a peer arrival sends nothing.
+  await controller.message({ action: 'peer-joined', from: 'peer-0', name: 'Early' });
+  assert.equal(sent.length, 0);
+
+  // Camera on: announce runs once, and repeats only when the peer changes.
+  await toggle.click();
+  assert.equal(sent.filter(m => m.action === 'status' && m.active === true).length, 1);
+  controller.announce();
+  assert.equal(sent.filter(m => m.action === 'status').length, 1);
+
+  sent.length = 0;
+  const first = FakeRTCPeerConnection.instances[0];
+  await controller.message({ action: 'peer-joined', from: 'peer-42', name: 'Bob' });
+
+  // The old connection is hung up, the new one carries the local tracks and
+  // the offer, and the status is published again for the newcomer.
+  const pc = FakeRTCPeerConnection.instances[1];
+  assert.ok(pc);
+  assert.equal(first.connectionState, 'closed');
+  assert.deepEqual(pc.tracks, [track]);
+  assert.ok(sent.some(m => m.action === 'signal' && m.to === 'peer-42' && m.signal?.description));
+  assert.equal(sent.filter(m => m.action === 'status' && m.active === true).length, 1);
+
+  // The announcement was already sent for this peer: announce() is idempotent.
+  controller.announce();
+  assert.equal(sent.filter(m => m.action === 'status').length, 1);
+
+  controller.dispose();
+});

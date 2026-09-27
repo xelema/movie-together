@@ -18,7 +18,20 @@ test('tune applies thresholds to existing and future rooms', async t => {
   assert.equal(hub.get(room.id).engine.lowBuffer, 3);
   const next = hub.create({ movieId: 'movie', duration: 100, code: 'next-room' });
   assert.equal(next.engine.minBuffer, 8);
-  assert.deepEqual(hub.state(room).sync, { minBuffer: 8, lowBuffer: 3 });
+  assert.deepEqual(hub.state(room).sync, { minBuffer: 8, lowBuffer: 3, backBufferSeconds: 15, maxBufferMb: 80 });
+});
+
+test('tune propagates the video buffer targets to the room sync payload', async t => {
+  const hub = stubHub({ backBufferSeconds: 30, maxBufferMb: 100 });
+  t.after(() => hub.close());
+  const room = hub.create({ movieId: 'movie', duration: 100, code: 'test-room' });
+  assert.equal(hub.state(room).sync.backBufferSeconds, 30);
+  assert.equal(hub.state(room).sync.maxBufferMb, 100);
+  hub.tune({ minBuffer: 8, lowBuffer: 3, backBufferSeconds: 45, maxBufferMb: 60 });
+  assert.deepEqual(hub.state(room).sync, { minBuffer: 8, lowBuffer: 3, backBufferSeconds: 45, maxBufferMb: 60 });
+  // Omitted keys keep their previous value.
+  hub.tune({ minBuffer: 10, lowBuffer: 4 });
+  assert.deepEqual(hub.state(room).sync, { minBuffer: 10, lowBuffer: 4, backBufferSeconds: 45, maxBufferMb: 60 });
 });
 
 test('tune rejects invalid thresholds without touching rooms', async t => {

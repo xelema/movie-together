@@ -36,11 +36,6 @@ export function createBackend(video, url, options, handlers) {
   return null;
 }
 
-// The byte cap must hold the buffer goal of this stream: on a high-bitrate
-// uncompressed film, a tight cap stalls the player far before the buffer goal.
-export const bufferBytes = (bufferGoal, bitrate) =>
-  Math.max(128 * 1024 ** 2, Math.ceil((bufferGoal ?? 60) * (bitrate ?? 25_000_000) / 8 * 1.5));
-
 // hls.js parks unselected subtitle tracks in 'disabled', and a WebVTT fragment
 // that finishes parsing there loses its cues for good: _appendCues bails on
 // 'disabled' and the cached fragment is never fetched again, so a fast
@@ -62,12 +57,14 @@ export class HlsJsBackend {
   // event must not short-circuit it.
   recoversErrors = true;
 
-  constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 8, bitrate } = {},
+  constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 8, bitrate,
+      backBufferSeconds = 15, maxBufferMb = 80 } = {},
     { onTracksChanged, onBuffered, onStalled, onFatal } = {}) {
     this.video = video; this.timelineOffset = timelineOffset; this.bitrate = bitrate;
+    this.backBufferSeconds = backBufferSeconds;
     this.mediaRecoveries = 0; this.networkRecoveries = 0;
     this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
-      maxBufferSize: bufferBytes(bufferSeconds, bitrate), backBufferLength: 60,
+      maxBufferSize: maxBufferMb * 1024 * 1024, backBufferLength: backBufferSeconds,
       startFragPrefetch: true, enableWorker: true,
       maxBufferHole: 0.5, highBufferWatchdogPeriod: 2, nudgeMaxRetry: 5, nudgeOffset: 0.1,
       // progressive fetch splits each 10 s fMP4 into chunks and aborts them on
@@ -79,12 +76,26 @@ export class HlsJsBackend {
     const trackController = this.hls.subtitleTrackController;
     if (trackController) trackController.toggleTrackModes = () => pinSubtitleModes(trackController);
     this.hls.loadSource(url); this.hls.attachMedia(video);
-    this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => onBuffered?.());
+    this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => {
+      // Fin de purge : la rétention arrière retrouve sa cible une fois le
+      // back-buffer saturant évacué par l'append qui vient de se terminer.
+      if (this.purging) { this.purging = false; this.hls.config.backBufferLength = this.backBufferSeconds; }
+      onBuffered?.();
+    });
     for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) {
       this.hls.on(window.Hls.Events[name], () => onTracksChanged?.());
     }
     this.hls.on(window.Hls.Events.ERROR, (event, data) => {
-      if (!data.fatal) return;
+      // SourceBuffer saturé : ramener la rétention arrière à zéro pour que le
+      // buffer-controller purge derrière la tête de lecture au prochain
+      // fragment, au lieu de saturer le quota à nouveau.
+      if (!data.fatal) {
+        if (data.details === 'bufferAppendError' || data.details === 'bufferFullError') {
+          this.purging = true;
+          this.hls.config.backBufferLength = 0;
+        }
+        return;
+      }
       onStalled?.();
       // Hls.js already retries transient requests. Bound recovery after a fatal error.
       if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && this.mediaRecoveries++ < 1) this.hls.recoverMediaError();
@@ -94,9 +105,14 @@ export class HlsJsBackend {
   }
 
   // The room's thresholds can change at runtime; hls.js reads its config live.
-  setBufferGoal(minBuffer, bufferSeconds) {
+  setBufferGoal(minBuffer, bufferSeconds, backBufferSeconds, maxBufferMb) {
     Object.assign(this.hls.config, { maxBufferLength: bufferSeconds,
-      maxMaxBufferLength: bufferSeconds * 2, maxBufferSize: bufferBytes(bufferSeconds, this.bitrate) });
+      maxMaxBufferLength: bufferSeconds * 2 });
+    if (backBufferSeconds !== undefined) {
+      this.backBufferSeconds = backBufferSeconds;
+      this.hls.config.backBufferLength = backBufferSeconds;
+    }
+    if (maxBufferMb !== undefined) this.hls.config.maxBufferSize = maxBufferMb * 1024 * 1024;
   }
 
   audioTracks() {
