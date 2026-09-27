@@ -51,6 +51,7 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
   let state = 'idle', stream = null, pc = null, peerId = null, disposed = false;
   let makingOffer = false, ignoreOffer = false, dismissed = false, peerActive = false;
   let note = '', noteTimer = null, savedHeight = '', announcedFor = null;
+  let pendingCandidates = [];
 
   const setState = next => {
     state = next;
@@ -63,6 +64,9 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
     if (dot) dot.dataset.live = String(live);
     placeholder.textContent = live ? '' : note || (peerActive ? label('En attente de la caméra…') : '');
     overlay.hidden = dismissed || (!live && !stream && !placeholder.textContent);
+    // When remote is not live but local camera is active, enlarge local preview to fill overlay
+    const solo = Boolean(stream && !live);
+    overlay.dataset.solo = String(solo);
     if (preview) preview.hidden = !stream;
   };
   // Les erreurs locales s'effacent seules : le bouton repasse au repos et la
@@ -87,7 +91,11 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
   const polite = () => String(player.memberId) < String(peerId);
   const connect = () => {
     if (pc) return pc;
-    pc = new RTCPeerConnection({ iceServers: [{ urls: STUN }] });
+    pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }
+      ]
+    });
     pc.onnegotiationneeded = async () => {
       try {
         makingOffer = true;
@@ -106,7 +114,11 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
       render();
     };
     pc.onconnectionstatechange = () => {
-      if (pc && ['failed', 'closed'].includes(pc.connectionState) && remote) { remote.srcObject = null; render(); }
+      if (pc && ['failed'].includes(pc.connectionState)) {
+        try { pc.restartIce?.(); } catch {}
+      } else if (pc && ['closed'].includes(pc.connectionState) && remote) {
+        remote.srcObject = null; render();
+      }
     };
     return pc;
   };
@@ -119,6 +131,7 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
       remote = null;
     }
     ignoreOffer = false;
+    pendingCandidates = [];
     try { pc?.close(); } catch {}
     pc = null;
     // La caméra locale survit à une reconnexion : la session neuve reçoit les
@@ -148,9 +161,17 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
             await conn.setLocalDescription();
             send({ action: 'signal', to: peerId, signal: { description: conn.localDescription } });
           }
+          while (pendingCandidates.length) {
+            const cand = pendingCandidates.shift();
+            try { await conn.addIceCandidate(cand); } catch {}
+          }
         } else if (signal.candidate) {
-          try { await conn.addIceCandidate(signal.candidate); }
-          catch (error) { if (!ignoreOffer) throw error; }
+          if (!conn.remoteDescription) {
+            pendingCandidates.push(signal.candidate);
+          } else {
+            try { await conn.addIceCandidate(signal.candidate); }
+            catch (error) { if (!ignoreOffer) throw error; }
+          }
         }
       } catch { /* signalisation périmée ou malformée : ignorée */ }
       return;
@@ -165,6 +186,13 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
         remote = null;
       }
       dismissed = false;
+      if (peerActive && stream) {
+        const conn = connect();
+        const senders = conn.getSenders?.() ?? [];
+        for (const track of stream.getTracks()) {
+          if (!senders.some(s => s.track === track)) conn.addTrack(track, stream);
+        }
+      }
       render();
       return;
     }
@@ -236,34 +264,76 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
   };
   overlay.addEventListener('pointerdown', beginDrag);
   if (header && header !== overlay) header.addEventListener('pointerdown', beginDrag);
+  const handles = overlay.querySelectorAll ? overlay.querySelectorAll('.webcam-resize-handle') : [];
+  const resizeHandles = handles.length ? handles : (grip ? [grip] : []);
   const beginResize = event => {
     event.preventDefault();
     event.stopPropagation();
+    const handle = event.currentTarget;
+    const corner = handle.dataset.corner || 'se';
     const rect = overlay.getBoundingClientRect();
-    grip.setPointerCapture(event.pointerId);
+    const box = stage.getBoundingClientRect();
+    handle.setPointerCapture(event.pointerId);
+
     const move = e => {
-      const box = stage.getBoundingClientRect();
-      const maxW = Math.min(MAX_W, box.width - (rect.left - box.left));
-      const maxH = box.height - (rect.top - box.top);
-      let w = Math.max(MIN_W, Math.min(e.clientX - rect.left, maxW));
-      let h = Math.round(w * 3 / 4);
-      if (h > maxH) {
-        h = maxH;
-        w = Math.round(h * 4 / 3);
+      let w = rect.width;
+      let left = rect.left - box.left;
+      let top = rect.top - box.top;
+
+      if (corner === 'se') {
+        const maxW = Math.min(MAX_W, box.width - left);
+        const maxH = box.height - top;
+        w = Math.max(MIN_W, Math.min(e.clientX - rect.left, maxW));
+        let h = Math.round(w * 3 / 4);
+        if (h > maxH) { h = maxH; w = Math.round(h * 4 / 3); }
+        overlay.style.width = `${w}px`;
+        overlay.style.height = `${h}px`;
+      } else if (corner === 'sw') {
+        const maxW = Math.min(MAX_W, rect.right - box.left);
+        const maxH = box.height - top;
+        w = Math.max(MIN_W, Math.min(rect.right - e.clientX, maxW));
+        let h = Math.round(w * 3 / 4);
+        if (h > maxH) { h = maxH; w = Math.round(h * 4 / 3); }
+        overlay.style.width = `${w}px`;
+        overlay.style.height = `${h}px`;
+        overlay.style.left = `${rect.right - box.left - w}px`;
+        overlay.style.right = 'auto';
+      } else if (corner === 'ne') {
+        const maxW = Math.min(MAX_W, box.width - left);
+        const maxH = rect.bottom - box.top;
+        w = Math.max(MIN_W, Math.min(e.clientX - rect.left, maxW));
+        let h = Math.round(w * 3 / 4);
+        if (h > maxH) { h = maxH; w = Math.round(h * 4 / 3); }
+        overlay.style.width = `${w}px`;
+        overlay.style.height = `${h}px`;
+        overlay.style.top = `${rect.bottom - box.top - h}px`;
+        overlay.style.bottom = 'auto';
+      } else if (corner === 'nw') {
+        const maxW = Math.min(MAX_W, rect.right - box.left);
+        const maxH = rect.bottom - box.top;
+        w = Math.max(MIN_W, Math.min(rect.right - e.clientX, maxW));
+        let h = Math.round(w * 3 / 4);
+        if (h > maxH) { h = maxH; w = Math.round(h * 4 / 3); }
+        overlay.style.width = `${w}px`;
+        overlay.style.height = `${h}px`;
+        overlay.style.left = `${rect.right - box.left - w}px`;
+        overlay.style.top = `${rect.bottom - box.top - h}px`;
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
       }
-      overlay.style.width = `${w}px`;
-      overlay.style.height = `${h}px`;
     };
     const end = () => {
-      grip.removeEventListener('pointermove', move);
-      grip.removeEventListener('pointerup', end);
-      grip.removeEventListener('pointercancel', end);
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', end);
+      handle.removeEventListener('pointercancel', end);
     };
-    grip.addEventListener('pointermove', move);
-    grip.addEventListener('pointerup', end);
-    grip.addEventListener('pointercancel', end);
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
   };
-  grip?.addEventListener('pointerdown', beginResize);
+  for (const h of resizeHandles) {
+    h.addEventListener('pointerdown', beginResize);
+  }
   minimize?.addEventListener('click', () => {
     const minimized = overlay.dataset.minimized === 'true';
     overlay.dataset.minimized = String(!minimized);
