@@ -25,7 +25,7 @@ export function decide({ activating, state, clockReady, hidden, online, silent,
   decoded, seeking, paused, currentTime, bufferedStart, target, serverNow,
   activated, scheduled, rate }) {
   if (activating) return {};
-  if (!state || !clockReady || hidden || !online || silent) return { pause: true };
+  if (!state || !clockReady || !online || silent) return { pause: true };
   if (state.phase !== 'playing' || serverNow < state.startsAt) {
     const action = { pause: true };
     // B-frame reordering can leave a tiny initial gap after lossless remuxing.
@@ -67,7 +67,6 @@ export function readyBlockers({ state, failure, rendererReady, recovering, activ
   if (recovering) blockers.push('recovering');
   if (!activated) blockers.push('activation');
   if (!clockReady) blockers.push('clock');
-  if (hidden) blockers.push('hidden');
   if (!online) blockers.push('offline');
   if (silent) blockers.push('silent');
   if (seeking) blockers.push('seeking');
@@ -79,7 +78,7 @@ export const memberReady = observables => readyBlockers(observables).length === 
 
 // Whether an armed scheduled start may fire now.
 export function canBegin({ state, scheduled, activated, failure, hidden, silent }) {
-  return state?.phase === 'playing' && state.startsAt === scheduled && activated && !failure && !hidden && !silent;
+  return state?.phase === 'playing' && state.startsAt === scheduled && activated && !failure && !silent;
 }
 
 // Subtitle glyphs scale with the rendered picture, not the window: the old
