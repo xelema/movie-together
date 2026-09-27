@@ -41,7 +41,10 @@ const fakeHls = () => {
   const hls = {
     config: { renderTextTracksNatively: true }, audioTracks: [{}], subtitleTracks: nodes.map(() => ({})),
     audioTrack: 0, subtitleTrackController: controller,
-    loadSource() {}, attachMedia() {}, on() {},
+    handlers: {},
+    loadSource() {}, attachMedia() {},
+    on(name, fn) { (this.handlers[name] ??= []).push(fn); },
+    emit(name, data) { for (const fn of this.handlers[name] ?? []) fn(name, data); },
   };
   controller.hls = hls;
   let selected = -1;
@@ -101,10 +104,10 @@ test('hls.js is configured for stall-free resume and deep segment reuse', () => 
   window.Hls.ErrorTypes = { MEDIA_ERROR: 'media', NETWORK_ERROR: 'network' };
   try {
     new HlsJsBackend({}, 'u');
-    assert.equal(config.backBufferLength, 60);
+    assert.equal(config.backBufferLength, 15);
     assert.equal(config.startFragPrefetch, true);
     assert.equal(config.progressive, false);
-    assert.ok(config.maxBufferSize >= 128 * 1024 ** 2);
+    assert.equal(config.maxBufferSize, 80 * 1024 * 1024);
   } finally {
     saved === undefined ? delete globalThis.window : globalThis.window = saved;
   }
@@ -131,5 +134,48 @@ test('codec probes ask MSE unless native HLS will decode', () => {
   } finally {
     savedWindow === undefined ? delete globalThis.window : globalThis.window = savedWindow;
     Object.defineProperty(globalThis, 'navigator', savedNavigator);
+  }
+});
+
+test('admin buffer settings reach the hls.js config and retune live', () => {
+  const { hls } = fakeHls();
+  const saved = globalThis.window;
+  let config;
+  globalThis.window = { Hls: class { constructor(options) { config = options; return hls; } } };
+  window.Hls.Events = { FRAG_BUFFERED: 'fb', MANIFEST_PARSED: 'mp', AUDIO_TRACKS_UPDATED: 'au', SUBTITLE_TRACKS_UPDATED: 'su', ERROR: 'err' };
+  window.Hls.ErrorTypes = { MEDIA_ERROR: 'media', NETWORK_ERROR: 'network' };
+  try {
+    const backend = new HlsJsBackend({}, 'u', { backBufferSeconds: 30, maxBufferMb: 120 });
+    assert.equal(config.backBufferLength, 30);
+    assert.equal(config.maxBufferSize, 120 * 1024 * 1024);
+    hls.config.backBufferLength = 30; hls.config.maxBufferSize = 120 * 1024 * 1024;
+    backend.setBufferGoal(8, 30, 45, 90);
+    assert.equal(hls.config.backBufferLength, 45);
+    assert.equal(hls.config.maxBufferSize, 90 * 1024 * 1024);
+  } finally {
+    saved === undefined ? delete globalThis.window : globalThis.window = saved;
+  }
+});
+
+test('a saturated SourceBuffer purges the back buffer then restores the target', () => {
+  const { hls } = fakeHls();
+  const saved = globalThis.window;
+  globalThis.window = { Hls: class { constructor() { return hls; } } };
+  window.Hls.Events = { FRAG_BUFFERED: 'fb', MANIFEST_PARSED: 'mp', AUDIO_TRACKS_UPDATED: 'au', SUBTITLE_TRACKS_UPDATED: 'su', ERROR: 'err' };
+  window.Hls.ErrorTypes = { MEDIA_ERROR: 'media', NETWORK_ERROR: 'network' };
+  try {
+    new HlsJsBackend({}, 'u', { backBufferSeconds: 25 });
+    for (const details of ['bufferAppendError', 'bufferFullError']) {
+      hls.config.backBufferLength = 25;
+      hls.emit('err', { fatal: false, details });
+      assert.equal(hls.config.backBufferLength, 0, details);
+      hls.emit('fb');
+      assert.equal(hls.config.backBufferLength, 25, details);
+    }
+    // Other non-fatal errors leave the retention alone.
+    hls.emit('err', { fatal: false, details: 'fragParsingError' });
+    assert.equal(hls.config.backBufferLength, 25);
+  } finally {
+    saved === undefined ? delete globalThis.window : globalThis.window = saved;
   }
 });

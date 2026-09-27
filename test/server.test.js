@@ -634,16 +634,20 @@ test('webcam is an opt-in capability and its signaling relays between two partic
     };
     poll();
   });
-  const a = await connect(cam, await join('cam-room'));
+  const cookieA = await join('cam-room');
+  const a = await connect(cam, cookieA);
   const b = await connect(cam, await join('cam-room'));
   assert.equal(a.frames[0].webcam?.enabled, true);
   assert.equal(a.frames.find(m => m.type === 'state')?.webcam?.enabled, true);
+  // The late joiner is announced to the already-connected peer.
+  const joined = await until(a.frames, m => m.type === 'webcam' && m.action === 'peer-joined');
+  assert.equal(joined.from, b.id);
   // A signal reaches the peer stamped with the sender's server-side identity.
   a.socket.send(JSON.stringify({ type: 'webcam', action: 'signal', signal: { description: { type: 'offer', sdp: 'v=0' } } }));
   const signal = await until(b.frames, m => m.type === 'webcam' && m.action === 'signal');
   assert.equal(signal.from, a.id);
   assert.equal(signal.signal.description.type, 'offer');
-  assert.equal(a.frames.some(m => m.type === 'webcam'), false);
+  assert.equal(a.frames.some(m => m.type === 'webcam' && m.action === 'signal'), false);
   // `to` narrows the relay to the named member.
   a.socket.send(JSON.stringify({ type: 'webcam', action: 'signal', to: b.id, signal: { candidate: { candidate: 'x' } } }));
   const targeted = await until(b.frames, m => m.type === 'webcam' && m.action === 'signal' && m.signal.candidate);
@@ -652,6 +656,13 @@ test('webcam is an opt-in capability and its signaling relays between two partic
   a.socket.send(JSON.stringify({ type: 'webcam', action: 'status', active: 1 }));
   const status = await until(b.frames, m => m.type === 'webcam' && m.action === 'status');
   assert.equal(status.active, true);
+  // A second socket on the same session joining late learns at once that the
+  // peer's camera is live, and the peer is told to renegotiate.
+  const late = await connect(cam, cookieA);
+  const replay = await until(late.frames, m => m.type === 'webcam' && m.action === 'status' && m.from === a.id);
+  assert.equal(replay.active, true);
+  assert.ok(await until(a.frames, m => m.type === 'webcam' && m.action === 'peer-joined' && m.from === late.id));
+  late.socket.close();
   // A malformed signal is refused to the sender and never relayed. Anything
   // larger than the websocket frame cap is already killed by the transport.
   a.socket.send(JSON.stringify({ type: 'webcam', action: 'signal', signal: 'nope' }));
@@ -659,7 +670,7 @@ test('webcam is an opt-in capability and its signaling relays between two partic
   assert.equal(b.frames.filter(m => m.type === 'webcam' && m.action === 'signal').length, 2);
   // A disconnect tells the remaining peer to hang up.
   a.socket.close();
-  const left = await until(b.frames, m => m.type === 'webcam' && m.action === 'peer-left');
+  const left = await until(b.frames, m => m.type === 'webcam' && m.action === 'peer-left' && m.from === a.id);
   assert.equal(left.from, a.id);
   // A room without the capability drops webcam traffic silently.
   const c = await connect(plain, await join('plain-room'));
