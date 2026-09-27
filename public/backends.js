@@ -38,7 +38,7 @@ export function createBackend(video, url, options, handlers) {
 
 // The byte cap must hold the buffer goal of this stream: on a high-bitrate
 // uncompressed film, a tight cap stalls the player far before the buffer goal.
-const bufferBytes = (bufferGoal, bitrate) =>
+export const bufferBytes = (bufferGoal, bitrate) =>
   Math.max(128 * 1024 ** 2, Math.ceil((bufferGoal ?? 60) * (bitrate ?? 25_000_000) / 8 * 1.5));
 
 // hls.js parks unselected subtitle tracks in 'disabled', and a WebVTT fragment
@@ -62,13 +62,14 @@ export class HlsJsBackend {
   // event must not short-circuit it.
   recoversErrors = true;
 
-  constructor(video, url, { timelineOffset = 0, bufferSeconds = 60, minBuffer = 8, bitrate } = {},
+  constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 8, bitrate } = {},
     { onTracksChanged, onBuffered, onStalled, onFatal } = {}) {
     this.video = video; this.timelineOffset = timelineOffset; this.bitrate = bitrate;
     this.mediaRecoveries = 0; this.networkRecoveries = 0;
     this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
       maxBufferSize: bufferBytes(bufferSeconds, bitrate), backBufferLength: 60,
       startFragPrefetch: true, enableWorker: true,
+      maxBufferHole: 0.5, highBufferWatchdogPeriod: 2, nudgeMaxRetry: 5, nudgeOffset: 0.1,
       // progressive fetch splits each 10 s fMP4 into chunks and aborts them on
       // refill; the server logs those as HTTP/2 stream resets. Plain XHR fetches.
       progressive: false,

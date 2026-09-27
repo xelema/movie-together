@@ -282,12 +282,20 @@ video::cue{color:#fff;background:transparent;font-family:Arial,"Segoe UI",sans-s
   color:var(--text-3);font-size:12px;text-align:center;overflow-wrap:anywhere}
 #webcam-placeholder:empty{display:none}
 #webcam-self-preview{position:absolute;right:8px;bottom:8px;width:30%;height:auto;aspect-ratio:4/3;object-fit:cover;border-radius:6px;
-  border:1px solid rgba(255,255,255,.25);transform:scaleX(-1);background:#000;box-shadow:0 2px 8px rgba(0,0,0,.5);z-index:2;pointer-events:none}
-#webcam-resize{position:absolute;right:0;bottom:0;width:18px;height:18px;cursor:nwse-resize;touch-action:none;z-index:3;
-  background:linear-gradient(135deg,transparent 55%,rgba(255,255,255,.35) 55%,rgba(255,255,255,.35) 65%,transparent 65%,transparent 75%,rgba(255,255,255,.35) 75%,rgba(255,255,255,.35) 85%,transparent 85%);
-  transition:opacity .2s var(--ease)}
-.video-stage:has(.plyr--hide-controls) #webcam-resize{opacity:0}
-.video-stage:has(.plyr--hide-controls) #webcam-resize:hover{opacity:1}
+  border:1px solid rgba(255,255,255,.25);transform:scaleX(-1);background:#000;box-shadow:0 2px 8px rgba(0,0,0,.5);z-index:2;pointer-events:none;transition:all .2s var(--ease)}
+#webcam-overlay[data-solo=true] #webcam-placeholder{display:none}
+#webcam-overlay[data-solo=true] #webcam-self-preview{inset:0;right:auto;bottom:auto;width:100%;height:100%;aspect-ratio:unset;border-radius:0;border:none;box-shadow:none}
+.webcam-resize-handle{position:absolute;width:18px;height:18px;touch-action:none;z-index:3;transition:opacity .2s var(--ease)}
+.webcam-resize-handle[data-corner=se]{right:0;bottom:0;cursor:nwse-resize;
+  background:linear-gradient(135deg,transparent 55%,rgba(255,255,255,.35) 55%,rgba(255,255,255,.35) 65%,transparent 65%,transparent 75%,rgba(255,255,255,.35) 75%,rgba(255,255,255,.35) 85%,transparent 85%)}
+.webcam-resize-handle[data-corner=sw]{left:0;bottom:0;cursor:nesw-resize;
+  background:linear-gradient(225deg,transparent 55%,rgba(255,255,255,.35) 55%,rgba(255,255,255,.35) 65%,transparent 65%,transparent 75%,rgba(255,255,255,.35) 75%,rgba(255,255,255,.35) 85%,transparent 85%)}
+.webcam-resize-handle[data-corner=ne]{right:0;top:0;cursor:nesw-resize;
+  background:linear-gradient(45deg,transparent 55%,rgba(255,255,255,.35) 55%,rgba(255,255,255,.35) 65%,transparent 65%,transparent 75%,rgba(255,255,255,.35) 75%,rgba(255,255,255,.35) 85%,transparent 85%)}
+.webcam-resize-handle[data-corner=nw]{left:0;top:0;cursor:nwse-resize;
+  background:linear-gradient(315deg,transparent 55%,rgba(255,255,255,.35) 55%,rgba(255,255,255,.35) 65%,transparent 65%,transparent 75%,rgba(255,255,255,.35) 75%,rgba(255,255,255,.35) 85%,transparent 85%)}
+.video-stage:has(.plyr--hide-controls) .webcam-resize-handle,.video-stage:has(.plyr--hide-controls) #webcam-resize{opacity:0}
+.video-stage:has(.plyr--hide-controls) .webcam-resize-handle:hover,.video-stage:has(.plyr--hide-controls) #webcam-resize:hover{opacity:1}
 #screen.settings-open .plyr__controls,#screen .plyr__controls:has(:focus-visible){opacity:1;transform:none;pointer-events:auto}
 #screen.settings-open .plyr--hide-controls,#screen.settings-open .plyr--hide-controls .plyr__video-wrapper video{cursor:auto}
 
