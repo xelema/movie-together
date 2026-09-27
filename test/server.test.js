@@ -52,8 +52,8 @@ test('authenticated upload, original video and audio, private rooms and access c
   // No env override and no saved file: the registry defaults reach the endpoint.
   const settings = await (await request('/api/settings', { cookie })).json();
   const current = Object.fromEntries(settings.fields.map(field => [field.key, field.value]));
-  assert.equal(current.minBuffer, 8);
-  assert.equal(current.lowBuffer, 3);
+  assert.equal(current.minBuffer, 4);
+  assert.equal(current.lowBuffer, 2);
   const file = path.join(dataDir, 'fixture.mp4');
   // Use a small synthetic source for a real preparation and access-control check.
   await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=25',

@@ -6,7 +6,7 @@ export const validThresholds = ({ minBuffer, lowBuffer }) => minBuffer > lowBuff
 export const cleanText = value => String(value).replace(/[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/g, '');
 
 export class Room {
-  constructor({ now = () => performance.now(), minBuffer = 8, lowBuffer = 3,
+  constructor({ now = () => performance.now(), minBuffer = 4, lowBuffer = 2,
     reportTimeout = 3000, startDelay = 1000 } = {}) {
     if (!(validThresholds({ minBuffer, lowBuffer }) && reportTimeout > startDelay && startDelay > 0)) {
       throw new RangeError('Invalid synchronization thresholds');

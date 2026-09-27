@@ -5,9 +5,9 @@
 // ou un envoi gardent les paramètres qui définissaient leur comportement, et
 // les cadences globales (tickMs, sweepMs) ne sont relues qu'au démarrage.
 export const FIELDS = {
-  minBuffer:            { category: 'sync',     env: 'MIN_BUFFER_SECONDS', def: 8,     min: 2,    max: 300,    unit: 's', dynamic: true },
-  lowBuffer:            { category: 'sync',     env: 'LOW_BUFFER_SECONDS', def: 3,     min: 1,    max: 299,    unit: 's', dynamic: true },
-  backBufferSeconds:    { category: 'sync',     env: 'BACK_BUFFER_SECONDS', def: 15,   min: 5,    max: 120,    unit: 's', dynamic: true },
+  minBuffer:            { category: 'sync',     env: 'MIN_BUFFER_SECONDS', def: 4,     min: 2,    max: 300,    unit: 's', dynamic: true },
+  lowBuffer:            { category: 'sync',     env: 'LOW_BUFFER_SECONDS', def: 2,     min: 1,    max: 299,    unit: 's', dynamic: true },
+  backBufferSeconds:    { category: 'sync',     env: 'BACK_BUFFER_SECONDS', def: 5,    min: 0,    max: 120,    unit: 's', dynamic: true },
   maxBufferMb:          { category: 'sync',     env: 'MAX_BUFFER_MB', def: 50,   min: 20,   max: 250,    unit: 'Mo', dynamic: true },
   reportTimeout:        { category: 'sync',     def: 3,     min: 1,   max: 60,     unit: 's' },
   startDelay:           { category: 'sync',     def: 1,     min: 0.5, max: 30,     unit: 's', step: 0.1 },
