@@ -212,10 +212,13 @@ test('the buffer cap never drops below the sync floor', () => {
   });
 });
 
-// Sur erreur de quota, on purge d'urgence les segments terminés derrière la
-// tête pour rendre la place au segment en append ; le plafond bridé par
-// reduceLengthAndFlushBuffer() est restauré au prochain fragment bufferisé.
-test('a quota error flushes finished segments and the cap is restored on append', () => {
+// Sur erreur de quota, on purge d'urgence derrière la tête — jusqu'à 1 s
+// derrière elle, quitte à mordre dans le GOP en cours : avec des segments de
+// 20-34 Mo, la place ne se libère jamais sinon sous le quota réel de Chrome.
+// Le plafond bridé par reduceLengthAndFlushBuffer() est restauré aussitôt
+// pour que l'append soit retenté dès que la tête rend la place, bien avant
+// le seuil lowBuffer de la salle.
+test('a quota error flushes behind the head and restores the cap at once', () => {
   withFakeHls(hls => {
     const video = { currentTime: 0, buffered: { length: 1, start: () => 0 },
       addEventListener() {}, removeEventListener() {} };
@@ -224,16 +227,22 @@ test('a quota error flushes finished segments and the cap is restored on append'
       hls.config.maxBufferLength = 5; hls.config.maxMaxBufferLength = 5;
       hls.emit('err', { fatal: false, details });
       assert.deepEqual(hls.triggers, [], details);
-      assert.equal(hls.config.maxBufferLength, 5, details);
+      // Seul bufferFullError (quota) déclenche la purge et la restauration.
+      assert.equal(hls.config.maxBufferLength, details === 'bufferFullError' ? 30 : 5, details);
       hls.emit('fb');
       assert.equal(hls.config.maxBufferLength, 30, details);
       assert.equal(hls.config.maxMaxBufferLength, 30, details);
       assert.equal(hls.config.backBufferLength, 10, details);
     }
-    // La tête lit le fragment commençant à 20 s : tout ce qui précède est
-    // purgé sur l'erreur de quota, sans toucher au GOP en cours de décodage.
+    // La tête lit le fragment commençant à 20 s : la purge d'urgence taille
+    // jusqu'à 1 s derrière elle, y compris dans le GOP en cours de décodage.
     hls.streamController = { getAppendedFrag: () => ({ start: 20 }) };
     video.currentTime = 21;
+    hls.emit('err', { fatal: false, details: 'bufferFullError' });
+    assert.deepEqual(hls.triggers, [{ name: 'flushing', data: { startOffset: 0, endOffset: 20, type: 'video' } }]);
+    // Tête en début de GOP : la borne au début du fragment garde le dessus.
+    hls.triggers.length = 0;
+    video.currentTime = 20.2;
     hls.emit('err', { fatal: false, details: 'bufferFullError' });
     assert.deepEqual(hls.triggers, [{ name: 'flushing', data: { startOffset: 0, endOffset: 19.5, type: 'video' } }]);
     hls.emit('err', { fatal: false, details: 'fragParsingError' });
