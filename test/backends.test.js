@@ -109,7 +109,9 @@ test('hls.js is configured for stall-free resume and deep segment reuse', () => 
     assert.equal(config.backBufferLength, 15);
     assert.equal(config.startFragPrefetch, true);
     assert.equal(config.progressive, false);
-    assert.equal(config.maxBufferSize, 80 * 1024 * 1024);
+    // maxBufferSize est un plancher en octets chez hls.js, pas un plafond : 0
+    // le désactive pour que la cible d'avance reste celle d'applyBufferCap.
+    assert.equal(config.maxBufferSize, 0);
   } finally {
     saved === undefined ? delete globalThis.window : globalThis.window = saved;
   }
@@ -149,126 +151,78 @@ test('admin buffer settings reach the hls.js config and retune live', () => {
   try {
     const backend = new HlsJsBackend({}, 'u', { backBufferSeconds: 30, maxBufferMb: 120 });
     assert.equal(config.backBufferLength, 30);
-    assert.equal(config.maxBufferSize, 120 * 1024 * 1024);
-    hls.config.backBufferLength = 30; hls.config.maxBufferSize = 120 * 1024 * 1024;
     backend.setBufferGoal(8, 30, 45, 90);
     assert.equal(hls.config.backBufferLength, 45);
-    assert.equal(hls.config.maxBufferSize, 90 * 1024 * 1024);
+    // Sans débit connu, la cible d'avance reste le plafond nominal.
+    assert.equal(hls.config.maxBufferLength, 30);
+    assert.equal(hls.config.maxMaxBufferLength, 30);
   } finally {
     saved === undefined ? delete globalThis.window : globalThis.window = saved;
   }
 });
-
-test('a saturated SourceBuffer purges the back buffer then restores the target', () => {
-  const { hls } = fakeHls();
-  const saved = globalThis.window;
-  globalThis.window = { Hls: class { constructor() { return hls; } } };
-  window.Hls.Events = { FRAG_BUFFERED: 'fb', MANIFEST_PARSED: 'mp', AUDIO_TRACKS_UPDATED: 'au', SUBTITLE_TRACKS_UPDATED: 'su', ERROR: 'err' };
-  window.Hls.ErrorTypes = { MEDIA_ERROR: 'media', NETWORK_ERROR: 'network' };
-  try {
-    new HlsJsBackend({}, 'u', { backBufferSeconds: 25 });
-    for (const details of ['bufferAppendError', 'bufferFullError']) {
-      hls.config.backBufferLength = 25;
-      hls.emit('err', { fatal: false, details });
-      assert.equal(hls.config.backBufferLength, 0, details);
-      hls.emit('fb');
-      assert.equal(hls.config.backBufferLength, 25, details);
-    }
-    // Other non-fatal errors leave the retention alone.
-    hls.emit('err', { fatal: false, details: 'fragParsingError' });
-    assert.equal(hls.config.backBufferLength, 25);
-  } finally {
-    saved === undefined ? delete globalThis.window : globalThis.window = saved;
-  }
-});
-
-// Deux TimeRanges factices : start() renvoie le début du premier range bufferisé.
-const fakeRanges = (start, end) => ({ length: 1, start: () => start, end: () => end });
 
 const withFakeHls = (fn) => {
   const { hls } = fakeHls();
   const saved = globalThis.window;
-  globalThis.window = { Hls: class { constructor() { return hls; } } };
+  // Le vrai Hls fusionne les options du constructeur dans hls.config.
+  globalThis.window = { Hls: class { constructor(options) { Object.assign(hls.config, options); return hls; } } };
   window.Hls.Events = { FRAG_BUFFERED: 'fb', MANIFEST_PARSED: 'mp', AUDIO_TRACKS_UPDATED: 'au',
-    SUBTITLE_TRACKS_UPDATED: 'su', ERROR: 'err', BUFFER_FLUSHING: 'flushing' };
+    SUBTITLE_TRACKS_UPDATED: 'su', ERROR: 'err', LEVEL_SWITCHED: 'ls', BUFFER_FLUSHING: 'flushing' };
   window.Hls.ErrorTypes = { MEDIA_ERROR: 'media', NETWORK_ERROR: 'network' };
   try { fn(hls); } finally {
     saved === undefined ? delete globalThis.window : globalThis.window = saved;
   }
 };
 
-test('rolling eviction flushes the buffer behind currentTime', () => {
+// À fort débit, l'avance est bornée par le budget d'octets : 50 Mo à
+// 34 Mbps (peak du manifest) ≈ 12,3 s et non 30 s, sinon le quota
+// SourceBuffer de Chrome sature avant l'append du segment suivant.
+test('the forward buffer cap adapts to the level bitrate', () => {
   withFakeHls(hls => {
-    const video = { currentTime: 19.5, buffered: fakeRanges(0, 23.7) };
-    new HlsJsBackend(video, 'u', { backBufferSeconds: 15 });
-    hls.emit('fb');
-    assert.deepEqual(hls.triggers, [{ name: 'flushing',
-      data: { startOffset: 0, endOffset: 4.5, type: undefined } }]);
+    new HlsJsBackend({}, 'u', { bufferSeconds: 30 });
+    assert.equal(hls.config.maxBufferLength, 30);
+    hls.levels = [{ bitrate: 34_000_000 }];
+    hls.currentLevel = 0;
+    hls.emit('ls');
+    const cap = 8 * 50 * 1024 * 1024 / 34_000_000;
+    assert.equal(hls.config.maxBufferLength, cap);
+    assert.equal(hls.config.maxMaxBufferLength, cap);
+    // Un niveau léger retrouve la cible nominale.
+    hls.levels = [{ bitrate: 1_000_000 }];
+    hls.emit('ls');
+    assert.equal(hls.config.maxBufferLength, 30);
   });
 });
 
-test('rolling eviction leaves a fresh buffer alone', () => {
+// Le plancher garantit que la cible reste au-dessus du seuil minBuffer de la
+// room même si le budget d'octets imposerait moins.
+test('the buffer cap never drops below the sync floor', () => {
   withFakeHls(hls => {
-    // currentTime < backBufferSeconds : rien à purger.
-    let video = { currentTime: 8, buffered: fakeRanges(0, 20) };
-    new HlsJsBackend(video, 'u', { backBufferSeconds: 15 });
-    hls.emit('fb');
-    // Tête de lecture déjà dégagée : buffered.start(0) == purgeEnd - marge.
-    video = { currentTime: 30, buffered: fakeRanges(15, 50) };
-    hls.emit('fb');
-    assert.deepEqual(hls.triggers, []);
+    new HlsJsBackend({}, 'u', { bufferSeconds: 30, minBuffer: 8, maxBufferMb: 20 });
+    hls.levels = [{ bitrate: 34_000_000 }];
+    hls.currentLevel = 0;
+    hls.emit('ls');
+    assert.equal(hls.config.maxBufferLength, 12);
   });
 });
 
-test('a quota error evicts now and restores maxBufferLength', () => {
+// Sur erreur de quota, hls.js évicte seul le back-buffer puis retente
+// l'append : aucune purge manuelle, et le plafond bridé par
+// reduceLengthAndFlushBuffer() est restauré au prochain fragment bufferisé.
+test('a quota error is left to hls.js and the cap is restored on append', () => {
   withFakeHls(hls => {
-    const video = { currentTime: 19.5, buffered: fakeRanges(0, 23.7) };
-    new HlsJsBackend(video, 'u', { bufferSeconds: 30, backBufferSeconds: 15 });
+    new HlsJsBackend({}, 'u', { bufferSeconds: 30, backBufferSeconds: 10 });
     for (const details of ['bufferAppendError', 'bufferFullError']) {
-      // reduceLengthAndFlushBuffer() de hls.js a bridé les plafonds.
       hls.config.maxBufferLength = 5; hls.config.maxMaxBufferLength = 5;
-      hls.triggers.length = 0;
       hls.emit('err', { fatal: false, details });
-      assert.deepEqual(hls.triggers, [{ name: 'flushing',
-        data: { startOffset: 0, endOffset: 18.5, type: undefined } }], details);
-      assert.equal(hls.config.maxBufferLength, 30, details);
-      assert.equal(hls.config.maxMaxBufferLength, 60, details);
-      assert.equal(hls.config.backBufferLength, 0, details);
+      assert.deepEqual(hls.triggers, [], details);
+      assert.equal(hls.config.maxBufferLength, 5, details);
       hls.emit('fb');
-      assert.equal(hls.config.backBufferLength, 15, details);
+      assert.equal(hls.config.maxBufferLength, 30, details);
+      assert.equal(hls.config.maxMaxBufferLength, 30, details);
+      assert.equal(hls.config.backBufferLength, 10, details);
     }
-  });
-});
-
-test('a quota error never evicts inside the fragment being decoded', () => {
-  withFakeHls(hls => {
-    // Retirer la keyframe du GOP lu fige le décodeur matériel (Chrome) : la
-    // purge s'arrête au début du fragment courant, pas à currentTime - 1.
-    const video = { currentTime: 19.5, buffered: fakeRanges(0, 33.7) };
-    hls.streamController = { currentFrag: { start: 13.72 } };
-    new HlsJsBackend(video, 'u', { backBufferSeconds: 15 });
-    hls.emit('err', { fatal: false, details: 'bufferFullError' });
-    assert.deepEqual(hls.triggers, [{ name: 'flushing',
-      data: { startOffset: 0, endOffset: 12.72, type: undefined } }]);
-  });
-});
-
-test('eviction also stops at the playing audio fragment boundary', () => {
-  withFakeHls(hls => {
-    const video = { currentTime: 19.5, buffered: fakeRanges(0, 33.7) };
-    hls.streamController = { currentFrag: { start: 14 } };
-    hls.audioStreamController = { fragPlaying: { start: 12 } };
-    new HlsJsBackend(video, 'u', { backBufferSeconds: 15 });
-    hls.emit('err', { fatal: false, details: 'bufferAppendError' });
-    assert.deepEqual(hls.triggers, [{ name: 'flushing',
-      data: { startOffset: 0, endOffset: 12, type: undefined } }]);
-  });
-});
-
-test('a quota error at t=0 does not flush', () => {
-  withFakeHls(hls => {
-    new HlsJsBackend({ currentTime: 0, buffered: fakeRanges(0, 10) }, 'u');
-    hls.emit('err', { fatal: false, details: 'bufferFullError' });
-    assert.deepEqual(hls.triggers, []);
+    hls.emit('err', { fatal: false, details: 'fragParsingError' });
+    assert.equal(hls.config.maxBufferLength, 30);
   });
 });
