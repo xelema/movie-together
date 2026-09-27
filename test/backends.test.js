@@ -240,6 +240,31 @@ test('a quota error evicts now and restores maxBufferLength', () => {
   });
 });
 
+test('a quota error never evicts inside the fragment being decoded', () => {
+  withFakeHls(hls => {
+    // Retirer la keyframe du GOP lu fige le décodeur matériel (Chrome) : la
+    // purge s'arrête au début du fragment courant, pas à currentTime - 1.
+    const video = { currentTime: 19.5, buffered: fakeRanges(0, 33.7) };
+    hls.streamController = { currentFrag: { start: 13.72 } };
+    new HlsJsBackend(video, 'u', { backBufferSeconds: 15 });
+    hls.emit('err', { fatal: false, details: 'bufferFullError' });
+    assert.deepEqual(hls.triggers, [{ name: 'flushing',
+      data: { startOffset: 0, endOffset: 12.72, type: undefined } }]);
+  });
+});
+
+test('eviction also stops at the playing audio fragment boundary', () => {
+  withFakeHls(hls => {
+    const video = { currentTime: 19.5, buffered: fakeRanges(0, 33.7) };
+    hls.streamController = { currentFrag: { start: 14 } };
+    hls.audioStreamController = { fragPlaying: { start: 12 } };
+    new HlsJsBackend(video, 'u', { backBufferSeconds: 15 });
+    hls.emit('err', { fatal: false, details: 'bufferAppendError' });
+    assert.deepEqual(hls.triggers, [{ name: 'flushing',
+      data: { startOffset: 0, endOffset: 12, type: undefined } }]);
+  });
+});
+
 test('a quota error at t=0 does not flush', () => {
   withFakeHls(hls => {
     new HlsJsBackend({ currentTime: 0, buffered: fakeRanges(0, 10) }, 'u');
