@@ -78,11 +78,12 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
     noteTimer = setTimeout(() => { note = ''; if (state === 'error') setState('idle'); render(); }, ms);
   };
   const send = payload => player.send({ type: 'webcam', ...payload });
-  // L'annonce ne part qu'une fois par connexion : memberId change à chaque
-  // socket, une reconnexion republie donc l'état automatiquement.
+  // L'annonce repart dès que la socket ou le pair change : une reconnexion ou
+  // une arrivée tardive republie l'état, sans spammer à chaque état reçu.
   const announce = () => {
-    if (!stream || announcedFor === player.memberId) return;
-    announcedFor = player.memberId;
+    const key = `${player.memberId}|${peerId}`;
+    if (!stream || announcedFor === key) return;
+    announcedFor = key;
     send({ action: 'status', active: true });
   };
   // Négociation dite « parfaite » : le pair le moins poli ignore une offre qui
@@ -194,6 +195,27 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
         }
       }
       render();
+      return;
+    }
+    // Un pair arrive après nous : la caméra locale repart sur une session
+    // WebRTC propre, refait l'offre et republie son état.
+    if (event.action === 'peer-joined') {
+      peerId = event.from;
+      if (peerName && event.name) peerName.textContent = event.name;
+      if (stream) {
+        ignoreOffer = false;
+        pendingCandidates = [];
+        try { pc?.close(); } catch {}
+        pc = null;
+        const conn = connect();
+        for (const track of stream.getTracks()) conn.addTrack(track, stream);
+        try {
+          makingOffer = true;
+          await conn.setLocalDescription();
+          send({ action: 'signal', to: peerId, signal: { description: conn.localDescription } });
+        } finally { makingOffer = false; }
+        announce();
+      }
       return;
     }
     if (event.action === 'peer-left') resetRemote(false);
