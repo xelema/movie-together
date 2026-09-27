@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Clock, bufferEnd, SyncPlayer } from '../public/sync-player.js';
-import { decide, memberReady, readyBlockers } from '../public/sync-core.js';
+import { decide, memberReady, readyBlockers, canBegin } from '../public/sync-core.js';
 
 test('clock estimates offset using the shortest round trip and expires old samples', () => {
   const clock = new Clock();
@@ -111,7 +111,7 @@ test('readiness blockers name each failing gate', () => {
   };
   assert.deepEqual(readyBlockers(base), []);
   assert.deepEqual(readyBlockers({ ...base, activated: false }), ['activation']);
-  assert.deepEqual(readyBlockers({ ...base, clockReady: false, hidden: true }), ['clock', 'hidden']);
+  assert.deepEqual(readyBlockers({ ...base, clockReady: false }), ['clock']);
   assert.deepEqual(readyBlockers({ ...base, seeking: true, readyState: 2 }), ['seeking', 'data']);
   assert.deepEqual(readyBlockers({ ...base, position: 12.8 }), ['drift']);
   assert.deepEqual(readyBlockers({ ...base, failure: 'x', rendererReady: false, recovering: true }),
@@ -122,6 +122,27 @@ test('buffer measurement never counts ranges beyond a gap', () => {
   const video = { currentTime: 2, buffered: { length: 2, start: i => [0, 20][i], end: i => [4, 60][i] } };
   assert.equal(bufferEnd(video), 4);
   video.currentTime = 10; assert.equal(bufferEnd(video), 10);
+});
+
+test('bufferEnd bridges micro-gaps between consecutive fragments', () => {
+  // Segment 3 ends at 23.522s, Segment 4 starts at 23.732s (gap = 0.21s)
+  const video = {
+    currentTime: 18,
+    buffered: { length: 2, start: i => [0, 23.732][i], end: i => [23.522, 33.742][i] }
+  };
+  assert.equal(bufferEnd(video), 33.742);
+});
+
+test('hidden tab does not pause playback or block readiness', () => {
+  const base = {
+    activating: false, state: { phase: 'playing', startsAt: 0, position: 10, duration: 100 },
+    clockReady: true, hidden: true, online: true, silent: false,
+    decoded: true, seeking: false, paused: false, currentTime: 10, bufferedStart: 0,
+    target: 10, serverNow: 3000, activated: true, scheduled: 0,
+  };
+  assert.deepEqual(decide(base), { normalizeRate: true });
+  assert.deepEqual(readyBlockers({ ...base, rendererReady: true, recovering: false, readyState: 4, position: 10 }), []);
+  assert.equal(canBegin({ state: base.state, scheduled: 0, activated: true, failure: null, hidden: true, silent: false }), true);
 });
 
 test('audio authorization reports readiness without issuing a group play command', async () => {
