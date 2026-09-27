@@ -121,7 +121,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   const chunkBytes = () => settings.get('chunkMb') * 1024 ** 2;
   const subtitleBytes = () => settings.get('maxSubtitleMb') * 1024 ** 2;
   const applySettings = () => {
-    hub.tune({ minBuffer: settings.get('minBuffer'), lowBuffer: settings.get('lowBuffer') });
+    hub.tune({ minBuffer: settings.get('minBuffer'), lowBuffer: settings.get('lowBuffer'),
+      backBufferSeconds: settings.get('backBufferSeconds'), maxBufferMb: settings.get('maxBufferMb') });
   };
   const hub = createRoomHub({ origin, settings, sessionFor,
     sessionActive: session => session.expires > Date.now() && [...sessions.values()].includes(session),
