@@ -16,10 +16,21 @@ export class Clock {
 }
 
 export function bufferEnd(video) {
+  let end = video.currentTime;
   for (let i = 0; i < video.buffered.length; i++) {
-    if (video.buffered.start(i) <= video.currentTime + 0.05 && video.buffered.end(i) >= video.currentTime) return video.buffered.end(i);
+    const start = video.buffered.start(i);
+    const rangeEnd = video.buffered.end(i);
+    if (start <= end + 0.05 && rangeEnd >= end) {
+      end = rangeEnd;
+      // Bridge micro-gaps (<= 0.25s) caused by GOP boundary rounding or audio/video muxing
+      while (i + 1 < video.buffered.length && video.buffered.start(i + 1) - end <= 0.25) {
+        i++;
+        end = video.buffered.end(i);
+      }
+      return end;
+    }
   }
-  return video.currentTime;
+  return end;
 }
 
 export class SyncPlayer {
@@ -32,7 +43,7 @@ export class SyncPlayer {
     this.retries = 0; this.listeners = [];
     // Defaults until the room publishes its sync policy in welcome.
     this.sync = { minBuffer: 8, tickMs: 200, startDelay: 1000 };
-    this.silenceMs = 1500; this.bufferSeconds = 60; this.reportEveryMs = 200;
+    this.silenceMs = 1500; this.bufferSeconds = 30; this.reportEveryMs = 200;
     this.listen(video, 'waiting', () => { if (this.state?.phase === 'playing' && this.serverTime() >= this.state.startsAt) this.report(false); });
     this.listen(video, 'canplay', () => {
       this.recovering = false;
@@ -85,8 +96,7 @@ export class SyncPlayer {
       if (!selfCaused(performance.now(), this.internalUntil) && this.state) this.command('seek', this.position());
     });
     this.listen(document, 'visibilitychange', () => {
-      if (document.hidden) { this.pauseLocal(); this.report(false); }
-      else if (this.activated) this.acquireWakeLock();
+      if (!document.hidden && this.activated) this.acquireWakeLock();
     });
     // A dead network leaves the socket open but silent: pause locally, report
     // once, and surface the reason now rather than waiting for a close event.
@@ -201,7 +211,7 @@ export class SyncPlayer {
     // Buffer targets must exceed what the room requires to start; silence is
     // declared after several missed ticks; reports must land inside startDelay
     // for the ack-of-start handshake.
-    this.bufferSeconds = Math.max(60, Math.ceil(this.sync.minBuffer * 2));
+    this.bufferSeconds = Math.max(25, Math.min(45, Math.ceil(this.sync.minBuffer * 2.5)));
     this.silenceMs = Math.max(1500, this.sync.tickMs * 7.5);
     const cadence = Math.min(200, this.sync.startDelay / 5);
     if (cadence !== this.reportEveryMs) {
