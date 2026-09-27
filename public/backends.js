@@ -58,13 +58,13 @@ export class HlsJsBackend {
   recoversErrors = true;
 
   constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 8, bitrate,
-      backBufferSeconds = 15, maxBufferMb = 80 } = {},
+      backBufferSeconds = 15, maxBufferMb = 50 } = {},
     { onTracksChanged, onBuffered, onStalled, onFatal } = {}) {
     this.video = video; this.timelineOffset = timelineOffset; this.bitrate = bitrate;
-    this.bufferSeconds = bufferSeconds; this.backBufferSeconds = backBufferSeconds;
+    this.bufferSeconds = bufferSeconds; this.minBuffer = minBuffer;
+    this.backBufferSeconds = backBufferSeconds; this.maxBufferMb = maxBufferMb;
     this.mediaRecoveries = 0; this.networkRecoveries = 0;
-    this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
-      maxBufferSize: maxBufferMb * 1024 * 1024, backBufferLength: backBufferSeconds,
+    this.hls = new window.Hls({ maxBufferSize: 0, backBufferLength: backBufferSeconds,
       startFragPrefetch: true, enableWorker: true,
       maxBufferHole: 0.5, highBufferWatchdogPeriod: 2, nudgeMaxRetry: 5, nudgeOffset: 0.1,
       // progressive fetch splits each 10 s fMP4 into chunks and aborts them on
@@ -72,37 +72,26 @@ export class HlsJsBackend {
       progressive: false,
       fragLoadingTimeOut: 30_000, fragLoadingMaxRetry: 4, fragLoadingRetryDelay: 1000,
       fragLoadingMaxRetryDelay: 8000, manifestLoadingTimeOut: 15_000, levelLoadingTimeOut: 15_000 });
+    this.applyBufferCap();
 
     const trackController = this.hls.subtitleTrackController;
     if (trackController) trackController.toggleTrackModes = () => pinSubtitleModes(trackController);
     this.hls.loadSource(url); this.hls.attachMedia(video);
+    // Le débit de pointe du niveau n'est connu qu'après le manifest.
+    this.hls.on(window.Hls.Events.LEVEL_SWITCHED, () => this.applyBufferCap());
     this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => {
-      // Fin de purge : la rétention arrière retrouve sa cible une fois le
-      // back-buffer saturant évacué par l'append qui vient de se terminer.
-      if (this.purging) { this.purging = false; this.hls.config.backBufferLength = this.backBufferSeconds; }
-      this.evictBackBuffer();
+      // Append réussi : la place est revenue, on restaure le plafond que
+      // reduceLengthAndFlushBuffer() avait bridé sur erreur de quota.
+      this.applyBufferCap();
       onBuffered?.();
     });
     for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) {
       this.hls.on(window.Hls.Events[name], () => onTracksChanged?.());
     }
     this.hls.on(window.Hls.Events.ERROR, (event, data) => {
-      // SourceBuffer saturé : ramener la rétention arrière à zéro pour que le
-      // buffer-controller purge derrière la tête de lecture au prochain
-      // fragment, au lieu de saturer le quota à nouveau.
-      if (!data.fatal) {
-        if (data.details === 'bufferAppendError' || data.details === 'bufferFullError') {
-          // Quota plein : hls.js a réduit maxMaxBufferLength pour débloquer
-          // l'append (reduceLengthAndFlushBuffer), on restaure la cible et on
-          // purge nous-mêmes derrière la tête de lecture.
-          this.purging = true;
-          this.hls.config.backBufferLength = 0;
-          this.hls.config.maxBufferLength = this.bufferSeconds;
-          this.hls.config.maxMaxBufferLength = this.bufferSeconds * 2;
-          this.evictBehind(this.video.currentTime - 1);
-        }
-        return;
-      }
+      // Quota SourceBuffer dépassé : hls.js évicte lui-même le back-buffer
+      // (fragments entiers avant la tête de lecture) puis retente l'append.
+      if (!data.fatal) return;
       onStalled?.();
       // Hls.js already retries transient requests. Bound recovery after a fatal error.
       if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && this.mediaRecoveries++ < 1) this.hls.recoverMediaError();
@@ -111,46 +100,29 @@ export class HlsJsBackend {
     });
   }
 
-  // Purge manuelle derrière la tête de lecture, seulement s'il reste des
-  // données à supprimer. BUFFER_FLUSHING sans type vide tous les
-  // SourceBuffers sur [0, endOffset]. hls.js n'évicte de lui-même que des
-  // fragments entiers terminés avant currentTime, et sa formule de trim
-  // (floor(currentTime/targetDuration)*targetDuration - max(backBufferLength,
-  // targetDuration)) n'agit qu'au-delà de 2×targetDuration : un segment à
-  // cheval sur la tête de lecture n'est jamais purgé, le SourceBuffer saturé
-  // bloque tout append — deadlock.
-  evictBehind(purgeEnd) {
-    // Jamais dans le fragment en cours de décodage : retirer la keyframe du
-    // GOP lu fige le décodeur matériel de Chrome. Même borne que le
-    // cleanupBackBuffer() de hls.js : début du fragment lu, -1 s pour la
-    // vidéo, pile au début pour l'audio (ses trames sont indépendantes).
-    const videoFrag = this.hls.streamController?.currentFrag;
-    if (videoFrag) purgeEnd = Math.min(purgeEnd, videoFrag.start - 1);
-    const audioCtl = this.hls.audioStreamController;
-    const audioFrag = audioCtl && (audioCtl.fragPlaying ?? audioCtl.getAppendedFrag(this.video.currentTime));
-    if (audioFrag) purgeEnd = Math.min(purgeEnd, audioFrag.start);
-    const buffered = this.video.buffered;
-    if (purgeEnd > 0 && buffered?.length && buffered.start(0) < purgeEnd - 0.5) {
-      this.hls.trigger(window.Hls.Events.BUFFER_FLUSHING,
-        { startOffset: 0, endOffset: purgeEnd, type: undefined });
-    }
-  }
-
-  // Éviction au fil de l'eau, à chaque fragment bufferisé.
-  evictBackBuffer() {
-    this.evictBehind(this.video.currentTime - this.backBufferSeconds);
+  // Cible d'avance en secondes, plafonnée par le budget maxBufferMb au débit
+  // réel du niveau (BANDWIDTH du manifest). Sur un flux lourd (peak 34 Mbps),
+  // 30 s d'avance dépassent le quota SourceBuffer de Chrome et l'append du
+  // prochain segment échoue en boucle ; ~12-15 s suffisent à couvrir minBuffer.
+  applyBufferCap() {
+    const level = this.hls.levels?.[this.hls.currentLevel];
+    const bps = level?.bitrate || this.bitrate;
+    const floor = Math.min(this.bufferSeconds, Math.max(12, this.minBuffer));
+    let cap = this.bufferSeconds;
+    if (bps) cap = 8 * this.maxBufferMb * 1024 * 1024 / bps;
+    cap = Math.min(this.bufferSeconds, Math.max(floor, cap));
+    Object.assign(this.hls.config, { maxBufferLength: cap, maxMaxBufferLength: cap });
   }
 
   // The room's thresholds can change at runtime; hls.js reads its config live.
   setBufferGoal(minBuffer, bufferSeconds, backBufferSeconds, maxBufferMb) {
-    this.bufferSeconds = bufferSeconds;
-    Object.assign(this.hls.config, { maxBufferLength: bufferSeconds,
-      maxMaxBufferLength: bufferSeconds * 2 });
+    this.minBuffer = minBuffer; this.bufferSeconds = bufferSeconds;
     if (backBufferSeconds !== undefined) {
       this.backBufferSeconds = backBufferSeconds;
       this.hls.config.backBufferLength = backBufferSeconds;
     }
-    if (maxBufferMb !== undefined) this.hls.config.maxBufferSize = maxBufferMb * 1024 * 1024;
+    if (maxBufferMb !== undefined) this.maxBufferMb = maxBufferMb;
+    this.applyBufferCap();
   }
 
   audioTracks() {

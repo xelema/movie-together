@@ -7,7 +7,7 @@ test('defaults come from the registry, env can raise them', () => {
   assert.equal(plain.get('minBuffer'), 8);
   assert.equal(plain.get('maxMovieGb'), 20);
   assert.equal(plain.get('backBufferSeconds'), 15);
-  assert.equal(plain.get('maxBufferMb'), 80);
+  assert.equal(plain.get('maxBufferMb'), 50);
   const tuned = createSettings({ env: { MIN_BUFFER_SECONDS: '20', ENCODE_THREADS: '6',
     BACK_BUFFER_SECONDS: '30', MAX_BUFFER_MB: '120' } });
   assert.equal(tuned.get('minBuffer'), 20);
@@ -20,7 +20,7 @@ test('defaults come from the registry, env can raise them', () => {
   assert.equal(bad.get('minBuffer'), 8);
   assert.equal(bad.get('encodeThreads'), 2);
   assert.equal(bad.get('backBufferSeconds'), 15);
-  assert.equal(bad.get('maxBufferMb'), 80);
+  assert.equal(bad.get('maxBufferMb'), 50);
   // An env pair that breaks a cross-field rule reverts both keys.
   const skewed = createSettings({ env: { MIN_BUFFER_SECONDS: '4', LOW_BUFFER_SECONDS: '9' } });
   assert.equal(skewed.get('minBuffer'), 8);
