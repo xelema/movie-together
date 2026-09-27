@@ -120,6 +120,15 @@ export class HlsJsBackend {
   // cheval sur la tête de lecture n'est jamais purgé, le SourceBuffer saturé
   // bloque tout append — deadlock.
   evictBehind(purgeEnd) {
+    // Jamais dans le fragment en cours de décodage : retirer la keyframe du
+    // GOP lu fige le décodeur matériel de Chrome. Même borne que le
+    // cleanupBackBuffer() de hls.js : début du fragment lu, -1 s pour la
+    // vidéo, pile au début pour l'audio (ses trames sont indépendantes).
+    const videoFrag = this.hls.streamController?.currentFrag;
+    if (videoFrag) purgeEnd = Math.min(purgeEnd, videoFrag.start - 1);
+    const audioCtl = this.hls.audioStreamController;
+    const audioFrag = audioCtl && (audioCtl.fragPlaying ?? audioCtl.getAppendedFrag(this.video.currentTime));
+    if (audioFrag) purgeEnd = Math.min(purgeEnd, audioFrag.start);
     const buffered = this.video.buffered;
     if (purgeEnd > 0 && buffered?.length && buffered.start(0) < purgeEnd - 0.5) {
       this.hls.trigger(window.Hls.Events.BUFFER_FLUSHING,
