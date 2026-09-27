@@ -42,7 +42,7 @@ export class SyncPlayer {
     this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.pendingPauses = 0;
     this.retries = 0; this.listeners = [];
     // Defaults until the room publishes its sync policy in welcome.
-    this.sync = { minBuffer: 8, tickMs: 200, startDelay: 1000, backBufferSeconds: 15, maxBufferMb: 50 };
+    this.sync = { minBuffer: 4, tickMs: 200, startDelay: 1000, backBufferSeconds: 5, maxBufferMb: 50 };
     this.silenceMs = 1500; this.bufferSeconds = 30; this.reportEveryMs = 200;
     this.listen(video, 'waiting', () => { if (this.state?.phase === 'playing' && this.serverTime() >= this.state.startsAt) this.report(false); });
     this.listen(video, 'canplay', () => {
