@@ -132,10 +132,10 @@ test('waiting status names the gate that blocks the member', () => {
   assert.deepEqual(room.memberStatus('a').blockers, ['activation', 'clock']);
   report('a', { ready: false, failure: 'Lecture impossible sur cet appareil.' });
   assert.equal(room.memberStatus('a').failure, 'Lecture impossible sur cet appareil.');
-  report('a', { bufferedUntil: 5 });
+  report('a', { bufferedUntil: 3 });
   assert.equal(room.memberStatus('a').reason, 'low-buffer');
-  assert.equal(room.memberStatus('a').buffered, 5);
-  assert.equal(room.memberStatus('a').needed, 8);
+  assert.equal(room.memberStatus('a').buffered, 3);
+  assert.equal(room.memberStatus('a').needed, 4);
   report('a', { position: 30, bufferedUntil: 60 });
   assert.equal(room.memberStatus('a').reason, 'misaligned');
   report('a');
