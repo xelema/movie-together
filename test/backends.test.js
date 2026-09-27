@@ -106,7 +106,7 @@ test('hls.js is configured for stall-free resume and deep segment reuse', () => 
   window.Hls.ErrorTypes = { MEDIA_ERROR: 'media', NETWORK_ERROR: 'network' };
   try {
     new HlsJsBackend({}, 'u');
-    assert.equal(config.backBufferLength, 15);
+    assert.equal(config.backBufferLength, 5);
     assert.equal(config.startFragPrefetch, true);
     assert.equal(config.progressive, false);
     // maxBufferSize est un plancher en octets chez hls.js, pas un plafond : 0
@@ -169,6 +169,7 @@ const withFakeHls = (fn) => {
   window.Hls.Events = { FRAG_BUFFERED: 'fb', MANIFEST_PARSED: 'mp', AUDIO_TRACKS_UPDATED: 'au',
     SUBTITLE_TRACKS_UPDATED: 'su', ERROR: 'err', LEVEL_SWITCHED: 'ls', BUFFER_FLUSHING: 'flushing' };
   window.Hls.ErrorTypes = { MEDIA_ERROR: 'media', NETWORK_ERROR: 'network' };
+  window.Hls.ErrorDetails = { BUFFER_FULL_ERROR: 'bufferFullError' };
   try { fn(hls); } finally {
     saved === undefined ? delete globalThis.window : globalThis.window = saved;
   }
@@ -203,15 +204,22 @@ test('the buffer cap never drops below the sync floor', () => {
     hls.currentLevel = 0;
     hls.emit('ls');
     assert.equal(hls.config.maxBufferLength, 12);
+    // Avec des segments de 10 s, le plancher suit targetDuration : un seul
+    // segment d'avance suffit quand deux ne tiennent pas dans le quota.
+    hls.levels = [{ bitrate: 34_000_000, details: { targetduration: 10 } }];
+    hls.emit('ls');
+    assert.equal(hls.config.maxBufferLength, 10);
   });
 });
 
-// Sur erreur de quota, hls.js évicte seul le back-buffer puis retente
-// l'append : aucune purge manuelle, et le plafond bridé par
+// Sur erreur de quota, on purge d'urgence les segments terminés derrière la
+// tête pour rendre la place au segment en append ; le plafond bridé par
 // reduceLengthAndFlushBuffer() est restauré au prochain fragment bufferisé.
-test('a quota error is left to hls.js and the cap is restored on append', () => {
+test('a quota error flushes finished segments and the cap is restored on append', () => {
   withFakeHls(hls => {
-    new HlsJsBackend({}, 'u', { bufferSeconds: 30, backBufferSeconds: 10 });
+    const video = { currentTime: 0, buffered: { length: 1, start: () => 0 },
+      addEventListener() {}, removeEventListener() {} };
+    new HlsJsBackend(video, 'u', { bufferSeconds: 30, backBufferSeconds: 10 });
     for (const details of ['bufferAppendError', 'bufferFullError']) {
       hls.config.maxBufferLength = 5; hls.config.maxMaxBufferLength = 5;
       hls.emit('err', { fatal: false, details });
@@ -222,7 +230,32 @@ test('a quota error is left to hls.js and the cap is restored on append', () => 
       assert.equal(hls.config.maxMaxBufferLength, 30, details);
       assert.equal(hls.config.backBufferLength, 10, details);
     }
+    // La tête lit le fragment commençant à 20 s : tout ce qui précède est
+    // purgé sur l'erreur de quota, sans toucher au GOP en cours de décodage.
+    hls.streamController = { getAppendedFrag: () => ({ start: 20 }) };
+    video.currentTime = 21;
+    hls.emit('err', { fatal: false, details: 'bufferFullError' });
+    assert.deepEqual(hls.triggers, [{ name: 'flushing', data: { startOffset: 0, endOffset: 19.5, type: 'video' } }]);
     hls.emit('err', { fatal: false, details: 'fragParsingError' });
     assert.equal(hls.config.maxBufferLength, 30);
+  });
+});
+
+// Un segment de 10 s pèse 20-34 Mo : dès que la tête entre dans le suivant,
+// tout le back-buffer vidéo antérieur est purgé au lieu d'attendre l'éviction
+// native de hls.js, qui conserve encore un targetDuration entier. Jamais dans
+// le fragment lu : sa keyframe est nécessaire au décodeur.
+test('a finished video fragment is flushed once the head leaves it', () => {
+  withFakeHls(hls => {
+    const video = { currentTime: 21, buffered: { length: 1, start: () => 0 },
+      addEventListener() {}, removeEventListener() {} };
+    new HlsJsBackend(video, 'u', { backBufferSeconds: 5 });
+    hls.streamController = { getAppendedFrag: () => ({ start: 20 }) };
+    hls.emit('fb');
+    assert.deepEqual(hls.triggers, [{ name: 'flushing', data: { startOffset: 0, endOffset: 19.5, type: 'video' } }]);
+    // Tête toujours dans le premier fragment : rien derrière elle à purger.
+    hls.streamController = { getAppendedFrag: () => ({ start: 0 }) };
+    hls.emit('fb');
+    assert.equal(hls.triggers.length, 1);
   });
 });
