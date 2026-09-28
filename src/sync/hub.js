@@ -229,6 +229,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       return;
     }
     if (message.action === 'status') {
+      ws.webcamActive = !!message.active;
       const data = JSON.stringify({ type: 'webcam', action: 'status', from: ws.memberId, name: ws.displayName, active: !!message.active });
       for (const client of others) client.send(data);
       return;
@@ -383,7 +384,17 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
         languages: room.languages,
         ...(room.voice ? { voice: room.voice } : {}),
         ...(room.webcam ? { webcam: room.webcam } : {}),
-        sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs: cadence.tickMs } })); broadcast(room);
+        sync: { minBuffer, lowBuffer, reportTimeout, startDelay, tickMs: cadence.tickMs } }));
+      // Arrivée tardive sans rechargement : les pairs déjà en caméra déclarent
+      // leur flux au nouveau venu, qui se signale à eux pour renégocier.
+      if (room.webcam) {
+        for (const other of room.clients) {
+          if (other === ws || other.readyState !== WebSocket.OPEN) continue;
+          if (other.webcamActive) ws.send(JSON.stringify({ type: 'webcam', action: 'status', from: other.memberId, name: other.displayName, active: true }));
+          other.send(JSON.stringify({ type: 'webcam', action: 'peer-joined', from: ws.memberId, name: ws.displayName }));
+        }
+      }
+      broadcast(room);
       ws.on('pong', () => { ws.alive = true; });
       ws.on('error', () => {});
       ws.on('message', (data, isBinary) => {
