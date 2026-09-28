@@ -1,0 +1,23 @@
+# Proxy des previews de pull request.
+#
+# Les ports 80/443 de l'hote appartiennent au Caddy de production : les previews sont
+# servies sur 8443, avec un certificat wildcard obtenu par challenge DNS-01 DuckDNS.
+# Le DNS DuckDNS resout deja n'importe quel sous-domaine de $PREVIEW_DOMAIN vers
+# l'hote, donc aucun enregistrement n'est a creer et chaque PR obtient son URL sans
+# consommer de domaine supplementaire.
+#
+# Une preview s'appelle pr-<numero>.<domaine> et son conteneur porte l'alias
+# pr-<numero>-app sur le reseau `previews` : le troisieme label de l'hote donne
+# directement le nom du service a joindre, donc ajouter ou fermer une PR ne demande
+# aucune modification de ce fichier. (Le nombre de labels est verifie par
+# bootstrap.sh : le domaine doit en comporter trois.)
+{
+	admin off
+}
+
+https://*.{$PREVIEW_DOMAIN}:{$PREVIEW_PORT} {
+	tls {
+		dns duckdns {$DUCKDNS_TOKEN}
+	}
+	reverse_proxy {http.request.host.labels.3}-app:3000
+}
