@@ -1,0 +1,201 @@
+name: Deploy
+
+# Declencheur : le workflow `Checks` vient de se terminer sur main. On ne deploie
+# que si les tests sont verts, et on deploie exactement le commit teste
+# (workflow_run.head_sha), pas la tete de main au moment du deploiement.
+on:
+  workflow_run:
+    workflows: [Checks]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Commit a deployer (defaut : la tete de main)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Un seul deploiement a la fois, et jamais d'annulation en cours de bascule :
+# une bascule a moitie faite laisserait la prod dans un etat inconnu.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  IMAGE: movie-together-app
+  PROD_DIR: /home/ubuntu/movie-together
+  PUBLIC_URL: https://movie-together.duckdns.org
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - name: Recuperer le commit teste
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.sha || github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Construire l'image du commit
+        run: |
+          set -euo pipefail
+          short=$(git rev-parse --short=7 HEAD)
+          echo "SHORT_SHA=$short" >> "$GITHUB_ENV"
+          docker build --tag "$IMAGE:main-$short" .
+          docker image inspect "$IMAGE:main-$short" >/dev/null
+          echo "image construite : $IMAGE:main-$short a partir de $(git rev-parse HEAD)"
+
+      - name: Ecrire l'override Compose epingle sur l'image construite
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/compose.deploy.yaml" <<EOF
+          services:
+            app:
+              image: $IMAGE:main-$SHORT_SHA
+              pull_policy: never
+          EOF
+          cat "$RUNNER_TEMP/compose.deploy.yaml"
+
+      # Garde-fou : la config resolue est inspectee avant toute action. On verifie que le
+      # projet Compose est bien celui de la prod (donc qu'on met a jour les conteneurs
+      # existants au lieu d'en creer d'autres), que le volume de films est celui de la
+      # prod, et que le service app ne publie aucun port.
+      - name: Verifier la configuration resolue
+        run: |
+          set -euo pipefail
+          sudo -n docker compose \
+            --project-directory "$PROD_DIR" \
+            -f "$GITHUB_WORKSPACE/compose.yaml" \
+            -f "$RUNNER_TEMP/compose.deploy.yaml" \
+            config --format json > "$RUNNER_TEMP/resolved.json"
+          python3 - "$RUNNER_TEMP/resolved.json" "$IMAGE:main-$SHORT_SHA" <<'PY'
+          import json
+          import sys
+
+          resolved = json.load(open(sys.argv[1]))
+          expected_image = sys.argv[2]
+          app = resolved["services"]["app"]
+          problems = []
+
+          def check(label, actual, expected):
+              if actual != expected:
+                  problems.append(f"{label} : {actual!r} au lieu de {expected!r}")
+
+          check("nom du projet Compose", resolved.get("name"), "movie-together")
+          check("image du service app", app.get("image"), expected_image)
+          check("volume de films", [v["source"] for v in app.get("volumes", [])], ["movie-data"])
+          check("ports publies par app", app.get("ports"), None)
+          check("app en lecture seule", app.get("read_only"), True)
+          origin = str(app.get("environment", {}).get("APP_ORIGIN", ""))
+          if not origin.startswith("https://"):
+              problems.append(f"APP_ORIGIN inutilisable : {origin!r}")
+          if problems:
+              print("\n".join(problems))
+              sys.exit(1)
+          print(f"configuration conforme : projet {resolved['name']}, image {app['image']}, "
+                f"volume {app['volumes'][0]['source']}, APP_ORIGIN {origin}")
+          PY
+
+      - name: Noter l'image en service
+        id: previous
+        run: |
+          set -euo pipefail
+          previous=$(docker inspect --format '{{.Image}}' movie-together-app-1 2>/dev/null || true)
+          echo "image_id=$previous" >> "$GITHUB_OUTPUT"
+          echo "image en service avant deploiement : ${previous:-inconnue}"
+
+      # Bascule du seul service app : le proxy Caddy de prod n'est pas recree, il
+      # resout le nouveau conteneur par son nom DNS.
+      - name: Basculer le service app
+        run: |
+          set -euo pipefail
+          sudo -n docker compose \
+            --project-directory "$PROD_DIR" \
+            -f "$GITHUB_WORKSPACE/compose.yaml" \
+            -f "$RUNNER_TEMP/compose.deploy.yaml" \
+            up --detach --no-build --wait --wait-timeout 180 app
+
+      - name: Verifier la prod
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error --max-time 10 "$PUBLIC_URL/healthz" >/dev/null; then
+              echo "sante publique OK apres $attempt tentative(s)"
+              break
+            fi
+            if [ "$attempt" = 12 ]; then
+              echo "::error::$PUBLIC_URL/healthz ne repond pas apres le deploiement"
+              sudo -n docker compose --project-directory "$PROD_DIR" \
+                -f "$GITHUB_WORKSPACE/compose.yaml" -f "$RUNNER_TEMP/compose.deploy.yaml" \
+                logs --tail=50 app || true
+              exit 1
+            fi
+            echo "tentative $attempt : /healthz pas encore vert, nouvel essai dans 5 s"
+            sleep 5
+          done
+
+          running=$(docker inspect --format '{{.Config.Image}}' movie-together-app-1)
+          echo "image en service : $running"
+          if [ "$running" != "$IMAGE:main-$SHORT_SHA" ]; then
+            echo "::error::l'image en service ($running) n'est pas celle qui vient d'etre construite ($IMAGE:main-$SHORT_SHA)"
+            exit 1
+          fi
+          docker ps --filter name=movie-together-proxy-1 --format 'proxy : {{.Names}} {{.Status}}'
+          docker ps --filter name=movie-together-app-1 --format 'app : {{.Names}} {{.Image}} {{.Status}}'
+
+      # Si la verification echoue, on revient sur l'image qui tournait avant la bascule.
+      - name: Revenir a l'image precedente
+        if: failure() && steps.previous.outputs.image_id != ''
+        run: |
+          set -uo pipefail
+          echo "::warning::rollback vers ${{ steps.previous.outputs.image_id }}"
+          docker tag "${{ steps.previous.outputs.image_id }}" "$IMAGE:rollback"
+          cat > "$RUNNER_TEMP/compose.rollback.yaml" <<EOF
+          services:
+            app:
+              image: $IMAGE:rollback
+              pull_policy: never
+          EOF
+          sudo -n docker compose \
+            --project-directory "$PROD_DIR" \
+            -f "$GITHUB_WORKSPACE/compose.yaml" \
+            -f "$RUNNER_TEMP/compose.rollback.yaml" \
+            up --detach --no-build --wait --wait-timeout 180 app
+          if curl --fail --silent --max-time 10 "$PUBLIC_URL/healthz" >/dev/null; then
+            echo "prod revenue sur l'image precedente"
+          else
+            echo "::error::la prod ne repond toujours pas apres le rollback : intervention manuelle requise"
+          fi
+          docker ps --filter name=movie-together-app-1 --format 'app : {{.Names}} {{.Image}} {{.Status}}'
+          exit 1
+
+      # On ne garde que les 5 derniers tags de deploiement. `movie-together-app:latest`,
+      # construite par deploy/deploy.sh, n'est jamais touchee.
+      - name: Purger les anciennes images de deploiement
+        if: always()
+        run: |
+          set -uo pipefail
+          keep=$((5))
+          current="$IMAGE:main-$SHORT_SHA"
+          docker image ls --format '{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}' \
+            --filter "reference=$IMAGE:main-*" | sort -k2 -r | tail -n "+$((keep + 1))" | cut -f1 |
+            grep -v -x "$current" | xargs -r docker image rm || true
+          docker image ls --filter "reference=$IMAGE" --format '{{.Repository}}:{{.Tag}} {{.Size}}'
+
+      - name: Resume
+        if: always()
+        run: |
+          {
+            echo "## Deploiement production"
+            echo
+            echo "- commit : \`$(git rev-parse HEAD)\`"
+            echo "- image : \`$IMAGE:main-${SHORT_SHA:-inconnu}\`"
+            echo "- image precedente : \`${{ steps.previous.outputs.image_id }}\`"
+            echo "- verification : \`$PUBLIC_URL/healthz\`"
+            echo "- statut du job : ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"

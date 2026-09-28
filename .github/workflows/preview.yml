@@ -1,0 +1,191 @@
+name: Preview
+
+# Une PR ouverte (ou mise a jour) obtient une URL temporaire
+# https://pr-<numero>.movie-together.duckdns.org:8443, servie par la stack permanente
+# de deploy/preview/. La fermeture de la PR supprime la preview, et un menage
+# quotidien efface les previews orphelines.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  schedule:
+    # Menage des previews orphelines (PR fermee sans evenement, preview oubliee).
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'Numero de PR a deployer ou a supprimer'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number || github.event.inputs.pr || 'cleanup' }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: movie-together-app
+  PREVIEW_DIR: /home/ubuntu/previews
+  PREVIEW_DOMAIN: movie-together.duckdns.org
+  PREVIEW_PORT: '8443'
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || (github.event.action != 'closed' && !github.event.pull_request.draft)
+    runs-on: self-hosted
+    timeout-minutes: 25
+    steps:
+      - name: Recuperer le commit de la PR
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Calculer le numero de PR
+        run: |
+          set -euo pipefail
+          short=$(git rev-parse --short=7 HEAD)
+          {
+            echo "PR_NUMBER=${{ github.event.pull_request.number || github.event.inputs.pr }}"
+            echo "SHORT_SHA=$short"
+            echo "PREVIEW_URL=https://pr-${{ github.event.pull_request.number || github.event.inputs.pr }}.$PREVIEW_DOMAIN:$PREVIEW_PORT"
+          } >> "$GITHUB_ENV"
+
+      # La stack permanente est installee par ce script ; --ensure la laisse telle
+      # quelle si elle tourne deja avec un token DuckDNS.
+      - name: S'assurer que le proxy des previews tourne
+        env:
+          DUCKDNS_TOKEN: ${{ secrets.DUCKDNS_TOKEN }}
+        run: |
+          set -euo pipefail
+          sudo -n env DUCKDNS_TOKEN="$DUCKDNS_TOKEN" \
+            PREVIEW_DOMAIN="$PREVIEW_DOMAIN" PREVIEW_PORT="$PREVIEW_PORT" \
+            bash deploy/preview/bootstrap.sh --ensure
+          if ! docker ps --filter name=previews-proxy --format '{{.Names}}' | grep -q previews-proxy; then
+            echo "::error::le proxy des previews ne tourne pas : voir docs/cd.md (deploy/preview/bootstrap.sh)"
+            exit 1
+          fi
+
+      - name: Construire l'image de la PR
+        run: |
+          set -euo pipefail
+          docker build --tag "$IMAGE:pr-$PR_NUMBER-$SHORT_SHA" .
+          docker image inspect "$IMAGE:pr-$PR_NUMBER-$SHORT_SHA" >/dev/null
+
+      - name: Demarrer la preview
+        env:
+          PREVIEW_ADMIN_PASSWORD: ${{ secrets.PREVIEW_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          sudo -n env \
+            PREVIEW_ADMIN_PASSWORD="$PREVIEW_ADMIN_PASSWORD" \
+            PREVIEW_DOMAIN="$PREVIEW_DOMAIN" PREVIEW_PORT="$PREVIEW_PORT" \
+            PREVIEW_DIR="$PREVIEW_DIR" \
+            bash deploy/preview/up.sh "$PR_NUMBER" "$IMAGE:pr-$PR_NUMBER-$SHORT_SHA"
+
+      - name: Verifier la preview
+        run: |
+          set -euo pipefail
+          host="pr-$PR_NUMBER.$PREVIEW_DOMAIN"
+          # Premier temps : le conteneur et le routage du proxy, sans dependre du
+          # pare-feu externe (resolution forcee vers la VM elle-meme).
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error --max-time 10 \
+              --resolve "$host:$PREVIEW_PORT:127.0.0.1" "$PREVIEW_URL/healthz" >/dev/null; then
+              echo "preview prete en local : $PREVIEW_URL"
+              break
+            fi
+            if [ "$attempt" = 12 ]; then
+              echo "::error::$PREVIEW_URL/healthz ne repond pas via le proxy des previews"
+              echo "::group::journaux du conteneur"
+              docker logs --tail=80 "pr-$PR_NUMBER-app-1" || true
+              echo "::endgroup::"
+              exit 1
+            fi
+            echo "tentative $attempt : la preview n'est pas encore prete"
+            sleep 5
+          done
+
+          # Second temps : depuis l'exterieur, comme le navigateur. C'est cette requete
+          # qui dit si l'URL est reellement utilisable.
+          if ! error=$(curl --fail --silent --show-error --max-time 20 "$PREVIEW_URL/healthz" 2>&1); then
+            echo "::error::$PREVIEW_URL n'est pas joignable depuis l'exterieur ($error)"
+            echo "Verifier la regle d'entree TCP $PREVIEW_PORT dans la liste de securite du VCN,"
+            echo "le secret DUCKDNS_TOKEN et le certificat du proxy (voir docs/cd.md)."
+            exit 1
+          fi
+          echo "preview joignable depuis l'exterieur : $PREVIEW_URL"
+          {
+            echo "## Preview de la PR $PR_NUMBER"
+            echo
+            echo "- URL : $PREVIEW_URL"
+            echo "- commit : \`$SHORT_SHA\`"
+            echo "- image : \`$IMAGE:pr-$PR_NUMBER-$SHORT_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publier l'URL sur la PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # L'etat de la preview appartient a root : on le relit avec sudo.
+          metadata=$(sudo -n cat "$PREVIEW_DIR/pr-$PR_NUMBER/metadata.json" 2>/dev/null || true)
+          password=$(printf '%s' "$metadata" | sed -n 's/.*"adminPassword": *"\([^"]*\)".*/\1/p' | head -1)
+          [ -n "$password" ] || password='voir metadata.json sur la VM'
+          body=$(cat <<EOF
+          <!-- preview -->
+          ### Preview prete
+
+          **${PREVIEW_URL}**
+
+          - commit : \`$SHORT_SHA\`
+          - image : \`$IMAGE:pr-$PR_NUMBER-$SHORT_SHA\`
+          - mot de passe de connexion : \`$password\` (mot de passe jetable, propre a la preview)
+          - journaux : \`docker logs -f pr-$PR_NUMBER-app-1\` sur la VM
+
+          La preview disparait a la fermeture de cette PR.
+          EOF
+          )
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.body | startswith("<!-- preview -->")) | .id' | head -1 || true)
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" --field body="$body" >/dev/null
+            echo "commentaire de preview mis a jour"
+          else
+            gh pr comment "$PR_NUMBER" --body "$body"
+            echo "commentaire de preview cree"
+          fi
+
+  teardown:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Supprimer la preview
+        run: |
+          set -euo pipefail
+          sudo -n bash deploy/preview/down.sh "${{ github.event.pull_request.number }}"
+
+  cleanup:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: self-hosted
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Supprimer les previews orphelines
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          open=$(gh pr list --state open --limit 200 --json number --jq '[.[].number] | join(" ")')
+          sudo -n env OPEN_PRS="$open" bash deploy/preview/cleanup.sh
