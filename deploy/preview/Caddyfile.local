@@ -1,0 +1,12 @@
+# Variante utilisee uniquement pour verifier la chaine en local, tant que le secret
+# DUCKDNS_TOKEN n'est pas configure : le certificat est emis par la CA interne de
+# Caddy, donc le navigateur affichera un avertissement de securite et les APIs de
+# capture (webcam, micro) resteront bloquees. Ne jamais servir une PR reelle ainsi.
+{
+	admin off
+}
+
+https://*.{$PREVIEW_DOMAIN}:{$PREVIEW_PORT} {
+	tls internal
+	reverse_proxy {http.request.host.labels.3}-app:3000
+}

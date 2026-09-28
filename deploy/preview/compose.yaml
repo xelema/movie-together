@@ -1,0 +1,44 @@
+# Stack permanente des previews : un Caddy qui sert *.PREVIEW_DOMAIN sur 8443, avec un
+# seul certificat wildcard, et les conteneurs de preview qui le rejoignent par le
+# reseau `previews`.
+#
+# Installation et mise a jour : sudo bash deploy/preview/bootstrap.sh
+# Les fichiers sont copies dans /home/ubuntu/previews (PREVIEW_DIR) : l'etat de l'hote
+# ne depend pas du dossier de travail du runner, qui est efface a chaque execution.
+name: previews
+
+services:
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: caddy-duckdns:2.11
+    restart: unless-stopped
+    environment:
+      PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:?Definir PREVIEW_DOMAIN}
+      PREVIEW_PORT: ${PREVIEW_PORT:-8443}
+      DUCKDNS_TOKEN: ${DUCKDNS_TOKEN:-}
+    ports:
+      - '${PREVIEW_PORT:-8443}:${PREVIEW_PORT:-8443}'
+    volumes:
+      - ${PREVIEW_CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile:ro
+      - preview-caddy-data:/data
+      - preview-caddy-config:/config
+    networks:
+      - previews
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+volumes:
+  preview-caddy-data:
+  preview-caddy-config:
+
+networks:
+  # Le reseau est cree par bootstrap.sh : il est partage par le proxy et par chaque
+  # preview, qui le rejoint avec l'alias pr-<numero>-app.
+  previews:
+    name: previews
+    external: true
