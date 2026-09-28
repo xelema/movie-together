@@ -90,7 +90,11 @@ export function attachTelemetry(player, video, roomId) {
     if (seen.blk !== undefined && seen.blk !== player.activationBlocked) push('activation-blocked', { blocked: player.activationBlocked });
     if (seen.uni !== undefined && seen.uni !== uniform) push('renderer-hidden', { uniform });
     if (seen.phase !== undefined && seen.phase !== player.state?.phase) push('phase', { from: seen.phase, to: player.state?.phase });
-    Object.assign(seen, { ws: wsState, act: player.activated, blk: player.activationBlocked, uni: uniform, phase: player.state?.phase });
+    // Cap rabattu à un seul segment (quota MSE) : rare, il prouve au prochain
+    // test que la contention sur le SourceBuffer a disparu.
+    const capLimited = player.backend?.capLimited;
+    if (capLimited && !seen.cap) push('buffer-cap', capLimited);
+    Object.assign(seen, { ws: wsState, act: player.activated, blk: player.activationBlocked, uni: uniform, phase: player.state?.phase, cap: capLimited });
     push('tick', {
       pos: +player.position().toFixed(2), target: +player.target().toFixed(2),
       ahead: +Math.max(0, bufferEnd(video) - player.offset - player.position()).toFixed(2), ranges,
