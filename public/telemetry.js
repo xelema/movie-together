@@ -43,7 +43,7 @@ const gpuInfo = () => g(() => {
   if (!gl) return { webgl2: false };
   const info = g(() => gl.getExtension('WEBGL_debug_renderer_info'));
   const read = param => g(() => gl.getParameter(param));
-  return {
+  const found = {
     webgl2,
     vendor: read(info?.UNMASKED_VENDOR_WEBGL ?? gl?.VENDOR),
     renderer: read(info?.UNMASKED_RENDERER_WEBGL ?? gl?.RENDERER),
@@ -51,6 +51,11 @@ const gpuInfo = () => g(() => {
     glsl: read(gl?.SHADING_LANGUAGE_VERSION),
     maxTexture: read(gl?.MAX_TEXTURE_SIZE),
   };
+  // Le contexte est rendu tout de suite : un poste sans GPU en accorde très peu,
+  // et une sonde de diagnostic ne doit pas priver le moteur de couleurs du sien
+  // (sans contexte, le rendu des couleurs échoue et la séance ne joue plus).
+  g(() => gl.getExtension('WEBGL_lose_context')?.loseContext());
+  return found;
 });
 
 // Prise sécurisée sur un objet de capacité : support oui/non/vide.
