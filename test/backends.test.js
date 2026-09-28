@@ -268,3 +268,74 @@ test('a finished video fragment is flushed once the head leaves it', () => {
     assert.equal(hls.triggers.length, 1);
   });
 });
+
+// Option C : le budget en octets (50 Mo à 34 Mbps ≈ 12,3 s) ne couvre pas deux
+// segments de 10,01 s (20,02 s). Sans borne, ce budget faisait remonter le cap
+// au-dessus d'un segment et hls.js gardait deux segments résidents :
+// 20 + 21,5 Mo > quota 40 Mo, le second append mourait en bufferAppendNoProgress.
+// L'avance est donc bornée à un seul segment dès que deux dépassent le budget.
+test('the cap falls back to one segment when two exceed the byte budget', () => {
+  withFakeHls(hls => {
+    const backend = new HlsJsBackend({}, 'u', { bufferSeconds: 30, minBuffer: 4, maxBufferMb: 50 });
+    hls.levels = [{ bitrate: 34_000_000, details: { targetduration: 10.01 } }];
+    hls.currentLevel = 0;
+    hls.emit('ls');
+    assert.equal(hls.config.maxBufferLength, 10.01);
+    assert.equal(hls.config.maxMaxBufferLength, 10.01);
+    // La télémétrie doit voir le cap rabattu : c'est l'événement qui dira au
+    // prochain test si la contention du quota a disparu.
+    assert.deepEqual(backend.capLimited, { cap: 10.01, target: 10.01, mbps: 34 });
+    // Deux segments tiennent dans le budget : le calcul en octets reprend ses droits.
+    hls.levels = [{ bitrate: 20_000_000, details: { targetduration: 10 } }];
+    hls.emit('ls');
+    assert.equal(hls.config.maxBufferLength, 8 * 50 * 1024 * 1024 / 20_000_000);
+    assert.equal(backend.capLimited, null);
+  });
+});
+
+// Un targetDuration sous minBuffer ne doit pas rabattre le cap sous le seuil
+// de démarrage de la salle : le plancher l'emporte.
+test('the single-segment cap never drops below the room floor', () => {
+  withFakeHls(hls => {
+    new HlsJsBackend({}, 'u', { bufferSeconds: 30, minBuffer: 6, maxBufferMb: 20 });
+    hls.levels = [{ bitrate: 34_000_000, details: { targetduration: 4 } }];
+    hls.currentLevel = 0;
+    hls.emit('ls');
+    assert.equal(hls.config.maxBufferLength, 6);
+    assert.equal(hls.config.maxMaxBufferLength, 6);
+  });
+});
+
+// Back-buffer adaptatif au débit : 5 s à ~34 Mbps gardent ~21 Mo derrière la
+// tête et mangent la marge du quota ; sous ~8 Mbps ils ne coûtent rien et
+// évitent un re-buffering sur retour arrière.
+test('the back buffer shrinks on heavy streams and stays put on light ones', () => {
+  withFakeHls(hls => {
+    new HlsJsBackend({}, 'u', { bufferSeconds: 30, backBufferSeconds: 5 });
+    hls.levels = [{ bitrate: 34_000_000, details: { targetduration: 10 } }];
+    hls.currentLevel = 0;
+    hls.emit('ls');
+    assert.equal(hls.config.backBufferLength, 0.5);
+    hls.levels = [{ bitrate: 4_000_000, details: { targetduration: 10 } }];
+    hls.emit('ls');
+    assert.equal(hls.config.backBufferLength, 5);
+    assert.equal(hls.config.maxBufferLength, 30);
+  });
+});
+
+// Sur flux léger, le réglage admin reste libre ; sur flux lourd il est
+// plafonné à 0,5 s comme le défaut — le quota prime sur le retour arrière.
+test('the admin back buffer is honored on light streams only', () => {
+  withFakeHls(hls => {
+    const backend = new HlsJsBackend({}, 'u', { backBufferSeconds: 30 });
+    hls.levels = [{ bitrate: 2_000_000, details: { targetduration: 4 } }];
+    hls.currentLevel = 0;
+    hls.emit('ls');
+    assert.equal(hls.config.backBufferLength, 30);
+    backend.setBufferGoal(4, 30, 12);
+    assert.equal(hls.config.backBufferLength, 12);
+    hls.levels = [{ bitrate: 34_000_000, details: { targetduration: 10 } }];
+    hls.emit('ls');
+    assert.equal(hls.config.backBufferLength, 0.5);
+  });
+});
