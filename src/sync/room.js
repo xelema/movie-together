@@ -5,6 +5,15 @@ export const validThresholds = ({ minBuffer, lowBuffer }) => minBuffer > lowBuff
 // report diagnostics share this filter.
 export const cleanText = value => String(value).replace(/[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/g, '');
 
+// Whether a member is in step with the room's own position, or parked on a head
+// it cannot get behind: a remuxed film's first decodable frame can sit a few
+// frames after zero, and no seek puts a viewer before it. Without that exception
+// the start gate waits for an alignment the file cannot produce and the séance
+// stays in buffering forever. The gap is capped at a few frames, so a member that
+// is genuinely elsewhere is still reported as misaligned.
+const ALIGNMENT = 0.1;
+const HEAD_GAP = 0.25;
+
 export class Room {
   constructor({ now = () => performance.now(), minBuffer = 8, lowBuffer = 3,
     reportTimeout = 3000, startDelay = 1000 } = {}) {
@@ -39,6 +48,17 @@ export class Room {
       report.bufferedUntil >= Math.min(this.duration ?? Infinity, position + reserve);
   }
 
+  // Shared by the start gate in tick() and by the display in memberStatus(): one
+  // definition of "in step", so a stuck séance never blames an alignment it
+  // already accepts.
+  aligned(report, position) {
+    if (!report) return false;
+    if (Math.abs(report.position - position) <= ALIGNMENT) return true;
+    const head = report.bufferedStart;
+    return Number.isFinite(head) && head > position && head - position <= HEAD_GAP &&
+      Math.abs(report.position - head) <= ALIGNMENT;
+  }
+
   // What the séance knows of a participant, for display. `waiting` mirrors the
   // phase gates: a member out of alignment blocks a start while wantsPlay is set.
   // `reason` names the first failing gate so a stuck séance explains itself, and
@@ -49,7 +69,7 @@ export class Room {
     const position = this.positionAt(time);
     const report = member.report;
     const reserve = this.phase === 'playing' ? this.lowBuffer : this.minBuffer;
-    const aligned = report && Math.abs(report.position - position) <= 0.1;
+    const aligned = this.aligned(report, position);
     const waiting = !this.healthy(report, reserve, position, time) ||
       (this.wantsPlay && this.phase !== 'playing' && !aligned);
     const fresh = report && time - report.receivedAt < this.reportTimeout;
@@ -124,16 +144,19 @@ export class Room {
     return { snapshot: this.snapshot(), changed: true };
   }
 
-  report(id, { epoch, sequence, position, bufferedUntil, ready, ackStartsAt = null, blockers = null, failure = null }) {
+  report(id, { epoch, sequence, position, bufferedUntil, bufferedStart = null, ready, ackStartsAt = null, blockers = null, failure = null }) {
     const member = this.requireMember(id);
     if (epoch !== this.epoch || !Number.isSafeInteger(sequence) || sequence <= member.sequence) {
       return { snapshot: this.snapshot(), changed: false };
     }
     // Positions are bounded to the film (+1 s of decode overshoot): a report the room can
-    // never satisfy is invalid input, not a member to wait on. Same for an acknowledgement
-    // that is not the current start: storing it would freeze every future start.
+    // never satisfy is invalid input, not a member to wait on. The head of the buffered
+    // range rides along so a start position it precedes is read as unreachable rather
+    // than as misalignment. Same for an acknowledgement that is not the current start:
+    // storing it would freeze every future start.
     const bound = (this.duration ?? Infinity) + 1;
     if (!Number.isFinite(position) || position < 0 || position > bound ||
+      (bufferedStart !== null && (!Number.isFinite(bufferedStart) || bufferedStart < 0 || bufferedStart > bound)) ||
       !Number.isFinite(bufferedUntil) || bufferedUntil < position || bufferedUntil > bound || typeof ready !== 'boolean' ||
       (ackStartsAt !== null && ackStartsAt !== this.startsAt) ||
       (blockers !== null && (!Array.isArray(blockers) || blockers.length > 12 || blockers.some(name => typeof name !== 'string' || name.length > 40))) ||
@@ -141,7 +164,7 @@ export class Room {
       throw new RangeError('Invalid playback report');
     }
     member.sequence = sequence;
-    member.report = { position, bufferedUntil, ready, ackStartsAt, receivedAt: this.now(),
+    member.report = { position, bufferedUntil, bufferedStart, ready, ackStartsAt, receivedAt: this.now(),
       blockers: blockers?.map(cleanText) ?? null, failure: failure === null ? null : cleanText(failure) };
     return this.tick();
   }
@@ -161,7 +184,7 @@ export class Room {
       if (!reports.every(report => healthy(report, this.lowBuffer)) ||
         (time >= this.startsAt - 300 && !reports.every(report => report.ackStartsAt === this.startsAt))) this.freeze();
     } else if (this.wantsPlay && this.duration !== null && reports.length &&
-      reports.every(report => healthy(report, this.minBuffer) && Math.abs(report.position - position) <= 0.1)) {
+      reports.every(report => healthy(report, this.minBuffer) && this.aligned(report, position))) {
       this.phase = 'playing';
       this.startsAt = time + this.startDelay;
     }

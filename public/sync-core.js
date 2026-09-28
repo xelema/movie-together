@@ -7,6 +7,12 @@
 export const INTERNAL_EVENT_MS = 500;
 export const selfCaused = (now, internalUntil) => now <= internalUntil;
 
+// A remuxed film can start a few frames after zero, and nothing plays before that
+// first decodable frame: a start position behind it is unreachable, so the member
+// aims at the head instead. The room applies the same allowance to accept such a
+// start as aligned (see src/sync/room.js).
+export const HEAD_GAP = 0.25;
+
 // Where the room's film is now, in room time.
 export function roomTarget(state, serverNow) {
   if (!state) return 0;
@@ -28,8 +34,10 @@ export function decide({ activating, state, clockReady, hidden, online, silent,
   if (!state || !clockReady || !online || silent) return { pause: true };
   if (state.phase !== 'playing' || serverNow < state.startsAt) {
     const action = { pause: true };
-    // B-frame reordering can leave a tiny initial gap after lossless remuxing.
-    const seekTarget = bufferedStart > target && bufferedStart - target <= 0.1 ? bufferedStart + 0.00001 : target;
+    // B-frame reordering can leave a few frames of gap after lossless remuxing.
+    // Seeking behind the head cannot succeed, so the head itself is the target;
+    // the seek below then stays quiet instead of re-firing every tick.
+    const seekTarget = bufferedStart > target && bufferedStart - target <= HEAD_GAP ? bufferedStart + 0.00001 : target;
     // A seek issued before the first decoded frame never completes on WebKit and
     // would wedge the player in seeking, blocking the whole room.
     if (decoded && !seeking &&

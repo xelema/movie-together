@@ -47,6 +47,20 @@ test('keeps audio at normal speed and pauses the group for excessive drift', () 
   assert.equal(decide({ ...paused, decoded: false }).seekTo, undefined);
 });
 
+test('a start position behind the film head aims at the head instead of re-seeking', () => {
+  const waiting = {
+    activating: false, state: { phase: 'buffering', startsAt: null, position: 0, duration: 100 },
+    clockReady: true, hidden: false, online: true, silent: false,
+    decoded: true, seeking: false, paused: true, currentTime: 0.12, bufferedStart: 0.12,
+    target: 0, serverNow: 3000, activated: true, scheduled: null,
+  };
+  // The media cannot present anything before 0.12 s, so a seek to 0 lands back on the
+  // head every tick and the room never sees an alignment: the head is the target.
+  assert.deepEqual(decide(waiting), { pause: true });
+  // A head further ahead than a few frames is real content, not a landing offset.
+  assert.equal(decide({ ...waiting, currentTime: 5, bufferedStart: 5 }).seekTo, 0);
+});
+
 test('the post-start stabilization window absorbs decoder warm-up drift', () => {
   const base = {
     activating: false, state: { phase: 'playing', startsAt: 0, position: 10, duration: 100 },
