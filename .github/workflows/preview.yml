@@ -117,6 +117,13 @@ jobs:
             exit 1
           fi
           echo "preview joignable depuis l'exterieur : $PREVIEW_URL"
+          {
+            echo "## Preview de la PR $PR_NUMBER"
+            echo
+            echo "- URL : $PREVIEW_URL"
+            echo "- commit : \`$SHORT_SHA\`"
+            echo "- image : \`$IMAGE:pr-$PR_NUMBER-$SHORT_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publier l'URL sur la PR
         if: github.event_name == 'pull_request'
@@ -124,7 +131,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          password=$(sed -n 's/.*"adminPassword": *"\([^"]*\)".*/\1/p' "$PREVIEW_DIR/pr-$PR_NUMBER/metadata.json" | head -1)
+          # L'etat de la preview appartient a root : on le relit avec sudo.
+          metadata=$(sudo -n cat "$PREVIEW_DIR/pr-$PR_NUMBER/metadata.json" 2>/dev/null || true)
+          password=$(printf '%s' "$metadata" | sed -n 's/.*"adminPassword": *"\([^"]*\)".*/\1/p' | head -1)
+          [ -n "$password" ] || password='voir metadata.json sur la VM'
           body=$(cat <<EOF
           <!-- preview -->
           ### Preview prete

@@ -149,6 +149,9 @@ sudo bash deploy/preview/down.sh <numero>                         # supprimer un
 ## Limites connues
 
 - La recréation du conteneur `app` coupe les séances en cours.
+- Le runner self-hosted est unique : les jobs s'exécutent en série, donc le job de
+  preview d'une PR attend la fin de **Checks** avant de démarrer (compter le temps des
+  tests e2e en plus du sien).
 - Une preview ne peut pas tester une modification de la configuration Caddy de
   production ni du service `proxy` : elle n'exécute que le service `app`.
 - Le port 8443 doit rester ouvert en entrée ; s'il est fermé, les previews sont
