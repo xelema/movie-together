@@ -38,15 +38,27 @@ function clientReport(file, events) {
 
   console.log(`\n===== ${path.basename(file)} =====`);
   if (caps) {
-    console.log(`participant : ${caps.name ?? '?'} · ${caps.ua?.match(/\(([^)]*)\)/)?.[1] ?? caps.ua}`);
-    console.log(`écran : ${caps.screen?.join('x')} @${caps.dpr}x · gamut ${caps.color?.gamut ?? caps.gamut} · dynamic-range ${caps.color?.range ?? caps.range} · GPU ${caps.gpu?.renderer ?? caps.gpu ?? '?'}`);
-    console.log(`codecs : ${JSON.stringify(caps.canPlay ?? caps.codecs ?? {})} · mse ${JSON.stringify(caps.mse ?? {})} · hls.js ${caps.hlsjs?.version ?? '?'}`);
-    if (caps.mediaCap?.rendition) console.log(`décodage matériel : ${JSON.stringify(caps.mediaCap.rendition)}`);
-    if (caps.jsHeap) console.log(`mémoire JS : ${mio(caps.jsHeap.used ?? 0)} / ${mio(caps.jsHeap.limit ?? 0)} · cœurs ${caps.cores} · réseau ${JSON.stringify(caps.conn ?? {})}`);
-    const rendition = caps.movie?.renditions?.[0] ?? caps.rendition;
-    if (rendition) console.log(`film : ${rendition.codec} ${rendition.w ?? rendition.width}x${rendition.h ?? rendition.height}${rendition.color ? ` · ${rendition.color.transfer}/${rendition.color.primaries} ${rendition.color.bitDepth}b · peak ${rendition.color.peakNits} nits` : ''}`);
-    if (caps.movie) console.log(`risque segments : max ${caps.movie.maxSegmentBytes ? (caps.movie.maxSegmentBytes / 1024 ** 2).toFixed(1) : '?'} Mio · gop ${caps.movie.maxSegmentSeconds ?? '?'} s · ${caps.movie.bufferRisk?.level ?? 'non mesuré'}${caps.movie.bufferRisk ? ` (p90 ${caps.movie.bufferRisk.p90SegmentMb} Mio)` : ''}`);
-    if (caps.room) console.log(`séance : probe=${caps.room.probe} · langues ${caps.room.languages} · démarrage ${caps.room.minBuffer} s · réserve ${caps.room.lowBuffer} s · mode ${caps.room.mode ?? '?'}`);
+    const screen = caps.screen ? `${caps.screen.w}x${caps.screen.h}${caps.screen.depth ? ` @${caps.screen.depth}b` : ''}` : '?';
+    console.log(`participant : ${caps.name ?? '?'} · ${caps.platform ?? '?'}${caps.mobile ? ' (mobile)' : ''} · ${caps.ua?.match(/\(([^)]*)\)/)?.[1] ?? caps.ua}`);
+    console.log(`écran : ${screen} @${caps.dpr}x · fenêtre ${caps.viewport ? `${caps.viewport.w}x${caps.viewport.h}` : '?'} · gamut ${caps.color?.gamut ?? '?'} · dynamic-range ${caps.color?.range ?? '?'} · ${caps.tz ?? ''} · cœurs ${caps.cores ?? '?'}`);
+    console.log(`GPU : ${caps.gpu?.renderer ?? '?'} · webgl2 ${caps.gpu?.webgl2 ?? '?'} · maxTexture ${caps.gpu?.maxTexture ?? '?'}`);
+    const playable = caps.canPlay ?? {}, muxable = caps.mse ?? {};
+    const yes = source => Object.entries(source).filter(([, value]) => value).map(([name]) => name).join(',') || 'aucun';
+    console.log(`codecs : lecture directe ${yes(playable)} · MSE ${yes(muxable)} · hls natif ${caps.nativeHls} · hls.js ${caps.hlsjs?.version ?? '?'} (${caps.hlsjs?.supported ? 'supporté' : 'non supporté'})`);
+    if (caps.mediaCap?.film) {
+      const film = caps.mediaCap.film;
+      console.log(`film : ${film.codec} ${film.w}x${film.h} @${((film.bitrate ?? 0) / 1e6).toFixed(1)} Mb/s — décodage ${film.supported ? 'oui' : 'NON'}${film.smooth === false ? ' · pas fluide' : ''}${film.powerEfficient ? ' · efficace' : ''}`);
+      const refused = ['h264', 'hevc', 'av1', 'vp9'].filter(name => caps.mediaCap[name] && caps.mediaCap[name].supported === false);
+      if (refused.length) console.log(`  codecs refusés par MediaCapabilities : ${refused.join(', ')}`);
+    }
+    if (caps.jsHeap) console.log(`mémoire JS : ${mio(caps.jsHeap.used ?? 0)} / ${mio(caps.jsHeap.limit ?? 0)} · réseau ${JSON.stringify(caps.conn ?? {})} · stockage ${mio(caps.storage?.quota ?? 0)}`);
+    const features = Object.entries(caps.features ?? {}).filter(([, value]) => !value).map(([name]) => name);
+    if (features.length) console.log(`API absentes : ${features.join(', ')}`);
+    const rendition = caps.movie?.renditions?.[0];
+    if (rendition) console.log(`rendition : ${rendition.id} ${rendition.codec} ${rendition.w}x${rendition.h}${rendition.videoRange ? ` · ${rendition.videoRange}` : ''}${caps.movie.renditions.length > 1 ? ` (+${caps.movie.renditions.length - 1})` : ''}`);
+    if (caps.movie) console.log(`risque segments : max ${caps.movie.maxSegmentBytes ? (caps.movie.maxSegmentBytes / 1024 ** 2).toFixed(1) : '?'} Mio · gop ${caps.movie.maxSegmentSeconds ?? caps.movie.bufferRisk?.gopSeconds ?? '?'} s · ${caps.movie.bufferRisk?.level ?? 'non mesuré'}${Number.isFinite(caps.movie.bufferRisk?.p90SegmentMb) ? ` (p90 ${caps.movie.bufferRisk.p90SegmentMb} Mio)` : ''} · génération ${String(caps.movie.generation ?? '').slice(0, 8)}`);
+    if (caps.room) console.log(`séance : probe=${caps.room.probe} · langues ${caps.room.languages} · démarrage ${caps.room.minBuffer} s · réserve ${caps.room.lowBuffer} s · délai rapport ${Number.isFinite(caps.room.reportTimeout) ? `${(caps.room.reportTimeout / 1000).toFixed(0)} s` : '?'} · mode ${caps.room.mode ?? '?'}`);
+    if (caps.session) console.log(`entrée : ${caps.session.enter ?? '?'}${caps.session.admin ? ' · admin' : ''}${caps.session.hdr ? ` · hdr ${caps.session.hdr}` : ''}`);
   }
   console.log(`session : ${new Date(first).toISOString()} → ${((last - first) / 60000).toFixed(1)} min · ${events.length} événements${caps?.sid ? ` · sid ${caps.sid}` : ''}`);
 
@@ -72,7 +84,7 @@ function clientReport(file, events) {
   if (lastTick?.buf) console.log(`tampon MSE par piste : ${JSON.stringify(lastTick.buf).slice(0, 400)}`);
 
   const stalls = of(events, 'video-waiting').length + of(events, 'video-stalled').length;
-  const seeks = of(events, 'video-seeked');
+  const seeks = of(events, 'video-seeking');
   const reconnects = of(events, 'ws').filter(event => event.to === 0 || event.retries);
   const phases = of(events, 'phase').map(event => `${event.from}->${event.to}`);
   console.log(`stalls : ${stalls} · seeks : ${seeks.length} · reconnexions ws : ${reconnects.length} · phases : ${phases.join(', ') || 'stable'}`);
@@ -95,10 +107,16 @@ function clientReport(file, events) {
 
   const segs = of(events, 'seg').filter(event => (event.b ?? 0) > 0);
   if (segs.length) {
-    const bytes = total(segs.map(event => event.b)), seconds = total(segs.map(event => event.d)) / 1000;
+    const bytes = total(segs.map(event => event.b));
     const aborted = segs.filter(event => event.status === 0 || (event.enc ?? event.b) < 4096);
-    console.log(`segments : ${segs.length} · ${mio(bytes)} · débit moyen ${(bytes * 8 / Math.max(seconds, 0.001) / 1e6).toFixed(1)} Mb/s · plus lent ${ms(Math.max(...segs.map(event => event.d ?? 0)))} · ttfb médian ${ms(median(segs.map(event => event.ttfb)))}`);
+    console.log(`segments : ${segs.length} · ${mio(bytes)} · requête médiane ${ms(median(segs.map(event => event.d)))} · p95 ${ms(p95(segs.map(event => event.d)))} · plus lente ${ms(Math.max(...segs.map(event => event.d ?? 0)))} · ttfb médian ${ms(median(segs.map(event => event.ttfb)))}`);
+    const byKind = {};
+    for (const seg of segs) byKind[seg.kind] = (byKind[seg.kind] ?? 0) + 1;
+    console.log(`  par nature : ${Object.entries(byKind).map(([kind, n]) => `${kind}×${n}`).join(' · ')}${segs.some(seg => seg.cached) ? ' · certains servis par le cache' : ''}`);
     if (aborted.length) console.log(`  avortements client : ${aborted.length} (dont ${aborted.filter(event => event.n?.includes('init_')).length} init)`);
+    const loaded = hlsEvents.filter(event => event.ev === 'frag-loaded' && Number.isFinite(event.bytes) && Number.isFinite(event.end) && Number.isFinite(event.start));
+    const media = total(loaded.map(event => event.end - event.start));
+    if (media > 0) console.log(`  débit média : ${((total(loaded.map(event => event.bytes)) * 8 / media) / 1e6).toFixed(1)} Mb/s (${mio(total(loaded.map(event => event.bytes)))} sur ${fmt(media)} s de film)`);
   }
 
   for (const rtc of of(events, 'rtc').slice(-2)) {
@@ -127,7 +145,7 @@ function clientReport(file, events) {
     for (const error of of(events, type).slice(-5)) console.log(`  ${type} : ${error.msg ?? `${error.status ?? ''} ${error.path ?? ''} ${error.name ?? ''}`}${error.stack ? ` (${String(error.stack).split('\n')[0]})` : ''}`);
   }
   const long = of(events, 'longtask');
-  if (long.length) console.log(`blocages du fil principal : ${long.length} · pire ${ms(Math.max(...long.map(event => event.d ?? 0)))}`);
+  if (long.length) console.log(`blocages du fil principal : ${long.length} · pire ${ms(Math.max(...long.map(event => event.ms ?? event.d ?? 0)))}${long.some(event => event.capped) ? ' (comptage plafonné)' : ''}`);
   const drops = of(events, 'queue');
   if (drops.length) console.log(`événements perdus : ${total(drops.map(event => event.dropped ?? 0))} (${drops.length} vidages en retard)`);
 }
