@@ -120,6 +120,9 @@ progress::-moz-progress-bar{background:var(--text-3)}
 .steps [data-state=failed]{border-color:var(--danger);color:var(--danger)}
 html[lang=ko] .steps li{font-family:var(--sans);letter-spacing:.02em;text-transform:none}
 .hint{font-size:12px;color:var(--text-4);margin:4px 0}
+.media-risk{font-size:12px;margin:4px 0}
+.media-risk[data-tone=danger]{color:var(--danger)}
+.media-risk[data-tone=pending]{color:var(--pending)}
 #disk-space.insufficient{color:var(--danger)}
 .title-row{display:flex;gap:10px;margin-top:8px}
 .title-row input{flex:1;min-width:0}

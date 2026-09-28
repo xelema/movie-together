@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { codecPlayable, pinSubtitleModes, HlsJsBackend, nativeHls, supportsMime } from '../public/backends.js';
+import { codecPlayable, pinSubtitleModes, HlsJsBackend, nativeHls, supportsMime, bufferRiskBadge } from '../public/backends.js';
 
 test('codecPlayable blocks a video codec the device rejects', () => {
   assert.equal(codecPlayable({ codec: 'hevc' }, () => false), false);
@@ -338,4 +338,18 @@ test('the admin back buffer is honored on light streams only', () => {
     hls.emit('ls');
     assert.equal(hls.config.backBufferLength, 0.5);
   });
+});
+
+test('bufferRiskBadge only warns past the MSE quota, with the numbers behind it', () => {
+  const t = fr => fr;
+  assert.equal(bufferRiskBadge(null, t), null);
+  assert.equal(bufferRiskBadge({ level: 'ok' }, t), null);
+  const risk = bufferRiskBadge({ level: 'risk', maxSegmentMb: 33.35, gopSeconds: 10 }, t);
+  assert.equal(risk.tone, 'danger');
+  assert.match(risk.text, /risque/);
+  assert.match(risk.title, /33\.35 Mo/);
+  assert.match(risk.title, /GOP court/);
+  const edge = bufferRiskBadge({ level: 'edge', maxSegmentMb: 9.2 }, t);
+  assert.equal(edge.tone, 'pending');
+  assert.match(edge.text, /limite/);
 });

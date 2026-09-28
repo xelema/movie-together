@@ -1,4 +1,5 @@
 import { SyncPlayer } from './sync-player.js';
+import { bufferRiskBadge } from './backends.js';
 import { attachTelemetry } from './telemetry.js';
 import { label, language, setScopeLanguages, scopeLanguages, vietnamese } from './labels.js';
 import { trackName, defaultTrackNames, sourceTitle, trackLayout, languageName } from './track-names.js';
@@ -353,7 +354,7 @@ async function refresh() {
   if (player || !adminPage) return;
   const lang = language();
   const signature = movie => JSON.stringify([lang, movie.status, movie.progress, movie.title, movie.error,
-    movie.probe, movie.trackNames, movie.externalTracks, movie.subtitles]);
+    movie.probe, movie.trackNames, movie.externalTracks, movie.subtitles, movie.bufferRisk]);
   const render = movie => {
     const key = signature(movie), cached = movieCards.get(movie.id);
     if (cached?.key === key) return cached.node;
@@ -430,6 +431,12 @@ function movieCard(movie) {
       movie.subtitles?.length ? t(`${movie.subtitles.length} sous-titres`, `자막 ${movie.subtitles.length}개`, `${movie.subtitles.length} phụ đề`) : '']
       .filter(Boolean).join(' · ');
     if (meta) card.append(el('p', meta, 'hint'));
+    const badge = bufferRiskBadge(movie.bufferRisk, t);
+    if (badge) {
+      const note = el('p', badge.text, 'media-risk');
+      note.dataset.tone = badge.tone; note.title = badge.title;
+      card.append(note);
+    }
     const create = async () => {
       randomCode(); $('create-voice').checked = $('create-webcam').checked = false;
       const code = await askDialog('create-dialog', 'create-code'); if (!code) return;
