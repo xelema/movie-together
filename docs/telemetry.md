@@ -67,6 +67,29 @@ Enveloppe écrite par le serveur (elle n'est jamais fabriquée par le client) :
   deltas intra-session à la milliseconde.
 - `type` : nature de l'événement (≤ 40 caractères).
 
+## Transport
+
+Le client envoie ses lignes par `POST /api/rooms/<id>/telemetry` avec
+`{memberId, events}`. Le serveur répond `204` ; `400` pour une enveloppe
+invalide, `404` pour un participant que la séance n'a jamais vu se connecter —
+une page rechargée parle donc au nom d'un membre connu, jamais d'un fantôme.
+
+Bornes, tenues des deux côtés :
+
+| Borne | Valeur | Où |
+| --- | --- | --- |
+| événements par lot | 400 | client |
+| octets par lot | 256 Kio | client |
+| caractères par événement | 3800 | client |
+| corps accepté par la route | 4 Mio | serveur |
+| file d'attente du client | 2000, purge FIFO | client |
+
+Un lot refusé est remis en file et repart au flush suivant ; une ligne qui
+dépasserait 3800 caractères est comptée puis sautée, jamais fatale pour le lot.
+Le corps de cette route est le seul de l'API au-dessus de 32 Ko : le lot doit
+tenir dans la borne serveur, sinon le POST est refusé en `413` et la séance
+entière reste sans journal.
+
 ## Événements du client
 
 ### Contexte
@@ -83,8 +106,9 @@ Enveloppe écrite par le serveur (elle n'est jamais fabriquée par le client) :
   - `canPlay` et `mse` : booléens par codec/format — `h264`, `hevc`, `hevc10`,
     `av1`, `vp9`, `aac`, `opus`, `ec3`, `ac3`, `flac`, `hls`.
   - `mediaCap` : `navigator.mediaCapabilities.decodingInfo` pour la config
-    réelle du film (codec, largeur, hauteur, débit, images/s) puis par codec
-    générique : `{supported, smooth, powerEfficient}`.
+    réelle du film sous `film` `{codec, w, h, bitrate, supported, smooth,
+    powerEfficient}` puis par codec générique (`h264`, `hevc`, `av1`, `vp9`) :
+    `{supported, smooth, powerEfficient}`.
   - `hlsjs` `{version, supported, mse}`, `nativeHls` (lecture HLS native).
   - `features` : `{wakeLock, pip, fullscreen, rvfc, playbackQuality, worklet,
     sab, webgpu, mediaSession}`.
@@ -94,12 +118,15 @@ Enveloppe écrite par le serveur (elle n'est jamais fabriquée par le client) :
     reportTimeout, mode}` (`mode` = `hlsjs` ou `native`).
   - `movie` : `{id, title, duration, bitrate, maxSegmentSeconds,
     maxSegmentBytes, bufferRisk, generation, audio, subtitles, renditions}` —
-    de quoi confronter la taille des segments à ce que le poste sait tenir.
-  - `session` : `{admin, enter, forceShader, hdr}` (`enter` = `invite`, `room`
-    ou `none`).
+    `audio`/`subtitles` comptent les pistes, `renditions` liste chaque version
+    `{id, codec, w, h, videoRange}`. De quoi confronter la taille des segments
+    à ce que le poste sait tenir.
+  - `session` : `{admin, enter, forceShader, hdr}` (`enter` = `invite`,
+    `join`, `open`, `create`, `admin` ou `room`).
 - `perms` — état asynchrone des permissions `camera`, `microphone`, `wake-lock`
   (`granted|denied|prompt|unsupported`).
-- `session-start` — entrée dans la séance : `{code, probe, languages, movie}`.
+- `session-start` — entrée dans la séance : `{code, probe, languages, movie,
+  href}`.
 - `session-end` — sortie ou démontage : `{reason, ms}` (durée de la séance).
 
 ### Battement et état local
@@ -123,40 +150,43 @@ Enveloppe écrite par le serveur (elle n'est jamais fabriquée par le client) :
   - diagnostics : `mem` (tas JS utilisé), `queue` (événements en attente),
     `off2` (décalage d'horloge le plus récent).
 - `state` — à chaque message `state` du serveur dont la signature change
-  (phase, époque, listes d'attente, seuils, film) :
-  `{phase, epoch, pos, startsAt, dur, members: [{id, self, waiting, reason,
-  blockers, failure, buffered, needed, stall}]}`. C'est la vue serveur telle que
-  le client l'a reçue, horodatée localement.
+  (phase, époque, listes d'attente) :
+  `{phase, epoch, pos, startsAt, dur, members: [{id, name, self, waiting,
+  reason, blockers, failure, buffered, needed, stall}]}`. C'est la vue serveur
+  telle que le client l'a reçue, horodatée localement.
 - `report` — à chaque rapport sortant dont la signature change (prêt, verrous,
   échec) : `{epoch, seq, pos, bufferedUntil, bufferedStart, ready, blockers,
   failure, ahead}`.
 - `phase` — transition de phase observée côté client : `{from, to}`.
-- `activation`, `activation-blocked`, `ws`, `renderer-hidden`, `status`,
-  `visibility`, `fullscreen`, `focus`, `net`, `wakeLock`, `lifecycle`
-  (`pagehide`, `freeze`, `resume`), `env` (resize/orientation/dpr/débit
-  débattu une fois par seconde), `clock` (toutes les 5 s : `{rtt, rttMin,
-  rttMed, off, samples, ready}`).
+- `activation`, `activation-blocked`, `ws` (`{ev: connect|open|close|error,
+  to, code, reason, retries, ms}`), `renderer-hidden` (`{uniform}`),
+  `status` (`{msg}`), `visibility`, `fullscreen`, `focus`, `net`, `wakeLock`,
+  `lifecycle` (`pagehide`, `freeze`, `resume`), `env` (resize/orientation/dpr/
+  débit débattu une fois par seconde), `clock` (toutes les 5 s : `{rtt,
+  rttMin, rttMed, off, samples, ready}`).
 
 ### Réseau et moteur de lecture
 
 - `seg` — une entrée `resource` par requête `/media/*` : `{n, d, b, enc, dec,
-  ttfb, start, proto, status, cached, kind}` (`b` = octets reçus par le client,
-  `ttfb` = temps jusqu'au premier octet, `kind` = `master|level|init|video|
-  audio|subtitle`).
+  ttfb, start, proto, status, cached, kind, level, sn}` (`b` = octets reçus
+  par le client, `ttfb` = temps jusqu'au premier octet, `kind` = `master|
+  level|init|video|audio|subtitle`, `level` = indice du flux ffmpeg,
+  `sn` = numéro de segment).
 - `hls` — cycle de vie hls.js : `{ev, level?, sn?, start?, end?, bytes?, ms?,
-  tracks?}` pour `media-attached`, `manifest-parsed` (liste des niveaux :
-  débit, résolution, codecs, `targetDuration`), `level-loaded`,
-  `level-switched`, `frag-loading`, `frag-loaded`, `frag-buffered`,
-  `frag-changed`, `buffer-appended`, `buffer-flushing`, `buffer-eos`,
-  `buffer-codecs`. Les événements `buffer-flushing` et `frag-buffered`
-  portent les plages par piste avant/après (`tracks`) : c'est ce qui sépare un
-  ajout refusé d'un fragment marqué puis sauté.
+  tracks?, levels?, track?, td?, total?, audio?, subtitles?}` pour
+  `media-attached`, `manifest-parsed` (liste `levels` : débit, résolution,
+  codecs, `td` = `targetDuration`), `level-loaded`, `level-switched`,
+  `frag-loading`, `frag-loaded`, `frag-buffered`, `frag-changed`,
+  `buffer-appended`, `buffer-flushing`, `buffer-flushed`, `buffer-eos`,
+  `buffer-codecs`. Les événements `buffer-flushing`/`buffer-flushed` et
+  `frag-buffered` portent les plages par piste avant/après (`tracks`) : c'est
+  ce qui sépare un ajout refusé d'un fragment marqué puis sauté.
 - `mediaError` — erreur hls.js (fatale ou non) : `{type, details, fatal, reason,
   errmsg, level, sn, start, end, bytes, ranges, sbranges, bufferLen}`.
 - `video-<événement>` — `loadedmetadata`, `loadeddata`, `canplay`, `playing`,
   `play`, `pause`, `waiting`, `stalled`, `seeking`, `seeked`, `emptied`,
-  `ratechange`, `durationchange`, `volumechange` : `{pos, rs, ns, ranges,
-  ahead, vw, vh, dur}`. `seeking`/`seeked` ajoutent `from`, `to`, `delta`.
+  `ratechange`, `durationchange`, `volumechange`, `ended` : `{pos, rs, ns,
+  ranges, ahead, vw, vh, dur}`. `seeking` ajoute `from`, `to`, `delta`.
 - `video-error` — `{code, name, msg, rs, ns}` de `video.error`.
 
 ### Sous-systèmes
@@ -169,12 +199,12 @@ Enveloppe écrite par le serveur (elle n'est jamais fabriquée par le client) :
   (`qualityLimitationReason`) nomme la contrainte réelle (débit, processeur,
   bande passante).
 - `webcam` — `{state, err?, ms?}` sur `idle|starting|active|error`, plus
-  `{peers, negotiations, candidates, queued, restarts}` aux changements de
-  signalisation.
+  `{conn, peers, negotiations, candidates, queued, restarts}` aux changements
+  de signalisation.
 - `voice` — `{state, err?, ms?}` sur `idle|starting|listening|processing|
   error`, plus les mesures de la prise : `{armMs, sr, frames, bytes, refused,
-  seq, rev, heard, result, partialMs}`. **Aucun texte** : ni transcription, ni
-  traduction (voir « Ce qui n'est jamais journalisé »).
+  seq, rev, heard, len, result, partialMs}`. **Aucun texte** : ni
+  transcription, ni traduction (voir « Ce qui n'est jamais journalisé »).
 - `renderer` — rendu couleur WebGL : `{ready, failed, w, h, visible, drawn,
   errors, importVerified, resumeGrace, ctx, reason}` ; à chaque changement et
   toutes les 5 s.
@@ -185,7 +215,8 @@ Enveloppe écrite par le serveur (elle n'est jamais fabriquée par le client) :
   perdus : `{dropped, size}`).
 - `action` — intention de l'utilisateur : `{act, value?, pos, phase, epoch}`
   pour `play`, `pause`, `seek`, `track-audio`, `track-subs`, `volume`, `mute`,
-  `fullscreen`, `pip`, `speed`, `hdr`, `settings`, `join`, `leave`, `nickname`.
+  `fullscreen`, `pip`, `hdr`, `settings`, `join`, `leave`, `nickname`,
+  `invite`.
 
 ## Événements du serveur (`<code>-server.ndjson`)
 

@@ -106,7 +106,11 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     }
     next();
   });
-  app.use(express.json({ limit: '32kb' }));
+  // Le lot de télémétrie est le seul corps volumineux de l'API : le contrat
+  // autorise 400 événements de 3800 caractères, quand le reste garde 32 Ko.
+  const jsonSmall = express.json({ limit: '32kb' });
+  const jsonTelemetry = express.json({ limit: '4mb' });
+  app.use((req, res, next) => (req.path.endsWith('/telemetry') ? jsonTelemetry : jsonSmall)(req, res, next));
   const admin = (req, res, next) => req.session?.admin ? next() : next(fail(401, 'Connexion administrateur requise.'));
   const authenticated = (req, res, next) => req.session ? next() : next(fail(401, 'Rejoindre une room ou se connecter.'));
   const access = (req, room) => room && (req.session?.admin || req.session?.rooms.has(room.id));
