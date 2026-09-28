@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, mkdir, writeFile, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readdir, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
@@ -114,7 +114,7 @@ async function boot(t, { service = fakeService(), timing, patch } = {}) {
   // La langue d'interface accompagne chaque demande de prise, comme le client
   // réel. Le serveur la fige en sens source -> cible (#44).
   const send = (client, action, lang) => client.socket.send(JSON.stringify({ type: 'voice', action, ...(lang === undefined ? {} : { lang }) }));
-  return { request, admin, createRoom, join, open, voice, send, service, dataDir, hub: instance.hub };
+  return { request, admin, createRoom, join, open, voice, send, service, dataDir, hub: instance.hub, journal: instance.journal };
 }
 
 test('a prise is private to the speaker, exclusive and server-ordered', async t => {
@@ -443,7 +443,7 @@ test('a voice room without a configured service reports unavailable', async t =>
 });
 
 test('an active prise stays out of room state and nothing is persisted', async t => {
-  const { request, admin, createRoom, open, send, dataDir } = await boot(t);
+  const { request, admin, createRoom, open, send, dataDir, journal } = await boot(t);
   const room = await createRoom({ code: 'state-room', voice: true });
   const a = await open(room.id, admin, 'Alex');
   send(a, 'start', 'fr');
@@ -458,8 +458,13 @@ test('an active prise stays out of room state and nothing is persisted', async t
   assert.equal(JSON.stringify(after).includes('utterance'), false);
   // The movie seed is the only file the séance ever wrote.
   assert.deepEqual(await readdir(path.join(dataDir, 'movies', 'eeeeeeee-1111-2222-3333-444444444444')), ['movie.json']);
+  // The séance journal is metadata only: no transcript, no translation.
+  await journal.flush();
   const extra = (await readdir(dataDir)).filter(name => name !== 'movies');
-  assert.deepEqual(extra, ['uploads']);
+  assert.deepEqual(extra.sort(), ['telemetry', 'uploads']);
+  const serverLog = await readFile(path.join(dataDir, 'telemetry', 'state-room-server.ndjson'), 'utf8');
+  assert.equal(serverLog.includes('générique'), false);
+  assert.equal(serverLog.includes('안녕'), false);
 });
 
 test('voice logs stay metadata-only: pseudonymized room, no code or names', async t => {

@@ -576,7 +576,7 @@ async function enterRoom(id, name, context = {}) {
       updateFilmMeta();
     },
     onState: (message, controller) => {
-      if (message.probe && !telemetry) telemetry = attachTelemetry(controller, $('video'), id);
+      if (!telemetry) telemetry = attachTelemetry(controller, $('video'), id);
       roomMessage = message; updatePlayback(controller);
       const voice = message.voice;
       $('voice-mic').hidden = !voice?.enabled;

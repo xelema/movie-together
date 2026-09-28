@@ -119,7 +119,8 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
   const prune = async () => {
     let deleted = 0, freed = 0, total = 0;
     try {
-      await mkdir(directory, { recursive: true });
+      // Le dossier naît à la première écriture : une rétention sans journaux
+      // ne crée rien.
       const entries = [];
       for (const name of await readdir(directory)) {
         if (!name.endsWith('.ndjson')) continue;
@@ -144,7 +145,7 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
         await remove(entry);
       }
     } catch (error) {
-      console.warn(`[telemetry] rétention impossible : ${error.message}`);
+      if (error.code !== 'ENOENT') console.warn(`[telemetry] rétention impossible : ${error.message}`);
     }
     console.log(`[telemetry] rétention : ${deleted} fichiers supprimés (${(freed / MIO).toFixed(1)} Mio), dossier à ${(total / MIO).toFixed(1)} Mio`);
     return { deleted, freed, bytes: total };

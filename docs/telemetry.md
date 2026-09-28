@@ -24,9 +24,12 @@ l'est jamais. Il fait autorité : le client (`public/telemetry.js`), le serveur
 | --- | --- | --- |
 | `<code>-<member>.ndjson` | client | événements d'un participant sur une connexion |
 | `<code>-server.ndjson` | serveur | événements de la séance vus du serveur |
+| `server.ndjson` | serveur | requêtes `/media/*` sans séance propriétaire unique |
 
 - `<code>` est le code d'invitation de la séance, `<member>` l'identifiant du
-  participant (UUID attribué par le serveur à la connexion websocket).
+  participant (UUID attribué par le serveur à la connexion websocket). Un envoi
+  pour un `<member>` que la séance n'a jamais vu (aucune websocket acceptée
+  sous cet identifiant) est refusé 404, comme une room introuvable.
 - Un même code réutilisé produit donc de nouveaux fichiers : le couple
   code + participant identifie une connexion, pas une personne.
 - Rotation : un fichier qui atteint `telemetryFileMb` est renommé en
@@ -194,7 +197,8 @@ Une ligne par transition, jamais par battement (`tickMs` = 200 ms) :
 - `connect` — `{name, admin, ua, ip, sockets, sessions, members}`.
 - `refused` — refus de connexion nommé : `{reason, path, origin, ua, ip}` où
   `reason` vaut `origin`, `session`, `access`, `expired`, `sockets`,
-  `capacity` ou `movie`.
+  `capacity` ou `movie`. Un refus visant une room inexistante n'a pas de
+  journal où écrire et reste muet.
 - `disconnect` — `{ms, messages, frames, reason}`.
 - `identify` — `{from, to}`.
 - `report` — rapport accepté dont la signature change : `{epoch, seq, pos,
