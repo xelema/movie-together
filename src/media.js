@@ -275,6 +275,21 @@ export async function addSubtitle(directory, input, { label, language: lang, ind
   return { id, label: quote(label), language: language(lang), filename };
 }
 
+// Chrome's MSE quota (~40 MB on desktop) must hold two consecutive video
+// segments: once they top ~13 MB the second append stalls the playback. Sizes
+// are measured on the written segments — the average bitrate hides the big ones.
+export function assessBufferRisk(segmentBytes, durations) {
+  if (!segmentBytes?.length) return null;
+  const sorted = [...segmentBytes].sort((a, b) => a - b);
+  const mb = bytes => Math.round(bytes / 1024 ** 2 * 100) / 100;
+  const gops = [...(durations ?? [])].sort((a, b) => a - b);
+  const maxSegmentMb = mb(sorted[sorted.length - 1]);
+  return { level: maxSegmentMb > 13 ? 'risk' : maxSegmentMb > 8 ? 'edge' : 'ok',
+    maxSegmentMb, p90SegmentMb: mb(sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.9) - 1)]),
+    gopSeconds: gops.length ? Math.round(gops[Math.floor(gops.length / 2)] * 100) / 100 : null,
+    segments: sorted.length };
+}
+
 export async function prepareMovie(store, movie, audioIndices, subtitleIndices, options = {}) {
   const source = path.join(store.directory(movie.id), 'source');
   // Reprobe old uploads: compatibility must not depend on a previous application's filter.
@@ -371,12 +386,19 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   const playlist = await readFile(path.join(directory, 'stream_0.m3u8'), 'utf8');
   const durations = [...playlist.matchAll(/#EXTINF:([\d.]+)/g)].map(match => Number(match[1]));
   let bytes = 0;
-  for (const file of await readdir(directory)) bytes += (await stat(path.join(directory, file))).size;
+  const videoSegments = [];
+  for (const file of await readdir(directory)) {
+    const size = (await stat(path.join(directory, file))).size;
+    bytes += size;
+    // stream_0 is the only video rendition; its fMP4 segments decide whether
+    // two appends still fit a browser's MSE quota.
+    if (file.startsWith('segment_0_')) videoSegments.push(size);
+  }
   // Consumed external files become flagged prepared subtitles; the source files are no longer needed.
   for (const track of consumedExternal) await unlink(path.join(store.directory(movie.id), track.filename)).catch(() => {});
   return { generation, audio: preparedAudio, subtitles, renditions, duration: movie.probe.duration, preparedBytes: bytes,
     externalTracks: external.filter(track => track.kind !== 'subtitle'),
-    maxSegmentSeconds: Math.max(...durations) };
+    maxSegmentSeconds: Math.max(...durations), bufferRisk: assessBufferRisk(videoSegments, durations) };
   } catch (error) {
     // A generation is never served before it is complete. Remove only this fresh UUID directory.
     await rm(directory, { recursive: true, force: true });

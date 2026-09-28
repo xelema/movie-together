@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createStore } from '../src/storage.js';
-import { run, probeFile, prepareMovie, inspectProbe, codecString, decodeSubtitleText, subtitleFileFormat, addSubtitle, refreshStaleProbes, PROBE_SCHEMA } from '../src/media.js';
+import { run, probeFile, prepareMovie, inspectProbe, codecString, decodeSubtitleText, subtitleFileFormat, addSubtitle, refreshStaleProbes, assessBufferRisk, PROBE_SCHEMA } from '../src/media.js';
 import { defaultTrackNames } from '../public/track-names.js';
 
 // Retagging rewrites the sequence header, so compare decoded samples: no picture may change.
@@ -50,6 +50,25 @@ test('copies 4K video exactly and prepares embedded audio and external subtitles
   assert.match(await readFile(path.join(prepared, 'master.m3u8'), 'utf8'), /CHANNELS="2"/);
   assert.match(await readFile(path.join(prepared, 'stream_0.m3u8'), 'utf8'), /#EXT-X-INDEPENDENT-SEGMENTS/);
   assert.ok(result.maxSegmentSeconds <= 4.05);
+  assert.equal(result.bufferRisk.level, 'ok');
+  assert.equal(result.bufferRisk.segments, 1);
+});
+
+test('buffer risk is measured on real segment sizes, not estimated', () => {
+  const mb = n => n * 1024 ** 2;
+  // The Shining: 10 s GOP, max segment 33.35 MB — two appends overflow the quota.
+  const risk = assessBufferRisk([mb(33.35), mb(13.77), mb(5)], [10, 10.01, 10]);
+  assert.equal(risk.level, 'risk');
+  assert.equal(risk.maxSegmentMb, 33.35);
+  assert.equal(risk.p90SegmentMb, 33.35);
+  assert.equal(risk.gopSeconds, 10);
+  assert.equal(risk.segments, 3);
+  assert.equal(assessBufferRisk([mb(9), mb(6)], [4, 4]).level, 'edge');
+  const ok = assessBufferRisk([mb(6.18), mb(5.05)], [4, 4]);
+  assert.equal(ok.level, 'ok');
+  // Unmeasured movies must not warn: no segments, no badge.
+  assert.equal(assessBufferRisk([], [4]), null);
+  assert.equal(assessBufferRisk(undefined, undefined), null);
 });
 
 test('startup refresh reprobes only movies stored with an older probe schema', async t => {
