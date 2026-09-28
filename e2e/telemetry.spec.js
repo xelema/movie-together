@@ -138,16 +138,22 @@ test('une séance ordinaire écrit son journal client et serveur sur le disque',
 
   // La sortie de séance vide la file par sendBeacon : c'est le dernier lot, et
   // celui qui porte la fin de session. Le serveur ne le journalise qu'après son
-  // propre vidage, donc la fin est attendue sur le disque, jamais supposée.
+  // propre vidage ; les deux journaux sont donc attendus sur le disque comme un
+  // état observable, jamais supposés présents après un délai.
   await page.locator('#leave').click();
-  const entries = () => journals(since).then(found => found.filter(entry => !entry.file.endsWith('-server.ndjson')));
-  await expect.poll(async () => (await entries()).some(entry => entry.lines.some(line => line.type === 'session-end')),
-    { timeout: 30_000, message: 'fin de session dans le journal client' }).toBe(true);
+  const found = async () => {
+    const list = await journals(since);
+    return {
+      participant: list.find(entry => !entry.file.endsWith('-server.ndjson')
+        && entry.file.toLowerCase().includes(room.code.toLowerCase())
+        && entry.lines.some(line => line.type === 'session-end')),
+      server: list.find(entry => entry.file.endsWith('-server.ndjson')),
+    };
+  };
+  await expect.poll(async () => { const { participant, server } = await found(); return !!participant && !!server; },
+    { timeout: 30_000, message: 'les deux journaux de la séance sur le disque' }).toBe(true);
 
-  const onDisk = await journals(since);
-  const participant = onDisk.find(entry => !entry.file.endsWith('-server.ndjson')
-    && entry.lines.some(line => line.type === 'session-start' && line.code?.toLowerCase() === room.code.toLowerCase()));
-  const server = onDisk.find(entry => entry.file.endsWith('-server.ndjson'));
+  const { participant, server } = await found();
   expect(participant, 'journal client de la séance').toBeTruthy();
   expect(server, 'journal serveur de la séance').toBeTruthy();
 
