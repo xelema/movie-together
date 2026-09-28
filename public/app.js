@@ -26,8 +26,8 @@ const playbackUI = new window.Plyr($('video'), {
   iconUrl: '/vendor/plyr.svg', blankVideo: '',
   fullscreen: { enabled: true, fallback: true, iosNative: false, container: '#screen' },
   listeners: {
-    play: () => { player?.togglePlayback().catch(error => notice(error)); return false; },
-    seek: event => { if (player?.state) player.command('seek', Number(event.target.value) / 100 * player.state.duration); return false; },
+    play: () => { act($('video').paused ? 'play' : 'pause'); player?.togglePlayback().catch(error => notice(error)); return false; },
+    seek: event => { if (player?.state) { const to = Number(event.target.value) / 100 * player.state.duration; act('seek', Math.round(to)); player.command('seek', to); } return false; },
   },
 });
 const settingsButton = document.createElement('button');
@@ -35,7 +35,9 @@ settingsButton.id = 'open-settings'; settingsButton.type = 'button'; settingsBut
 settingsButton.textContent = '⚙'; settingsButton.setAttribute('aria-controls', 'player-settings'); settingsButton.setAttribute('aria-expanded', 'false');
 playbackUI.elements.controls.insertBefore(settingsButton, playbackUI.elements.buttons.fullscreen);
 function showSettings(open, focus = false) {
+  const wasOpen = !$('player-settings').hidden;
   $('player-settings').hidden = !open; settingsButton.setAttribute('aria-expanded', String(open));
+  if (open !== wasOpen) act('settings', open);
   $('screen').classList.toggle('settings-open', open);
   if (open) playbackUI.toggleControls(true);
   player?.positionSubtitles();
@@ -45,7 +47,16 @@ settingsButton.addEventListener('click', () => showSettings($('player-settings')
 $('close-settings').addEventListener('click', event => showSettings(false, event.detail === 0));
 document.addEventListener('pointerdown', event => { if (!$('player-settings').contains(event.target) && !settingsButton.contains(event.target)) showSettings(false); });
 $('screen').addEventListener('keydown', event => { if (event.key === 'Escape' && !$('player-settings').hidden) { event.preventDefault(); event.stopPropagation(); showSettings(false, true); } });
-playbackUI.on('enterfullscreen exitfullscreen', () => showSettings(false));
+playbackUI.on('enterfullscreen exitfullscreen', () => { act('fullscreen', playbackUI.fullscreen.active); showSettings(false); });
+let lastMuted, lastVol;
+playbackUI.on('volumechange', () => {
+  const muted = playbackUI.muted, vol = playbackUI.volume;
+  if (lastMuted !== undefined && muted !== lastMuted) act('mute', muted);
+  else if (lastVol !== undefined && vol !== lastVol) act('volume', Math.round(vol * 100) / 100);
+  lastMuted = muted; lastVol = vol;
+});
+$('video').addEventListener('enterpictureinpicture', () => act('pip', true));
+$('video').addEventListener('leavepictureinpicture', () => act('pip', false));
 // Admin-only live bandwidth badge. hls.js exposes a live estimate; native HLS does not.
 const bandwidthToggle = $('bandwidth-toggle'), bandwidthBadge = $('bandwidth-badge');
 let bandwidthTimer = null;
@@ -147,8 +158,8 @@ $('screen').addEventListener('keydown', event => {
   if (![' ', 'k', 'j', 'l', 'c', 'arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'm', 'f'].includes(key)) return;
   event.preventDefault();
   if (event.repeat) return;
-  const seek = delta => player.command('seek', Math.max(0, Math.min(player.state?.duration || 0, player.position() + delta)));
-  if (key === ' ' || key === 'k') player.togglePlayback().catch(error => notice(error));
+  const seek = delta => { const to = Math.max(0, Math.min(player.state?.duration || 0, player.position() + delta)); act('seek', Math.round(to)); player.command('seek', to); };
+  if (key === ' ' || key === 'k') { act($('video').paused ? 'play' : 'pause'); player.togglePlayback().catch(error => notice(error)); }
   else if (key === 'arrowleft' || key === 'j') seek(-10);
   else if (key === 'arrowright' || key === 'l') seek(10);
   else if (key === 'arrowup') { playbackUI.muted = false; playbackUI.volume = Math.min(1, playbackUI.volume + 0.05); }
@@ -159,10 +170,11 @@ $('screen').addEventListener('keydown', event => {
       ? (options.find(option => option.value === String(lastSubtitle)) ?? options.find(option => option.value !== '-1'))?.value ?? '-1'
       : (lastSubtitle = Number(select.value), '-1');
     select.value = next;
+    act('track-subs', Number(next));
     player.changeTrack('subtitles', Number(next));
   }
   else if (key === 'm') playbackUI.muted = !playbackUI.muted;
-  else playbackUI.fullscreen.toggle();
+  else { act('fullscreen', !playbackUI.fullscreen.active); playbackUI.fullscreen.toggle(); }
   clickHidden = false;
   playbackUI.toggleControls(true);
 });
@@ -255,11 +267,24 @@ new MutationObserver(records => {
     target.classList.remove('enter'); void target.offsetWidth; target.classList.add('enter');
   }
 }).observe(document.querySelector('main'), { attributes: true, subtree: true, attributeFilter: ['hidden'] });
+// Journal des intentions utilisateur : la télémétrie enrichit chaque action
+// de la position et de la phase courantes (pos/phase/epoch).
+const act = (action, value) => { try { telemetry?.event('action', { act: action, value }); } catch { } };
 async function api(url, { body, method = 'GET', ...options } = {}) {
-  const response = await fetch(url, { method, ...options, headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...options.headers }, body: body === undefined ? undefined : JSON.stringify(body) });
-  const result = await response.json();
-  if (!response.ok) throw new Error(label(result.error || t('Une erreur est survenue.', '오류가 발생했습니다.')));
-  return result;
+  const started = performance.now();
+  let status;
+  try {
+    const response = await fetch(url, { method, ...options, headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...options.headers }, body: body === undefined ? undefined : JSON.stringify(body) });
+    status = response.status;
+    const result = await response.json();
+    if (!response.ok) throw new Error(label(result.error || t('Une erreur est survenue.', '오류가 발생했습니다.')));
+    return result;
+  } catch (error) {
+    // Jamais le corps de la réponse : chemin, méthode, statut, durée, message.
+    telemetry?.event('api', { path: String(url).slice(0, 200), method, status,
+      ms: Math.round(performance.now() - started), err: String(error?.message ?? error).slice(0, 200) });
+    throw error;
+  }
 }
 function handle(action) { return async event => { event?.preventDefault(); try { await action(event); } catch (error) { notice(error); } }; }
 function el(tag, text, className) { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; }
@@ -374,7 +399,7 @@ async function refresh() {
   $('rooms').replaceChildren(...rooms.map(room => {
     const card = el('div', undefined, 'card');
     card.append(el('p', `${movies.find(movie => movie.id === room.movieId)?.title ?? ''} · ${room.participants} ${t('personne(s)', '명')} · ${t('jusqu’à', '까지')} ${new Date(room.expires).toTimeString().slice(0, 5)}`), el('code', room.code),
-      button(t('Ouvrir', '열기'), () => enterRoom(room.id, undefined, { code: room.code, title: movies.find(movie => movie.id === room.movieId)?.title })), button(t('Copier le lien', '링크 복사'), () => copyLink(room.link)),
+      button(t('Ouvrir', '열기'), () => enterRoom(room.id, undefined, { code: room.code, title: movies.find(movie => movie.id === room.movieId)?.title, enter: 'open' })), button(t('Copier le lien', '링크 복사'), () => copyLink(room.link)),
       button(t('Fermer la séance', '시청방 닫기'), async () => { await api(`/api/rooms/${room.id}`, { method: 'DELETE' }); await refresh(); }, 'danger'));
     return card;
   }));
@@ -434,7 +459,7 @@ function movieCard(movie) {
       randomCode(); $('create-voice').checked = $('create-webcam').checked = false;
       const code = await askDialog('create-dialog', 'create-code'); if (!code) return;
       const room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code, voice: $('create-voice').checked, webcam: $('create-webcam').checked } });
-      await enterRoom(room.id, undefined, { code: room.code, title: movie.title });
+      await enterRoom(room.id, undefined, { code: room.code, title: movie.title, enter: 'create' });
     };
     card.append(button(t('Créer une séance', '시청방 만들기'), create));
     card.classList.add('clickable');
@@ -546,12 +571,14 @@ function manageDetails(movie, selection) {
 }
 
 async function enterRoom(id, name, context = {}) {
+  let named = false;
   if (!name) {
     $('room-name').value = localStorage.getItem('nickname') || '';
     $('name-context').hidden = !context.code;
     $('name-code').textContent = context.code ?? ''; $('name-movie').textContent = context.title ?? '';
     name = await askDialog('name-dialog', 'room-name');
     if (!name) return;
+    named = true;
   }
   $('room-code').textContent = context.code ?? '';
   localStorage.setItem('nickname', name); showSettings(false);
@@ -576,7 +603,6 @@ async function enterRoom(id, name, context = {}) {
       updateFilmMeta();
     },
     onState: (message, controller) => {
-      if (!telemetry) telemetry = attachTelemetry(controller, $('video'), id);
       roomMessage = message; updatePlayback(controller);
       const voice = message.voice;
       $('voice-mic').hidden = !voice?.enabled;
@@ -605,8 +631,23 @@ async function enterRoom(id, name, context = {}) {
       }));
     },
   });
-  voice = attachVoice({ mic: $('voice-mic'), local: $('voice-local'), supertitle: $('voice-result'), player, t, label });
-  webcam = attachWebcam({ toggle: $('webcam-toggle'), overlay: $('webcam-overlay'), player, t, label });
+  // Le journal client démarre avec la séance, avant la première trame :
+  // contexte connu dès l'entrée (code, probe, langues, film, réglages, rôle)
+  // plus la manière d'entrer. Un accès en échec ne doit jamais casser l'entrée.
+  try {
+    telemetry = attachTelemetry(player, $('video'), id, { context: {
+      code: roomState.code ?? context.code, probe: roomState.probe === true,
+      languages: roomState.languages ?? roomLanguages, movie: roomState.movie,
+      sync: roomState.sync, admin: session.admin === true, name,
+      forceShader: sessionStorage.getItem('hdr') === 'shader', hdr: sessionStorage.getItem('hdr'),
+      enter: context.enter ?? (adminPage ? 'admin' : 'room') } });
+  } catch { telemetry = null; }
+  act('join');
+  if (named) act('nickname');
+  if (sessionStorage.getItem('hdr')) act('hdr', sessionStorage.getItem('hdr'));
+  const onEvent = (type, fields) => { try { telemetry?.event(type, fields); } catch { } };
+  voice = attachVoice({ mic: $('voice-mic'), local: $('voice-local'), supertitle: $('voice-result'), player, t, label, onEvent });
+  webcam = attachWebcam({ toggle: $('webcam-toggle'), overlay: $('webcam-overlay'), player, t, label, onEvent });
   refreshBandwidth();
   if (session.admin) { movies = await api('/api/movies'); selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title])); }
 }
@@ -615,7 +656,7 @@ $('login-form').addEventListener('submit', handle(async event => { await api('/a
 $('join-form').addEventListener('submit', handle(async event => {
   const data = new FormData(event.target);
   const room = await api('/api/join', { method: 'POST', body: { code: data.get('code') } }); notice();
-  await enterRoom(room.id, undefined, { code: String(data.get('code')).trim() });
+  await enterRoom(room.id, undefined, { code: String(data.get('code')).trim(), enter: /[#&?]invite=/.test(location.hash) ? 'invite' : 'join' });
 }));
 // A pasted invitation link would be cut by maxlength before any input event, so it is caught at paste time.
 $('join-form').elements.code.addEventListener('paste', event => {
@@ -642,7 +683,7 @@ $('admin-tabs').addEventListener('keydown', event => {
   showTab(next.dataset.tab); next.focus();
 });
 $('allow-sound').addEventListener('click', handle(() => player?.activate()));
-$('copy-invite').addEventListener('click', handle(() => copyLink(`${location.origin}/#invite=${encodeURIComponent($('room-code').textContent)}`)));
+$('copy-invite').addEventListener('click', handle(() => { act('invite'); copyLink(`${location.origin}/#invite=${encodeURIComponent($('room-code').textContent)}`); }));
 $('upload-file').addEventListener('change', handle(async () => {
   renderDisk();
   if ($('upload-file').files[0] && !$('disk-space').classList.contains('insufficient')) await upload($('upload-file').files[0]);
@@ -662,9 +703,10 @@ document.addEventListener('drop', event => {
   const transfer = new DataTransfer(); transfer.items.add(event.dataTransfer.files[0]);
   $('upload-file').files = transfer.files; $('upload-file').dispatchEvent(new Event('change'));
 });
-$('audio').addEventListener('change', () => player?.changeTrack('audio', Number($('audio').value)));
+$('audio').addEventListener('change', () => { act('track-audio', Number($('audio').value)); player?.changeTrack('audio', Number($('audio').value)); });
 $('subtitles').addEventListener('change', () => {
   const value = Number($('subtitles').value);
+  act('track-subs', value);
   if (value !== -1) lastSubtitle = value;
   player?.changeTrack('subtitles', value);
 });
@@ -673,7 +715,7 @@ const subtitleScale = () => { $('screen').style.setProperty('--subtitle-scale', 
 if ([...$('subtitle-size').options].some(option => option.value === localStorage.getItem('subtitle-scale'))) $('subtitle-size').value = localStorage.getItem('subtitle-scale');
 subtitleScale();
 $('subtitle-size').addEventListener('change', subtitleScale);
-$('leave').addEventListener('click', handle(async () => { disposePlayer(); activeRoom = null; roomLanguages = null; $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await refresh(); }));
+$('leave').addEventListener('click', handle(async () => { act('leave'); disposePlayer(); activeRoom = null; roomLanguages = null; $('watch').hidden = true; history.replaceState(null, '', adminPage ? '/admin' : '/'); await refresh(); }));
 $('choose-film').addEventListener('submit', handle(() => api(`/api/rooms/${activeRoom}/movie`, { method: 'POST', body: { movieId: $('room-movie').value } })));
 const SETTING_LABELS = {
   minBuffer: ['Buffer de démarrage (s)', '시작 버퍼 (초)'],
@@ -698,6 +740,9 @@ const SETTING_LABELS = {
   voiceQuota: ['Appels de traduction par participant', '참가자당 번역 호출 수'],
   voiceWindow: ['Fenêtre du quota de traduction (s)', '번역 쿼터 시간 창 (초)'],
   voiceCooldown: ['Délai entre deux prises (s)', '연속 발화 최소 간격 (초)'],
+  telemetryDays: ['Durée de conservation des journaux (j)', '로그 보관 기간 (일)'],
+  telemetryMb: ['Taille maximale des journaux (Mo)', '로그 최대 크기 (MB)'],
+  telemetryFileMb: ['Taille d’un journal avant rotation (Mo)', '로그 파일 최대 크기 (MB)'],
 };
 // Aide au survol, en français seul : l'attribut title sert aussi de
 // description accessible pour le lecteur d'écran.
@@ -724,9 +769,13 @@ const SETTING_DESCRIPTIONS = {
   voiceQuota: 'Nombre maximal d’appels au fournisseur de traduction par participant sur la fenêtre glissante.',
   voiceWindow: 'Durée de la fenêtre glissante sur laquelle le quota de traduction est compté.',
   voiceCooldown: 'Délai minimal après chaque prise de parole avant qu’un nouveau départ soit accepté.',
+  telemetryDays: 'Âge maximal d’un fichier de télémétrie avant suppression.',
+  telemetryMb: 'Taille totale maximale du dossier de télémétrie ; les journaux les plus anciens sont supprimés.',
+  telemetryFileMb: 'Taille à partir de laquelle un journal de télémétrie est fermé et remplacé.',
 };
 const SETTING_CATEGORIES = { sync: ['Synchronisation', '동기화'], rooms: ['Séances', '시청방'],
-  uploads: ['Envois', '업로드'], media: ['Préparation', '준비'], security: ['Sécurité', '보안'], voice: ['Traduction vocale', '음성 번역'] };
+  uploads: ['Envois', '업로드'], media: ['Préparation', '준비'], security: ['Sécurité', '보안'], voice: ['Traduction vocale', '음성 번역'],
+  telemetry: ['Télémétrie', '텔레메트리'] };
 let settingsValues = {};
 const settingInputs = new Map();
 function renderSettings(payload) {

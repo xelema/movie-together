@@ -394,8 +394,12 @@ export async function nativeHdrPipeline(rendition, bitrate) {
 }
 
 export class ColorRenderer {
-  constructor(video, color, onFailure) {
-    this.video = video; this.onFailure = onFailure; this.listeners = []; this.disposed = false;
+  constructor(video, color, onFailure, onEvent) {
+    this.video = video; this.onFailure = onFailure; this.onEvent = onEvent;
+    this.listeners = []; this.disposed = false;
+    // Compteurs lus par la télémétrie : tirages réussis, erreurs de draw().
+    this.drawn = 0; this.errors = 0;
+    const emit = (fields) => { try { this.onEvent?.('renderer', fields); } catch { } };
     const parameters = this.parameters = colorParameters(color);
     this.canvas = document.createElement('canvas'); this.canvas.className = 'color-canvas';
     this.canvas.setAttribute('aria-hidden', 'true');
@@ -492,8 +496,8 @@ export class ColorRenderer {
       gl.disable(gl.DITHER);
       if ('drawingBufferColorSpace' in gl) gl.drawingBufferColorSpace = 'srgb';
       video.parentElement.append(this.canvas, this.captions);
-      this.listen(this.canvas, 'webglcontextlost', event => { event.preventDefault(); this.failed = true; onFailure('Le rendu des couleurs a été interrompu. Rechargez la page.'); });
-      this.listen(this.canvas, 'webglcontextrestored', () => onFailure('Le rendu des couleurs a été interrompu. Rechargez la page.'));
+      this.listen(this.canvas, 'webglcontextlost', event => { event.preventDefault(); this.failed = true; emit({ ctx: 'lost' }); onFailure('Le rendu des couleurs a été interrompu. Rechargez la page.'); });
+      this.listen(this.canvas, 'webglcontextrestored', () => { emit({ ctx: 'restored' }); onFailure('Le rendu des couleurs a été interrompu. Rechargez la page.'); });
       for (const event of ['loadeddata', 'canplay', 'pause']) this.listen(video, event, () => this.draw());
       // Une frame déjà présentée est sautée : un seek ou un changement de flux
       // repart d'un compteur vierge pour forcer le rendu de la frame suivante.
@@ -625,23 +629,29 @@ export class ColorRenderer {
           this.deadStreak = deadFrame ? (this.deadStreak || 0) + 1 : 0;
           if (deadFrame) {
             const dead = this.deadStreak >= 2;
+            if (dead !== (this.canvas.style.visibility === 'hidden'))
+              try { this.onEvent?.('renderer-hidden', { uniform: dead }); } catch { }
             this.canvas.style.visibility = dead ? 'hidden' : '';
             this.captions.style.display = dead ? 'none' : '';
           } else {
             this.importVerified = true;
+            if (this.canvas.style.visibility === 'hidden')
+              try { this.onEvent?.('renderer-hidden', { uniform: false }); } catch { }
             this.canvas.style.visibility = '';
             this.captions.style.display = '';
           }
         }
       }
-      this.lastTime = video.currentTime; this.lastPresentedFrames = presentedFrames; this.drawErrors = 0;
+      this.lastTime = video.currentTime; this.lastPresentedFrames = presentedFrames; this.drawErrors = 0; this.drawn++;
       if (!this.ready) { this.ready = true; canvas.dataset.ready = 'true'; }
     } catch (error) {
       // Texture upload can fail while the first frame is still being presented; retry before giving up.
+      this.errors++;
       if ((this.drawErrors = (this.drawErrors || 0) + 1) < 8) { clearTimeout(this.retryTimer); this.retryTimer = setTimeout(() => this.draw(), 400); }
-      else { this.failed = true; this.onFailure(error.message); }
+      else { this.failed = true; try { this.onEvent?.('renderer', { ctx: 'failed', reason: error.message }); } catch { } this.onFailure(error.message); }
     }
   }
+  get size() { return { w: this.canvas.width, h: this.canvas.height }; }
   deadImport() {
     const { gl, canvas } = this, pixel = new Uint8Array(4);
     let reference;

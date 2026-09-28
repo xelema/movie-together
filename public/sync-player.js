@@ -40,7 +40,7 @@ export class SyncPlayer {
     this.name = name;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
     this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.pendingPauses = 0;
-    this.retries = 0; this.listeners = [];
+    this.retries = 0; this.listeners = []; this.observers = [];
     // Defaults until the room publishes its sync policy in welcome.
     this.sync = { minBuffer: 8, tickMs: 200, startDelay: 1000 };
     this.silenceMs = 1500; this.bufferSeconds = 30; this.reportEveryMs = 200;
@@ -108,9 +108,35 @@ export class SyncPlayer {
     this.listen(this.hdrScreen, 'change', () => this.updateColorPath());
     this.interval = setInterval(() => { this.reconcile(); this.report(); }, 200);
     this.pinger = setInterval(() => this.ping(), 2000);
+    // Journalisation : résumé de l'horloge toutes les cinq secondes, lu par la
+    // télémétrie sans toucher à la synchronisation.
+    this.clocker = setInterval(() => {
+      const rtts = this.clock.samples.map(sample => sample.rtt).sort((a, b) => a - b);
+      if (!rtts.length) return;
+      this.emit('clock', {
+        rtt: this.clock.best ? Math.round(this.clock.best.rtt) : undefined,
+        rttMin: Math.round(rtts[0]), rttMed: Math.round(rtts[rtts.length >> 1]),
+        off: Math.round(this.clock.offset), samples: rtts.length, ready: this.clock.ready,
+      });
+    }, 5000);
+    // Sous Node un intervalle oublié retient le process ; unref est absent des
+    // navigateurs où la page vit de toute façon jusqu'à son déchargement.
+    this.clocker.unref?.();
     this.connect();
   }
   listen(target, event, handler) { target.addEventListener(event, handler); this.listeners.push(() => target.removeEventListener(event, handler)); }
+  // Observateurs en lecture seule (télémétrie) : un observateur qui jette ne
+  // doit jamais remonter dans le lecteur ni empêcher les suivants.
+  observe(fn) {
+    if (typeof fn !== 'function') return () => {};
+    this.observers.push(fn);
+    return () => { this.observers = this.observers.filter(other => other !== fn); };
+  }
+  emit(type, fields) {
+    for (const observer of this.observers ?? []) {
+      try { observer(type, fields); } catch { }
+    }
+  }
   scheduleSubtitles() {
     // Sans boucle d'animation (tests, DOM minimal) la mesure reste synchrone.
     if (typeof requestAnimationFrame !== 'function') { this.positionSubtitles(); return; }
@@ -155,8 +181,11 @@ export class SyncPlayer {
   ping() { this.send({ type: 'ping', sentAt: performance.now() }); }
   connect() {
     if (this.disposed) return;
+    const connectAt = performance.now();
+    this.emit('ws', { ev: 'connect', to: 0, retries: this.retries || undefined });
     this.ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws?room=${this.roomId}`);
     this.ws.onopen = () => {
+      this.emit('ws', { ev: 'open', to: 1, ms: Math.round(performance.now() - connectAt), retries: this.retries || undefined });
       this.retries = 0;
       if (this.name) this.send({ type: 'identify', name: this.name });
       this.clock = new Clock(); this.lastMessage = performance.now(); this.sequence = 0;
@@ -176,7 +205,14 @@ export class SyncPlayer {
       }
       if (message.type === 'error') this.onStatus(message.error);
       if (message.type === 'state') {
+        const previousPhase = this.state?.phase;
         this.state = message.state;
+        // Vue serveur telle que reçue ; la télémétrie la déduplique elle-même.
+        this.emit('state', { phase: message.state.phase, epoch: message.state.epoch,
+          pos: message.state.position, startsAt: message.state.startsAt, dur: message.state.duration,
+          members: message.members?.map(member => ({ ...member, self: member.id === this.memberId || undefined })) });
+        if (previousPhase !== undefined && previousPhase !== message.state.phase)
+          this.emit('phase', { from: previousPhase, to: message.state.phase });
         if (message.sync) this.applySync(message.sync);
         // A paused room does not need to hold the screen awake.
         if (this.activated && message.state.phase !== 'paused') this.acquireWakeLock(); else this.releaseWakeLock();
@@ -189,6 +225,8 @@ export class SyncPlayer {
     };
     this.ws.onclose = event => {
       if (this.disposed) return;
+      this.emit('ws', { ev: 'close', to: 3, code: event.code, reason: event.reason || undefined,
+        retries: this.retries || undefined, ms: Math.round(performance.now() - connectAt) });
       this.onVoice?.(null);
       this.onWebcam?.(null);
       clearInterval(this.initialPings); this.pauseLocal(); clearTimeout(this.startTimer); this.state = null;
@@ -197,7 +235,19 @@ export class SyncPlayer {
       // Back off reconnects so a down server is not hammered every two seconds.
       if (!this.disposed && ![1000, 1008].includes(event.code)) this.retry = setTimeout(() => this.connect(), Math.min(2000 * 2 ** this.retries++, 30_000));
     };
-    this.ws.onerror = () => this.onStatus('Connexion à la room impossible. Vérifier l’invitation.');
+    this.ws.onerror = () => {
+      this.emit('ws', { ev: 'error', to: this.ws?.readyState, ms: Math.round(performance.now() - connectAt) });
+      this.onStatus('Connexion à la room impossible. Vérifier l’invitation.');
+    };
+  }
+  // Drapeaux d'activation lus par la télémétrie : un événement uniquement quand
+  // la paire bouge, avec le nom de l'erreur quand l'autoplay est refusé.
+  emitFlags(reason) {
+    const flags = `${this.activated}|${this.activationBlocked}`;
+    if (flags === this.lastFlags) return;
+    this.lastFlags = flags;
+    if (this.activationBlocked) this.emit('activation-blocked', { reason });
+    else if (this.activated) this.emit('activation', {});
   }
   pauseLocal() {
     this.internalUntil = performance.now() + INTERNAL_EVENT_MS;
@@ -239,7 +289,7 @@ export class SyncPlayer {
     clearTimeout(this.startTimer); this.scheduled = null;
     this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.backend?.destroy(); this.backend = null;
     this.loadToken = (this.loadToken || 0) + 1; this.activating = false; this.recovering = false;
-    this.movie = movie; this.failure = null; this.activated = activated; this.autoActivationTried = false; this.activationBlocked = false; this.onActivation(activated);
+    this.movie = movie; this.failure = null; this.activated = activated; this.autoActivationTried = false; this.activationBlocked = false; this.emitFlags(); this.onActivation(activated);
     // video.load() drops media events still queued on the element, so pauses
     // counted but never delivered must not outlive the reload.
     this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
@@ -260,7 +310,8 @@ export class SyncPlayer {
       { onTracksChanged: () => { this.applyTrackChoices(); this.tracks(); },
         onBuffered: () => { if (this.video.readyState >= 3) this.recovering = false; },
         onStalled: () => { this.pauseLocal(); this.report(false); this.recovering = true; },
-        onFatal: message => this.failPlayback(message) });
+        onFatal: message => this.failPlayback(message),
+        onEvent: (type, fields) => this.emit(type, fields) });
     if (!this.backend) { this.failPlayback('Ce navigateur ne permet pas la lecture HLS.'); return; }
     this.offset = this.backend.timelineOffset;
   }
@@ -284,7 +335,8 @@ export class SyncPlayer {
     if (on === Boolean(this.colorRenderer)) return;
     this.colorRenderer?.dispose(); this.colorRenderer = null;
     if (!on) return;
-    try { this.colorRenderer = new ColorRenderer(this.video, this.rendition.color, message => this.failPlayback(message)); }
+    try { this.colorRenderer = new ColorRenderer(this.video, this.rendition.color, message => this.failPlayback(message),
+      (type, fields) => this.emit(type, fields)); }
     catch (error) { this.failPlayback(error.message); }
   }
   tracks() {
@@ -305,13 +357,13 @@ export class SyncPlayer {
       // User gesture must reach play() even before metadata loads on mobile Safari.
       await this.video.play();
       if (this.disposed || token !== this.loadToken) return;
-      this.pauseLocal(); this.activated = true; this.activationBlocked = false; this.onActivation(true);
+      this.pauseLocal(); this.activated = true; this.activationBlocked = false; this.emitFlags(); this.onActivation(true);
       this.acquireWakeLock();
     } catch (error) {
       if (this.disposed || token !== this.loadToken) return;
       if (interrupted && error.name === 'AbortError') return;
       this.activated = false; this.activationBlocked = error.name === 'NotAllowedError';
-      this.onActivation(false); this.onStatus('Autorisez le son pour rejoindre la séance. / 함께 시청하려면 소리를 허용하세요.');
+      this.emitFlags(error.name); this.onActivation(false); this.onStatus('Autorisez le son pour rejoindre la séance. / 함께 시청하려면 소리를 허용하세요.');
     }
     finally {
       clearTimeout(timeout);
@@ -375,7 +427,7 @@ export class SyncPlayer {
     }
     this.internalUntil = performance.now() + INTERNAL_EVENT_MS;
     try { await this.video.play(); }
-    catch (error) { this.activated = false; this.activationBlocked = error.name === 'NotAllowedError'; this.onActivation(false); this.report(false); }
+    catch (error) { this.activated = false; this.activationBlocked = error.name === 'NotAllowedError'; this.emitFlags(error.name); this.onActivation(false); this.report(false); }
   }
   report(force) {
     if (!this.state) return;
@@ -392,16 +444,27 @@ export class SyncPlayer {
     const ready = force !== false && !blockers.length;
     // An event-forced report with every gate green means the element itself stalled.
     if (force === false && !blockers.length) blockers = ['stalled'];
-    this.send({ type: 'report', epoch: this.state.epoch, sequence: this.sequence++, position,
-      bufferedUntil: Math.max(position, bufferEnd(this.video) - this.offset),
-      bufferedStart: this.video.buffered.length ? Math.max(0, this.video.buffered.start(0) - this.offset) : null,
+    const bufferedUntil = Math.max(position, bufferEnd(this.video) - this.offset);
+    const bufferedStart = this.video.buffered.length ? Math.max(0, this.video.buffered.start(0) - this.offset) : null;
+    const sequence = this.sequence++;
+    this.send({ type: 'report', epoch: this.state.epoch, sequence, position,
+      bufferedUntil,
+      bufferedStart,
       ready,
       blockers: ready ? undefined : blockers, failure: this.failure ?? null,
       ackStartsAt: ready && this.scheduled === this.state.startsAt ? this.scheduled : null });
+    // Le journal ne garde que les rapports dont la situation a changé.
+    const signature = `${this.state.epoch}|${ready}|${(ready ? [] : blockers).join('+')}|${this.failure ?? ''}`;
+    if (signature !== this.reportSignature) {
+      this.reportSignature = signature;
+      this.emit('report', { epoch: this.state.epoch, seq: sequence, pos: position, bufferedUntil, bufferedStart,
+        ready, blockers: ready ? undefined : blockers, failure: this.failure ?? null,
+        ahead: Math.max(0, bufferedUntil - position) });
+    }
   }
   dispose() {
     this.disposed = true; if (this.subtitleFrame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.subtitleFrame);
-    clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings);
+    clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings); clearInterval(this.clocker);
     clearTimeout(this.startTimer); clearTimeout(this.retry); this.subtitleObserver?.disconnect(); this.listeners.forEach(remove => remove());
     this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
     this.releaseWakeLock();
