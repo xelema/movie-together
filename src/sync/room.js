@@ -28,11 +28,13 @@ export class Room {
     this.duration = null;
     this.startsAt = null;
     this.wantsPlay = false;
+    // Why the last freeze happened — carried into snapshots and the journal.
+    this.cause = 'unknown';
   }
 
   snapshot() {
     return { epoch: this.epoch, phase: this.phase, position: this.position,
-      startsAt: this.startsAt, duration: this.duration };
+      startsAt: this.startsAt, duration: this.duration, cause: this.cause };
   }
 
   positionAt(time = this.now()) {
@@ -82,7 +84,8 @@ export class Room {
       needed: Math.min(this.duration ?? Infinity, position + reserve) - position };
   }
 
-  freeze() {
+  freeze(cause = 'unknown') {
+    this.cause = cause;
     this.position = this.positionAt();
     this.startsAt = null;
     this.phase = this.wantsPlay ? 'buffering' : 'paused';
@@ -100,7 +103,7 @@ export class Room {
   join(id) {
     if (this.members.has(id)) throw new Error('Participant already joined');
     this.members.set(id, { sequence: -1, report: null });
-    this.freeze();
+    this.freeze('join');
     return { snapshot: this.snapshot(), changed: true };
   }
 
@@ -109,7 +112,7 @@ export class Room {
     this.members.delete(id);
     // A disconnect always stops playback; resuming is an explicit group action.
     this.wantsPlay = false;
-    this.freeze();
+    this.freeze('leave');
     return { snapshot: this.snapshot(), changed: true };
   }
 
@@ -122,7 +125,7 @@ export class Room {
   load(duration) {
     if (!Number.isFinite(duration) || duration <= 0) throw new RangeError('Invalid duration');
     this.wantsPlay = false;
-    this.freeze();
+    this.freeze('load');
     this.duration = duration;
     this.position = 0;
     return { snapshot: this.snapshot(), changed: true };
@@ -139,7 +142,7 @@ export class Room {
     }
     if (type === 'play') this.wantsPlay = true;
     if (type === 'pause') this.wantsPlay = false;
-    this.freeze();
+    this.freeze(type);
     if (type === 'seek') this.position = position;
     return { snapshot: this.snapshot(), changed: true };
   }
@@ -147,7 +150,8 @@ export class Room {
   report(id, { epoch, sequence, position, bufferedUntil, bufferedStart = null, ready, ackStartsAt = null, blockers = null, failure = null }) {
     const member = this.requireMember(id);
     if (epoch !== this.epoch || !Number.isSafeInteger(sequence) || sequence <= member.sequence) {
-      return { snapshot: this.snapshot(), changed: false };
+      return { snapshot: this.snapshot(), changed: false,
+        rejected: epoch !== this.epoch ? 'stale-epoch' : 'stale-sequence' };
     }
     // Positions are bounded to the film (+1 s of decode overshoot): a report the room can
     // never satisfy is invalid input, not a member to wait on. The head of the buffered
@@ -169,20 +173,25 @@ export class Room {
     return this.tick();
   }
 
-  tick() {
+  // `cause` overrides the health-derived reason only when a caller (a retune)
+  // is itself the reason reports no longer hold.
+  tick(cause = null) {
     const mark = { epoch: this.epoch, phase: this.phase };
     const time = this.now();
     const position = this.positionAt(time);
     if (this.phase === 'playing' && this.duration !== null && position >= this.duration) {
       this.wantsPlay = false;
-      this.freeze();
+      this.freeze('end');
       return this.outcome(mark);
     }
     const reports = [...this.members.values()].map(member => member.report);
     const healthy = (report, reserve) => this.healthy(report, reserve, position, time);
     if (this.phase === 'playing') {
-      if (!reports.every(report => healthy(report, this.lowBuffer)) ||
-        (time >= this.startsAt - 300 && !reports.every(report => report.ackStartsAt === this.startsAt))) this.freeze();
+      const stuck = [...this.members.keys()].find(id => !healthy(this.members.get(id).report, this.lowBuffer));
+      if (stuck) this.freeze(cause ?? this.memberStatus(stuck).reason ?? 'unknown');
+      else if (time >= this.startsAt - 300 && !reports.every(report => report.ackStartsAt === this.startsAt)) {
+        this.freeze('no-ack');
+      }
     } else if (this.wantsPlay && this.duration !== null && reports.length &&
       reports.every(report => healthy(report, this.minBuffer) && this.aligned(report, position))) {
       this.phase = 'playing';
