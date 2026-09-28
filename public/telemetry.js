@@ -52,7 +52,32 @@ export function attachTelemetry(player, video, roomId) {
         : d.details === (details.BUFFER_APPEND_ERROR ?? 'bufferAppendError') ? 'append-error' : 'hls-error';
       hls.on(window.Hls?.Events?.ERROR, (event, data) => push(kind(data), {
         pos: +player.position().toFixed(2), details: data.details, type: data.type,
-        fatal: !!data.fatal, err: data.error?.name, msg: String(data.error?.message ?? '').slice(0, 200) }));
+        fatal: !!data.fatal, err: data.error?.name, msg: String(data.error?.message ?? '').slice(0, 200),
+        sn: data.frag?.sn, frag: data.frag ? [+data.frag.start.toFixed(2), +data.frag.end.toFixed(2)] : undefined,
+        noProgress: data.appendsWithoutProgress }));
+      // DIAGNOSTIC TEMPORAIRE (option B du 27/09) — à retirer après le
+      // prochain test. L'oscillation ranges=[[10.05,13.8]] → [[10.05,23.61]]
+      // → [[10.05,12.6]] n'est pas explicable par les seuils : il faut le
+      // journal exact de qui purge quoi, et de ce que hls.js tente d'insérer.
+      const rangesNow = () => {
+        const out = [];
+        for (let i = 0; i < video.buffered.length; i++) out.push([+video.buffered.start(i).toFixed(2), +video.buffered.end(i).toFixed(2)]);
+        return out;
+      };
+      hls.on(window.Hls?.Events?.BUFFER_FLUSHING, (event, d) => push('flush', {
+        pos: +player.position().toFixed(2), from: +(d.startOffset ?? -1).toFixed(2),
+        to: d.endOffset === Infinity ? 'inf' : +(d.endOffset ?? -1).toFixed(2), type: d.type,
+        before: rangesNow(), after: rangesNow() }));
+      for (const name of ['FRAG_BUFFERED', 'FRAG_LOADED', 'FRAG_LOADING', 'BUFFER_APPENDED']) {
+        if (!window.Hls?.Events?.[name]) continue;
+        hls.on(window.Hls.Events[name], (event, d) => {
+          if (d && d.frag && d.frag.type !== 'video') return;
+          push(`hls-${name.toLowerCase()}`, {
+            pos: +player.position().toFixed(2), sn: d?.frag?.sn,
+            frag: d?.frag ? [+d.frag.start.toFixed(2), +d.frag.end.toFixed(2)] : undefined,
+            ranges: rangesNow() });
+        });
+      }
     }
     const ranges = [];
     for (let i = 0; i < video.buffered.length; i++) ranges.push([+video.buffered.start(i).toFixed(2), +video.buffered.end(i).toFixed(2)]);
