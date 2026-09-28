@@ -88,24 +88,35 @@ jobs:
       - name: Verifier la preview
         run: |
           set -euo pipefail
+          host="pr-$PR_NUMBER.$PREVIEW_DOMAIN"
+          # Premier temps : le conteneur et le routage du proxy, sans dependre du
+          # pare-feu externe (resolution forcee vers la VM elle-meme).
           for attempt in $(seq 1 12); do
-            if curl --fail --silent --show-error --max-time 10 "$PREVIEW_URL/healthz" >/dev/null; then
-              echo "preview joignable : $PREVIEW_URL"
-              exit 0
+            if curl --fail --silent --show-error --max-time 10 \
+              --resolve "$host:$PREVIEW_PORT:127.0.0.1" "$PREVIEW_URL/healthz" >/dev/null; then
+              echo "preview prete en local : $PREVIEW_URL"
+              break
             fi
             if [ "$attempt" = 12 ]; then
-              echo "::error::$PREVIEW_URL/healthz ne repond pas"
+              echo "::error::$PREVIEW_URL/healthz ne repond pas via le proxy des previews"
               echo "::group::journaux du conteneur"
               docker logs --tail=80 "pr-$PR_NUMBER-app-1" || true
               echo "::endgroup::"
-              if ! docker ps --filter name=previews-proxy --format '{{.Names}}' | grep -q previews-proxy; then
-                echo "::error::le proxy des previews ne tourne pas"
-              fi
               exit 1
             fi
             echo "tentative $attempt : la preview n'est pas encore prete"
             sleep 5
           done
+
+          # Second temps : depuis l'exterieur, comme le navigateur. C'est cette requete
+          # qui dit si l'URL est reellement utilisable.
+          if ! error=$(curl --fail --silent --show-error --max-time 20 "$PREVIEW_URL/healthz" 2>&1); then
+            echo "::error::$PREVIEW_URL n'est pas joignable depuis l'exterieur ($error)"
+            echo "Verifier la regle d'entree TCP $PREVIEW_PORT dans la liste de securite du VCN,"
+            echo "le secret DUCKDNS_TOKEN et le certificat du proxy (voir docs/cd.md)."
+            exit 1
+          fi
+          echo "preview joignable depuis l'exterieur : $PREVIEW_URL"
 
       - name: Publier l'URL sur la PR
         if: github.event_name == 'pull_request'

@@ -126,4 +126,8 @@ Pour envoyer rapidement le site sur une VM GCP ou OCI, x86_64 ou ARM64 :
 métadonnées. Prévoir leur somme, une marge pour les préparations et les sauvegardes.
 Les sessions et séances sont en mémoire et se ferment au redémarrage.
 Utiliser un serveur unique et un disque persistant, sans instances concurrentes
-sur le même répertoire. Aucun déploiement ni push n'est automatique.
+sur le même répertoire.
+
+Le déploiement est continu : dès que les vérifications passent sur `main`, l'image du
+commit testé est construite puis déployée sur le serveur, et chaque pull request
+dispose de sa propre URL temporaire. Voir [la livraison continue](docs/cd.md).
