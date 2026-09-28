@@ -128,6 +128,10 @@ Les sessions et séances sont en mémoire et se ferment au redémarrage.
 Utiliser un serveur unique et un disque persistant, sans instances concurrentes
 sur le même répertoire.
 
+`data/telemetry` reçoit le journal de chaque séance : un fichier par participant
+et un pour le serveur, purgés selon `telemetryDays` et `telemetryMb`. Voir
+[la télémétrie et les journaux](docs/telemetry.md).
+
 Le déploiement est continu : dès que les vérifications passent sur `main`, l'image du
 commit testé est construite puis déployée sur le serveur, et chaque pull request
 dispose de sa propre URL temporaire. Voir [la livraison continue](docs/cd.md).

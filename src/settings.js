@@ -27,6 +27,9 @@ export const FIELDS = {
   voiceQuota:           { category: 'voice',    def: 3,     min: 1,   max: 30 },
   voiceWindow:          { category: 'voice',    def: 60,    min: 10,  max: 600,   unit: 's' },
   voiceCooldown:        { category: 'voice',    def: 2,     min: 0,   max: 60,    unit: 's' },
+  telemetryDays:        { category: 'telemetry', def: 7,     min: 1,   max: 365,    unit: 'j' },
+  telemetryMb:          { category: 'telemetry', def: 512,   min: 16,  max: 16384,  unit: 'Mo' },
+  telemetryFileMb:      { category: 'telemetry', def: 16,    min: 1,   max: 256,    unit: 'Mo' },
 };
 
 // Contraintes entre champs, vérifiées sur les valeurs fusionnées : un PATCH
