@@ -24,6 +24,18 @@ export function nativeHls(video) {
 // Codec probes must ask the engine that will decode: MediaSource for hls.js,
 // canPlayType for native HLS. Chrome's canPlayType accepts codecs MSE refuses
 // on the first segment.
+// Admin-side rendering of the risk measured at segmentation: a badge, its
+// tone and the numbers behind it — honest about the cause and the only fix
+// (a short GOP, which means re-encoding). Unmeasured movies get no badge.
+export function bufferRiskBadge(risk, t) {
+  if (!risk || risk.level === 'ok') return null;
+  const title = t(
+    `Segments vidéo jusqu'à ${risk.maxSegmentMb} Mo — deux d'affilée dépassent le quota mémoire de Chrome (~40 Mo) et la lecture se fige vers 20 s. Firefox ou un GPU plus généreux peuvent passer ; sinon il faut ré-encoder le film avec un GOP court.`,
+    `비디오 세그먼트가 최대 ${risk.maxSegmentMb}MB — 연속 두 개가 Chrome 메모리 한도(~40MB)를 넘어 재생이 약 20초에서 멈춥니다. Firefox나 더 강한 GPU에서는 될 수도 있고, 아니면 짧은 GOP로 재인코딩해야 합니다.`);
+  return { tone: risk.level === 'risk' ? 'danger' : 'pending', title,
+    text: risk.level === 'risk' ? t('⚠ Lecture à risque', '⚠ 재생 위험') : t('⚠ Lecture limite', '⚠ 재생 한계') };
+}
+
 export function supportsMime(video) {
   return nativeHls(video)
     ? mime => video.canPlayType(mime) !== ''
