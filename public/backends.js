@@ -116,20 +116,31 @@ export class HlsJsBackend {
   }
 
   // Cible d'avance en secondes, plafonnée par le budget maxBufferMb au débit
-  // réel du niveau (BANDWIDTH du manifest). Sur un flux lourd (peak 34 Mbps),
-  // 30 s d'avance dépassent le quota SourceBuffer de Chrome et l'append du
-  // prochain segment échoue en boucle ; ~12-15 s suffisent à couvrir minBuffer.
-  // Quand les segments font ~10 s, un plancher à 12 s imposerait d'en garder
-  // deux en mémoire : la cible retombe à un segment.
+  // réel du niveau (BANDWIDTH du manifest). Le quota MSE de Chrome (~40 Mo
+  // sous Direct3D11) ne laisse pas la place à deux segments lourds : quand le
+  // budget en octets ne couvre pas 2×targetDuration, l'avance retombe à un
+  // seul segment — jamais sous minBuffer, sans quoi la salle ne démarre pas.
   applyBufferCap() {
     const level = this.hls.levels?.[this.hls.currentLevel];
     const bps = level?.bitrate || this.bitrate;
     const target = level?.details?.targetduration;
     const floor = Math.min(this.bufferSeconds, Math.max(target >= 8 ? target : 12, this.minBuffer));
-    let cap = this.bufferSeconds;
-    if (bps) cap = 8 * this.maxBufferMb * 1024 * 1024 / bps;
+    let cap = this.bufferSeconds, budget;
+    if (bps) budget = cap = 8 * this.maxBufferMb * 1024 * 1024 / bps;
     cap = Math.min(this.bufferSeconds, Math.max(floor, cap));
-    Object.assign(this.hls.config, { maxBufferLength: cap, maxMaxBufferLength: cap });
+    // Sans cette borne, le budget en octets laisse le cap dépasser un segment
+    // (12,3 s > 10,01 s) et hls.js garde deux segments résidents : 41,5 Mo >
+    // quota, le second append échoue en bufferAppendNoProgress.
+    const single = Boolean(target && budget !== undefined && budget < 2 * target);
+    if (single) cap = Math.max(this.minBuffer, Math.min(cap, target));
+    // Exposé à la télémétrie : le cap rabattu à un segment est l'événement
+    // rare qui dira au prochain test si la contention du quota a disparu.
+    this.capLimited = single ? { cap: +cap.toFixed(2), target, mbps: +(bps / 1e6).toFixed(1) } : null;
+    // Back-buffer : 5 s à 34 Mbps gardent ~21 Mo derrière la tête et mangent
+    // la marge du quota ; sous ~8 Mbps ils ne coûtent rien et évitent un
+    // re-buffering sur retour arrière.
+    const back = bps > 8_000_000 ? Math.min(this.backBufferSeconds, 0.5) : this.backBufferSeconds;
+    Object.assign(this.hls.config, { maxBufferLength: cap, maxMaxBufferLength: cap, backBufferLength: back });
   }
 
   // Purge le back-buffer vidéo jusqu'au début du fragment lu (-0,5 s de
