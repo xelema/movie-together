@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { webglProbe } from '../scripts/color-capability.js';
 
 // Un import réel et une préparation ffmpeg sont payés ici, comme dans la
 // première passe de watch.spec.js : le journal de séance ne se prouve qu'avec
@@ -33,7 +34,13 @@ async function journals(since) {
   return found;
 }
 
-test('une séance ordinaire écrit son journal client et serveur sur le disque', async ({ page, baseURL }) => {
+test('une séance ordinaire écrit son journal client et serveur sur le disque', async ({ page, baseURL, browserName }) => {
+  // Le film de test est étiqueté HDR : sans contexte WebGL2 high-float, le
+  // moteur de couleurs ne s'initialise pas et l'application refuse la lecture.
+  // Le palier est ignoré — comme dans watch.spec.js — au lieu d'attendre une
+  // lecture que la machine ne peut pas produire.
+  test.skip(!(await page.evaluate(webglProbe))?.webgl2, 'webgl-unavailable: pas de contexte WebGL2 high-float');
+
   const since = Date.now() - 1000;
   const headers = { Origin: baseURL };
 
@@ -90,9 +97,34 @@ test('une séance ordinaire écrit son journal client et serveur sur le disque',
   page.on('pageerror', error => pageErrors.push(String(error)));
   page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
 
-  await page.locator('.plyr__control--overlaid').click();
-  await expect.poll(() => page.locator('video').evaluate(video => video.currentTime), { timeout: 30_000 }).toBeGreaterThan(0.5);
-  // Le curseur est un pourcentage : 50 % d'un film de 50 s vise 25 s.
+  // Première activation : le son exige un vrai geste. Le bouton de secours
+  // (#allow-sound) apparaît quand l'autoplay est refusé, le bouton central de
+  // Plyr disparaît dès que la séance joue — un moteur masque l'un ou l'autre.
+  // Le geste est donc tenté sur ce qui est visible, puis la lecture est
+  // confirmée sur l'état de la séance, jamais sur la présence d'un bouton.
+  const allow = page.locator('#allow-sound'), overlaid = page.locator('.plyr__control--overlaid');
+  if (await allow.isVisible()) await allow.click();
+  else if (await overlaid.isVisible()) await overlaid.click();
+  const playing = () => page.evaluate(() => {
+    const element = document.querySelector('video');
+    if (window.player?.state?.phase === 'paused') window.player.command('play');
+    return window.player?.state?.phase === 'playing' && !element.paused && element.currentTime > 0;
+  });
+  try {
+    await expect.poll(playing, { timeout: 30_000 }).toBe(true);
+  } catch (error) {
+    // Un échec doit nommer la barrière rencontrée, pas seulement un booléen.
+    const dump = await page.evaluate(() => {
+      const video = document.querySelector('video');
+      return { phase: window.player?.state?.phase, paused: video.paused, readyState: video.readyState, media: video.error?.message,
+        time: video.currentTime, blocked: window.player?.activationBlocked, failure: window.player?.failure,
+        controls: document.querySelector('.plyr__control--overlaid')?.checkVisibility?.() ?? false,
+        allowSound: document.querySelector('#allow-sound')?.checkVisibility?.() ?? false };
+    });
+    throw new Error(`la séance ne joue pas : ${JSON.stringify(dump)} — ${error.message}`);
+  }
+
+  // Le curseur de transport est un pourcentage : 50 % d'un film de 50 s vise 25 s.
   await page.locator('[data-plyr=seek]').fill('50');
   await page.locator('[data-plyr=seek]').dispatchEvent('change');
   await page.keyboard.press('m');
@@ -132,10 +164,17 @@ test('une séance ordinaire écrit son journal client et serveur sur le disque',
 
   const caps = participant.lines.find(line => line.type === 'caps');
   expect(caps.movie.id).toBe(movie.id);
-  expect(caps.movie.bufferRisk).toBeTruthy();
+  expect(caps.movie.bufferRisk.level).toBeTruthy();
   expect(caps.room.probe).toBe(false);
-  expect(caps.canPlay.h264).toBe(true);
-  expect(caps.mediaCap.h264.supported).toBe(true);
+  // Les sondes de codecs appartiennent au moteur, pas à la séance : là où le
+  // poste répond, la valeur est un booléen ; la lecture H.264 n'est acquise que
+  // sur le palier Chromium.
+  if (browserName === 'chromium') {
+    expect(caps.canPlay.h264).toBe(true);
+    expect(caps.mediaCap.h264.supported).toBe(true);
+  } else {
+    expect(typeof caps.canPlay.h264).toBe('boolean');
+  }
 
   const ticks = participant.lines.filter(line => line.type === 'tick');
   expect(ticks.length).toBeGreaterThan(2);
