@@ -136,6 +136,38 @@ export async function refreshStaleProbes(store) {
   }
 }
 
+// Mesure le risque de quota MSE sur des films déjà segmentés, sans toucher
+// aux médias : un `stat` par segment vidéo, jamais de ré-encodage ni de
+// réécriture de playlist. `bufferRisk` n'est calculé qu'à la préparation, donc
+// les films uploaded avant ce changement n'ont pas de badge — ce rattrapage
+// comble le trou. Réutilise assessBufferRisk pour que le seuil soit identique.
+export async function measureBufferRisk(store) {
+  let measured = 0;
+  for (const movie of store.movies.values()) {
+    if (movie.status !== 'ready' || movie.bufferRisk) continue;
+    const generation = movie.generation;
+    if (!generation) continue;
+    const directory = path.join(store.directory(movie.id), generation);
+    try {
+      // La playlist donne les durées (donc le GOP) ; les .m4s donnent les tailles.
+      const playlist = await readFile(path.join(directory, 'stream_0.m3u8'), 'utf8');
+      const durations = [...playlist.matchAll(/#EXTINF:([\d.]+)/g)].map(match => Number(match[1]));
+      const sizes = [];
+      for (const file of await readdir(directory)) {
+        if (!file.startsWith('segment_0_') || !file.endsWith('.m4s')) continue;
+        sizes.push((await stat(path.join(directory, file))).size);
+      }
+      const risk = assessBufferRisk(sizes, durations);
+      // Un film sans segment vidéo mesurable reste sans champ : pas de valeur inventée.
+      if (risk) { movie.bufferRisk = risk; store.save(movie); measured++; }
+    } catch (error) {
+      // Un film inaccessible ne doit pas empêcher les autres d'être mesurés.
+      console.log(`bufferRisk ${movie.id}: ${error.message}`);
+    }
+  }
+  return measured;
+}
+
 function quote(value) { return String(value).replace(/["\r\n\\]/g, '').slice(0, 100); }
 function language(value) { return /^[a-z]{2,3}(-[A-Za-z0-9]+)?$/.test(value) ? value : 'und'; }
 

@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createStore } from '../src/storage.js';
-import { run, probeFile, prepareMovie, inspectProbe, codecString, decodeSubtitleText, subtitleFileFormat, addSubtitle, refreshStaleProbes, assessBufferRisk, PROBE_SCHEMA } from '../src/media.js';
+import { run, probeFile, prepareMovie, inspectProbe, codecString, decodeSubtitleText, subtitleFileFormat, addSubtitle, refreshStaleProbes, measureBufferRisk, assessBufferRisk, PROBE_SCHEMA } from '../src/media.js';
 import { defaultTrackNames } from '../public/track-names.js';
 
 // Retagging rewrites the sequence header, so compare decoded samples: no picture may change.
@@ -87,6 +87,43 @@ test('startup refresh reprobes only movies stored with an older probe schema', a
   assert.equal(stale.probe.video.codec, 'h264');
   assert.equal(current.status, 'uploaded');
   assert.equal(ready.status, 'ready');
+});
+
+test('startup catch-up measures mse risk on already-segmented movies without touching media', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-risk-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createStore(root);
+  const mb = n => Buffer.alloc(Math.round(n * 1024 ** 2));
+  const movie = { id: randomUUID(), title: 'Big', status: 'ready', generation: 'gen1' };
+  store.save(movie);
+  const directory = path.join(store.directory(movie.id), 'gen1');
+  await mkdir(directory, { recursive: true });
+  // Two 33 MB segments at a 10 s GOP overflow Chrome's ~40 MB quota; the
+  // playlist gives the durations, the .m4s give the sizes.
+  await writeFile(path.join(directory, 'stream_0.m3u8'),
+    '#EXTM3U\n#EXTINF:10.01,\nsegment_0_000000.m4s\n#EXTINF:10.01,\nsegment_0_000001.m4s\n#EXT-X-ENDLIST\n');
+  await writeFile(path.join(directory, 'segment_0_000000.m4s'), mb(33.35));
+  await writeFile(path.join(directory, 'segment_0_000001.m4s'), mb(5));
+  // Non-video files must be ignored, or the init segment would skew the size.
+  await writeFile(path.join(directory, 'init_0.mp4'), mb(0.02));
+  // An uploaded movie and one already measured are left alone.
+  const uploaded = { id: randomUUID(), title: 'Fresh', status: 'uploaded', generation: 'gen1' };
+  store.save(uploaded);
+  const already = { id: randomUUID(), title: 'Done', status: 'ready', generation: 'gen1',
+    bufferRisk: { level: 'ok', maxSegmentMb: 5 } };
+  store.save(already);
+
+  assert.equal(await measureBufferRisk(store), 1);
+  assert.equal(movie.bufferRisk.level, 'risk');
+  assert.equal(movie.bufferRisk.maxSegmentMb, 33.35);
+  assert.equal(movie.bufferRisk.gopSeconds, 10.01);
+  assert.equal(movie.bufferRisk.segments, 2);
+  assert.equal(uploaded.bufferRisk, undefined);
+  assert.equal(already.bufferRisk.maxSegmentMb, 5);
+  // The measurement is persisted, so the next boot does not redo the work.
+  assert.equal(JSON.parse(await readFile(path.join(store.directory(movie.id), 'movie.json'), 'utf8')).bufferRisk.level, 'risk');
+  // Idempotent: a second pass measures nothing.
+  assert.equal(await measureBufferRisk(store), 0);
 });
 
 test('decodes legacy subtitle charsets to UTF-8', () => {

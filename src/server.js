@@ -1,5 +1,5 @@
 import { createApplication } from './app.js';
-import { refreshStaleProbes } from './media.js';
+import { refreshStaleProbes, measureBufferRisk } from './media.js';
 import { createVoiceService } from './voice.js';
 
 const port = Number(process.env.PORT || 3000);
@@ -23,6 +23,10 @@ const application = createApplication({
   voiceService: createVoiceService(),
 });
 await refreshStaleProbes(application.store);
+// Rattrape les films segmentés avant l'existence du badge de risque : un stat
+// par segment, aucun média touché. Sans quoi l'admin ne voit pas que 5 de ses
+// 7 films vont geler sur Chrome.
+console.log(`Risque MSE mesuré sur ${await measureBufferRisk(application.store)} film(s) déjà segmentés.`);
 application.server.listen(port, '0.0.0.0', () => console.log(`Movie Night écoute sur le port ${port}.`));
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => {
   await application.close(); process.exit(0);
