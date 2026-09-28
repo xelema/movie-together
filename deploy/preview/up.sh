@@ -102,14 +102,27 @@ EOF
 # est efface a chaque execution, pas l'etat de la stack.
 install -m 644 "$ROOT/deploy/preview/compose.preview.yaml" "$STATE_ROOT/compose.preview.yaml"
 
+# Compose donne la priorite a l'environnement du shell sur --env-file : une variable
+# presente mais vide (secret absent, ou passee vide par le runner) ecrase la valeur du
+# fichier et fait echouer l'interpolation ":?" alors que la preview a tout ce qu'il
+# faut. On republie donc dans l'environnement les valeurs resolues, celles-la memes
+# qu'on ecrit dans preview.env.
+export PREVIEW_IMAGE=$IMAGE
+export PREVIEW_DATA=$DATA
+export PREVIEW_ORIGIN=https://$HOST:$PORT
+export PREVIEW_ADMIN_PASSWORD=$admin
+export PREVIEW_ALIAS=pr-$PR-app
+export MIN_BUFFER_SECONDS=${MIN_BUFFER_SECONDS:-20}
+export LOW_BUFFER_SECONDS=${LOW_BUFFER_SECONDS:-5}
+
 cat > "$STATE/preview.env" <<EOF
-PREVIEW_IMAGE=$IMAGE
-PREVIEW_DATA=$DATA
-PREVIEW_ORIGIN=https://$HOST:$PORT
-PREVIEW_ADMIN_PASSWORD=$admin
-PREVIEW_ALIAS=pr-$PR-app
-MIN_BUFFER_SECONDS=${MIN_BUFFER_SECONDS:-20}
-LOW_BUFFER_SECONDS=${LOW_BUFFER_SECONDS:-5}
+PREVIEW_IMAGE=$PREVIEW_IMAGE
+PREVIEW_DATA=$PREVIEW_DATA
+PREVIEW_ORIGIN=$PREVIEW_ORIGIN
+PREVIEW_ADMIN_PASSWORD=$PREVIEW_ADMIN_PASSWORD
+PREVIEW_ALIAS=$PREVIEW_ALIAS
+MIN_BUFFER_SECONDS=$MIN_BUFFER_SECONDS
+LOW_BUFFER_SECONDS=$LOW_BUFFER_SECONDS
 EOF
 
 log "preview $PR : $IMAGE"
