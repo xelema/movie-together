@@ -123,6 +123,36 @@ test('member status mirrors the phase gates: ready, fresh, aligned', () => {
   assert.equal(room.memberStatus('a').waiting, true);
 });
 
+test('a member parked on a head the room precedes still starts the séance', () => {
+  const { room, command, report } = setup();
+  // A remuxed film's first decodable frame can sit at 0.12 s. Nothing plays before
+  // it, so waiting for the frozen 0 s position would deadlock the room in buffering.
+  command('play'); report('a'); report('b', { position: 0.12, bufferedStart: 0.12 });
+  assert.equal(room.phase, 'playing');
+  assert.equal(room.startsAt, 1000);
+  assert.equal(room.memberStatus('b').waiting, false);
+});
+
+test('a head further ahead than a few frames is not an alignment', () => {
+  const { room, command, report } = setup();
+  command('play'); report('a'); report('b', { position: 5, bufferedStart: 5 });
+  assert.equal(room.phase, 'buffering');
+  assert.equal(room.memberStatus('b').reason, 'misaligned');
+});
+
+test('a member away from its own head stays misaligned', () => {
+  const { room, command, report } = setup();
+  command('play'); report('a'); report('b', { position: 0.5, bufferedStart: 0.12 });
+  assert.equal(room.phase, 'buffering');
+  assert.equal(room.memberStatus('b').waiting, true);
+});
+
+test('a head of unknown length is still read as misalignment', () => {
+  const { room, command, report } = setup();
+  command('play'); report('a'); report('b', { position: 0.12 });
+  assert.equal(room.phase, 'buffering');
+});
+
 test('waiting status names the gate that blocks the member', () => {
   const { room, command, report, advance } = setup();
   command('play');

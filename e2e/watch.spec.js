@@ -77,6 +77,9 @@ const latchHover = page => expect.poll(async () => {
 // Latching hover is also what shows the chrome: each pass re-wakes a dropped
 // bar, so the whole state is one poll wrapped in a retry for loaded boxes.
 const showControls = page => expect(() => latchHover(page)).toPass({ timeout: 10_000 });
+// A freeze that pins the controls open (Plyr shows them on pause) can land between
+// two clicks, so a toggle is asserted against the state the click actually found.
+const hiddenControls = page => page.locator('.plyr').evaluate(el => el.classList.contains('plyr--hide-controls'));
 // A prise closed before its first frame reaches the room ends 'no-speech',
 // correctly: the heard marker is the only proof the gate saw audio and the
 // live session is open. It is re-armed per utterance at 'started', so it
@@ -422,10 +425,15 @@ test('track and settings choices stay viewer-local while only the transport move
     await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '0');
     await expect(host.locator('video')).toHaveCSS('cursor', 'none');
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
-    // A click in place brings them back; the room is still untouched.
+    // A click in place brings them back; the room is still untouched. The bar a
+    // freeze pins open while the room buffers can sit between the two clicks, so
+    // the direction is read from the state the click found instead of assuming the
+    // hide above is still standing; the hidden -> visible direction is pinned in
+    // the paused pass, where a pause holds the bar open and no freeze moves it.
+    const wasHidden = await hiddenControls(host);
     await host.locator('.plyr__video-wrapper').dispatchEvent('click');
-    await expect(host.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
-    await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '1');
+    await expect.poll(() => hiddenControls(host)).toBe(!wasHidden);
+    await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', wasHidden ? '1' : '0');
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     // Only Plyr's own transport moves the room: the bar's play button pauses.
     await clickControl(host, '.plyr__controls [data-plyr=play]', () => host.locator('video').evaluate(video => video.paused));
