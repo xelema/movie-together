@@ -15,11 +15,17 @@ const STATE_NAMES = {
   error: ['Réessayer de parler', '다시 말하기', 'Thử nói lại'],
 };
 
-export function attachVoice({ mic, local, supertitle, player, t, label }) {
+export function attachVoice({ mic, local, supertitle, player, t, label, onEvent }) {
   let state = 'idle', utterance = null, shownSeq = 0, shownRev = 0, shownFinal = false;
   let stream = null, audioContext = null, source = null, worklet = null, analyser = null;
   let listenTimer = null, watchdog = null, hardware = null, armSeq = 0, spectrumRaf = 0;
   let spectrumBins = null;
+  // Télémétrie : transitions, compteurs de trames et latence du fournisseur.
+  // Jamais de texte transcrit ou traduit : longueurs et compteurs uniquement.
+  let tapAt = 0;
+  const sent = { frames: 0, bytes: 0, refused: 0 };
+  const emit = fields => { try { onEvent?.('voice', fields); } catch { } };
+  const since = () => tapAt ? Math.round(performance.now() - tapAt) : undefined;
 
   const show = (node, text, ms = 0) => {
     node.textContent = text;
@@ -27,8 +33,10 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     clearTimeout(node.hideTimer);
     if (ms) node.hideTimer = setTimeout(() => { node.hidden = true; }, ms);
   };
-  const setState = next => {
+  const setState = (next, err) => {
+    const changed = next !== state;
     state = next;
+    if (changed) emit({ state: next, err, ...(next === 'processing' ? { frames: sent.frames, bytes: sent.bytes, refused: sent.refused } : {}) });
     mic.dataset.state = next;
     mic.setAttribute('aria-pressed', String(next === 'listening'));
     const [fr, ko, vi] = STATE_NAMES[next] ?? STATE_NAMES.idle;
@@ -139,11 +147,17 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
         // Le seuil de bufferedAmount décidé dans #39 arrête la prise proprement :
         // aucune trame n'est perdue silencieusement et la page ne se bloque pas.
         worklet.port.onmessage = event => {
-          if (!player.sendFrame(event.data)) abort(t('Connexion lente, prise interrompue.', '연결이 느려 발화를 중단했습니다.', 'Kết nối chậm, đã ngắt lượt nói.'));
+          sent.frames++; sent.bytes += event.data?.byteLength ?? 0;
+          if (!player.sendFrame(event.data)) {
+            sent.refused++;
+            emit({ err: 'send-buffer', refused: sent.refused, frames: sent.frames, bytes: sent.bytes });
+            abort(t('Connexion lente, prise interrompue.', '연결이 느려 발화를 중단했습니다.', 'Kết nối chậm, đã ngắt lượt nói.'));
+          }
         };
       }
       return true;
     } catch (error) {
+      emit({ state: 'error', err: error.name, ms: since() });
       // Un armement partiel est démonté : piste muette, contexte libéré, le
       // flux garde la permission pour l'essai suivant.
       stopCapture();
@@ -169,6 +183,8 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     if (state === 'listening') return stopSpeaking();
     if (state !== 'idle' && state !== 'error') return;
     hardware = beginCapture(++armSeq);
+    tapAt = performance.now();
+    sent.frames = 0; sent.bytes = 0; sent.refused = 0;
     // La langue d'interface au moment de l'appui fixe le sens de la prise :
     // le serveur la fige, un changement de langue en cours d'écoute n'y
     // touche pas.
@@ -191,6 +207,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
         utterance = null;
         return;
       }
+      emit({ state: 'started', ms: since(), armMs: since(), sr: audioContext?.sampleRate });
       stream.getAudioTracks().forEach(track => { track.enabled = true; });
       source.connect(worklet);
       if (analyser) source.connect(analyser);
@@ -204,6 +221,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       // Un échec identifié ne vaut que pour la prise courante. Un refus sans
       // identifiant ne s'applique qu'à une demande en attente d'accord.
       if (event.utterance ? event.utterance !== utterance : state !== 'starting') return;
+      emit({ state: 'failed', err: String(event.error ?? event.message ?? '').slice(0, 120) || undefined, retryAfter: event.retryAfter });
       const suffix = event.retryAfter ? t(` · ${Math.ceil(event.retryAfter)} s`, ` · ${Math.ceil(event.retryAfter)}초`, ` · ${Math.ceil(event.retryAfter)} giây`) : '';
       fail(event.message ? label(event.message) + suffix : undefined);
       return;
@@ -211,7 +229,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
     if (event.state === 'heard' || event.state === 'understood') {
       // Le texte compris reste local, en italique et sans préfixe (#47). Il
       // arrive au fil de l'eau ('heard') puis en version finale ('understood').
-      if (event.utterance === utterance) { local.dataset.kind = 'transcript'; show(local, event.text, RESULT_MS); }
+      if (event.utterance === utterance) { local.dataset.kind = 'transcript'; show(local, event.text, RESULT_MS); emit({ state: event.state, seq: event.seq, heard: event.text?.length, ms: since() }); }
       return;
     }
     if (event.state === 'partial') {
@@ -220,6 +238,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       if (event.seq < shownSeq || (event.seq === shownSeq && (shownFinal || event.rev <= shownRev))) return;
       if (event.seq > shownSeq) shownFinal = false;
       shownSeq = event.seq; shownRev = event.rev;
+      emit({ state: 'partial', seq: event.seq, rev: event.rev, len: event.text?.length, partialMs: since() });
       show(supertitle, event.text, RESULT_MS);
       return;
     }
@@ -227,6 +246,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       // Une phrase en échec est retirée chez tous tant qu'aucun résultat
       // définitif ne l'a remplacée.
       if (event.seq === shownSeq && !shownFinal) { clearTimeout(supertitle.hideTimer); supertitle.hidden = true; }
+      emit({ state: 'withdrawn', seq: event.seq });
       return;
     }
     if (event.state === 'result') {
@@ -234,6 +254,7 @@ export function attachVoice({ mic, local, supertitle, player, t, label }) {
       // périmé ne le remplacent ensuite.
       if (event.seq < shownSeq || (event.seq === shownSeq && shownFinal)) return;
       shownSeq = event.seq; shownFinal = true;
+      emit({ state: 'result', seq: event.seq, result: event.text?.length, ms: since() });
       if (!event.utterance || event.utterance === utterance || state === 'processing' || state === 'listening') fail();
       show(supertitle, event.text, RESULT_MS);
     }

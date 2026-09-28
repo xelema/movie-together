@@ -34,12 +34,23 @@ vocabulaire partage.
   Tout rapport anterieur est invalide : la preparation recommence a zero.
 - **Seance instrumentee** (probe) : une seance creee avec le drapeau `probe`.
   Elle n'expire pas et survit aux redemarrages du serveur tant que son film
-  reste pret. Elle sert a verifier le fonctionnement sur un appareil reel.
-- **Telemetrie** : flux d'evenements de diagnostic envoye par le client d'une
-  seance instrumentee vers le serveur (capacites de l'appareil, buffer, images
-  perdues, horloge, renderer couleur, segments telecharges). A la difference
-  du rapport, qui alimente la machine a etats, la telemetrie est ecrite dans
-  un journal et ne change rien a la seance.
+  reste pret. Elle sert a verifier le fonctionnement sur un appareil reel. Le
+  drapeau ne conditionne plus la telemetrie : toutes les seances sont
+  journalisees.
+- **Telemetrie** : flux d'evenements de diagnostic envoye par le client vers le
+  serveur (capacites de l'appareil, tampon, images presentees, horloge, renderer
+  couleur, segments telecharges, traduction vocale, camera). A la difference du
+  rapport, qui alimente la machine a etats, la telemetrie est ecrite dans un
+  journal et ne change rien a la seance. La parole n'y laisse jamais de texte :
+  seulement des longueurs et des compteurs. Elle se desactive pour un navigateur
+  par `#telemetry=off` ou `localStorage.movieTelemetry = 'off'`.
+- **Journal de seance** : deux fichiers NDJSON par seance sous `data/telemetry`,
+  un par participant (vue client) et un pour le serveur (connexions et refus,
+  phases avec leur cause, commandes, rapports rejetes, prise de parole, camera).
+  Les deux se relisent ensemble par `scripts/telemetry-report.js`. Leur duree de
+  conservation et leur volume sont des reglages d'administration
+  (`telemetryDays`, `telemetryMb`, `telemetryFileMb`) ; le schema complet est
+  dans `docs/telemetry.md`.
 
 ## Reglages
 

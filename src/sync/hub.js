@@ -21,7 +21,7 @@ const VOICE_MESSAGES = {
 // liveness sweep. app.js keeps HTTP and auth; it reaches séances only through
 // this interface. Sessions and media stay outside: sessionFor/sessionActive,
 // canAccess, movieFor and moviePlayable are injected at the seam.
-export function createRoomHub({ origin, settings = createSettings(), sessionFor, sessionActive, canAccess, movieFor, moviePlayable, voiceService = null, voiceTiming = {} } = {}) {
+export function createRoomHub({ origin, settings = createSettings(), sessionFor, sessionActive, canAccess, movieFor, moviePlayable, voiceService = null, voiceTiming = {}, journal = null } = {}) {
   // Les seuils vivent ici pour les nouvelles séances comme pour tune() ; les
   // autres réglages sont relus dans settings au moment de chaque opération.
   const thresholds = { minBuffer: settings.get('minBuffer'), lowBuffer: settings.get('lowBuffer') };
@@ -33,6 +33,12 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8192 });
   const rooms = new Map();
   const countSessions = room => new Set([...room.clients].map(client => client.session)).size;
+  const fmt1 = value => +Number(value).toFixed(1);
+
+  // Server-side séance journal: one line per transition, through the injected
+  // journal under <code>-server.ndjson. Never speech content, never throws.
+  const record = (room, entry) =>
+    journal?.write(`${room.code}-server`, [{ at: Date.now(), room: room.code, ...entry }]);
 
   // Waiting diagnostics are for the host: guests only need the shared bit.
   const state = (room, { details = true } = {}) => ({ type: 'state', roomId: room.id, code: room.code,
@@ -52,7 +58,15 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
   // a stuck séance leaves one line naming the gate that blocks it.
   const logChanges = (room, current) => {
     if (current.state.phase !== room.loggedPhase) {
-      console.log(`[room ${room.tag}] phase ${room.loggedPhase ?? 'new'} -> ${current.state.phase}`);
+      const cause = current.state.cause ?? 'unknown';
+      const blocking = current.members.filter(member => member.waiting);
+      const culprit = blocking.find(member => member.reason === cause) ?? blocking[0];
+      console.log(`[room ${room.tag}] phase ${room.loggedPhase ?? 'new'} -> ${current.state.phase} cause=${cause}` +
+        (culprit ? ` member=${culprit.id} buffered ${fmt1(culprit.buffered)}/${fmt1(culprit.needed)}` : ''));
+      record(room, { type: 'phase', from: room.loggedPhase ?? null, to: current.state.phase, cause,
+        pos: current.state.position, epoch: current.state.epoch,
+        ...(blocking.length ? { members: blocking.map(member =>
+          ({ id: member.id, reason: member.reason, buffered: member.buffered, needed: member.needed })) } : {}) });
       room.loggedPhase = current.state.phase;
     }
     for (const member of current.members) {
@@ -61,7 +75,11 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
         : 'ready';
       if (room.logged.get(member.id) !== signature) {
         room.logged.set(member.id, signature);
-        console.log(`[room ${room.tag}] ${member.id}: ${signature}`);
+        console.log(`[room ${room.tag}] ${member.id}: ${signature}` +
+          (member.waiting ? ` buffered ${fmt1(member.buffered)}/${fmt1(member.needed)}` : ''));
+        record(room, { type: 'member', member: member.id, waiting: member.waiting,
+          reason: member.reason, blockers: member.blockers, failure: member.failure,
+          buffered: member.buffered, needed: member.needed });
       }
     }
   };
@@ -73,7 +91,11 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     let guest;
     for (const client of room.clients) {
       if (client.readyState !== WebSocket.OPEN) continue;
-      if (client.bufferedAmount > 65536) { client.terminate(); continue; }
+      if (client.bufferedAmount > 65536) {
+        client.killed = 'backpressure';
+        record(room, { type: 'limit', member: client.memberId, reason: 'backpressure' });
+        client.terminate(); continue;
+      }
       client.send(client.session?.admin ? full : (guest ??= JSON.stringify(state(room, { details: false }))));
     }
   };
@@ -94,7 +116,9 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     }
   };
   const refuse = (room, ws, error, message, extra = {}) => {
-    console.log(`[room ${room.tag}] voix refused:${error}`);
+    console.log(`[room ${room.tag}] voix refused:${error} ${ws.memberId}`);
+    record(room, { type: 'voice', kind: 'refused', member: ws.memberId, speaker: ws.displayName,
+      error, ...(extra.retryAfter !== undefined ? { retryAfter: extra.retryAfter } : {}) });
     voiceSend(ws, { state: 'failed', error, message, ...extra });
   };
   // Toute sortie ferme la session amont et détruit l'audio en mémoire : rien
@@ -111,7 +135,11 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     }
     if (room.utterance === utterance) room.utterance = null;
     room.voiceReleased?.set(utterance.session, Date.now());
-    console.log(`[room ${room.tag}] voix ${category}`);
+    console.log(`[room ${room.tag}] voix ${category} ${utterance.id} seq=${utterance.seq} bytes=${utterance.bytes}`);
+    record(room, { type: 'voice', kind: category.split(/[ :]/)[0], utterance: utterance.id,
+      seq: utterance.seq, speaker: utterance.speaker, bytes: utterance.bytes,
+      ms: Math.round(utterance.bytes / 32),
+      ...(category.startsWith('failed:') ? { error: category.slice('failed:'.length) } : {}) });
   };
   const failUtterance = (room, utterance, error, message) => {
     if (room.utterance !== utterance) return;
@@ -144,7 +172,9 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       partialSent: false, resultSent: false, state: 'listening', timer: null, idlePoll: null };
     utterance.timer = setTimeout(() => finishUtterance(room, utterance), timing.listenMs);
     room.utterance = utterance;
-    console.log(`[room ${room.tag}] voix started`);
+    console.log(`[room ${room.tag}] voix started ${utterance.id} seq=${utterance.seq}`);
+    record(room, { type: 'voice', kind: 'started', member: ws.memberId, utterance: utterance.id,
+      seq: utterance.seq, speaker: utterance.speaker });
     voiceSend(ws, { state: 'started', utterance: utterance.id, seq: utterance.seq });
   };
   const voiceFrame = (room, ws, data) => {
@@ -194,7 +224,9 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     // L'audio accumulé avant l'ouverture part d'un coup puis est effacé.
     for (const chunk of utterance.chunks) { live.send(chunk); chunk.fill(0); }
     utterance.chunks = null;
-    console.log(`[room ${room.tag}] voix session`);
+    console.log(`[room ${room.tag}] voix session ${utterance.id} seq=${utterance.seq}`);
+    record(room, { type: 'voice', kind: 'session', utterance: utterance.id, seq: utterance.seq,
+      speaker: utterance.speaker, calls: (room.voiceCalls.get(utterance.session) ?? []).length });
   };
   const voiceStop = (room, ws) => {
     const utterance = room.utterance;
@@ -226,12 +258,14 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
         if (message.to !== undefined && client.memberId !== message.to) continue;
         client.send(data);
       }
+      record(room, { type: 'webcam', kind: 'signal', from: ws.memberId, to: message.to ?? null });
       return;
     }
     if (message.action === 'status') {
       ws.webcamActive = !!message.active;
       const data = JSON.stringify({ type: 'webcam', action: 'status', from: ws.memberId, name: ws.displayName, active: !!message.active });
       for (const client of others) client.send(data);
+      record(room, { type: 'webcam', kind: 'status', from: ws.memberId, active: !!message.active });
       return;
     }
     throw new Error('Message inconnu.');
@@ -311,7 +345,10 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     const room = { id, tag: id.slice(0, 8), code, expires: Date.now() + (probe ? 10 * 365 * 86400_000 : settings.get('ttlHours') * 3600_000), movieId,
       engine: new Room({ ...thresholds, reportTimeout: settings.get('reportTimeout') * 1000,
         startDelay: settings.get('startDelay') * 1000 }), clients: new Set(),
-      probe: !!probe, logged: new Map(), loggedPhase: null };
+      probe: !!probe, logged: new Map(), loggedPhase: null,
+      // Every websocket ever accepted: telemetry stays valid for a member even
+      // after disconnect, for the room's whole life.
+      seenMembers: new Set(), reported: new Map() };
     room.languages = Object.freeze([...languages]);
     // Traduction vocale : capacité figée à la création. La disponibilité reflète
     // le service injecté, absent tant qu'aucun fournisseur n'est câblé.
@@ -327,6 +364,9 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     // à deux ; le serveur ne garde aucun état au-delà du relais.
     if (webcam) room.webcam = Object.freeze({ enabled: true });
     room.engine.load(duration); rooms.set(room.id, room);
+    record(room, { type: 'create', probe: room.probe, movie: movieId, voice: !!voice, webcam: !!webcam,
+      languages: [...room.languages], minBuffer: room.engine.minBuffer, lowBuffer: room.engine.lowBuffer,
+      ttl: room.expires - Date.now() });
     return room;
   };
 
@@ -340,7 +380,9 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     Object.assign(thresholds, { minBuffer, lowBuffer });
     for (const room of rooms.values()) {
       room.engine.minBuffer = minBuffer; room.engine.lowBuffer = lowBuffer;
+      room.engine.tick('tune');
       broadcast(room);
+      record(room, { type: 'tune', minBuffer, lowBuffer });
     }
     return { minBuffer, lowBuffer };
   };
@@ -365,18 +407,29 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     const held = room ? [...room.clients].filter(client => client.session === session).length : 0;
     const sessions = room ? countSessions(room) : 0;
     const maxCapacity = room?.webcam ? 2 : settings.get('maxClients');
-    if (url.pathname !== '/ws' || !isAllowedOrigin(request.headers.origin, request) || !session ||
-      !canAccess(session, room) || room.expires <= Date.now() ||
-      held >= settings.get('maxSocketsPerSession') || (!held && sessions >= maxCapacity) ||
-      !moviePlayable(room.movieId)) {
+    if (url.pathname !== '/ws') {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
+    }
+    // A rejected upgrade names its failing condition so the journal can say why.
+    const refused = !isAllowedOrigin(request.headers.origin, request) ? 'origin'
+      : !session ? 'session'
+      : (!room || !canAccess(session, room)) ? 'access'
+      : room.expires <= Date.now() ? 'expired'
+      : held >= settings.get('maxSocketsPerSession') ? 'sockets'
+      : (!held && sessions >= maxCapacity) ? 'capacity'
+      : !moviePlayable(room.movieId) ? 'movie' : null;
+    if (refused) {
+      if (room) record(room, { type: 'refused', reason: refused, path: url.pathname + url.search,
+        origin: request.headers.origin, ua: request.headers['user-agent'], ip: request.socket.remoteAddress });
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
     }
     wss.handleUpgrade(request, socket, head, ws => {
       const id = randomUUID(); let messages = 0, frames = 0, windowAt = Date.now();
       ws.session = session; ws.alive = true; ws.memberId = id;
+      ws.connectedAt = Date.now(); ws.received = { messages: 0, frames: 0 };
       const isVi = room.languages?.includes('vi');
       ws.displayName = session.admin ? (isVi ? 'Hôte / Chủ nhà' : 'Hôte / 호스트') : (isVi ? 'Invité / Khách' : 'Invité / 게스트');
-      room.clients.add(ws); room.engine.join(id);
+      room.clients.add(ws); room.engine.join(id); room.seenMembers.add(id);
       // The client derives its cadence and buffer targets from these thresholds:
       // shipping them keeps the timing contract explicit instead of hardcoded twice.
       const { minBuffer, lowBuffer, reportTimeout, startDelay } = room.engine;
@@ -392,8 +445,13 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
           if (other === ws || other.readyState !== WebSocket.OPEN) continue;
           if (other.webcamActive) ws.send(JSON.stringify({ type: 'webcam', action: 'status', from: other.memberId, name: other.displayName, active: true }));
           other.send(JSON.stringify({ type: 'webcam', action: 'peer-joined', from: ws.memberId, name: ws.displayName }));
+          record(room, { type: 'webcam', kind: 'peer-joined', from: ws.memberId, to: other.memberId });
         }
       }
+      record(room, { type: 'connect', member: id, name: ws.displayName, admin: !!session.admin,
+        ua: request.headers['user-agent'], ip: request.socket.remoteAddress,
+        sockets: [...room.clients].filter(client => client.session === session).length,
+        sessions: countSessions(room), members: room.engine.members.size });
       broadcast(room);
       ws.on('pong', () => { ws.alive = true; });
       ws.on('error', () => {});
@@ -403,17 +461,30 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
         // d'une écoute : une rafale est bornée sans toucher le compteur JSON.
         // La prise borne en plus taille de trame et total d'octets.
         if (isBinary) {
-          if (++frames > VOICE_FRAME_RATE) return ws.close(1008, 'Trafic invalide');
+          ws.received.frames++;
+          if (++frames > VOICE_FRAME_RATE) {
+            record(room, { type: 'limit', member: id, reason: 'frames' });
+            ws.killed = 'limit';
+            return ws.close(1008, 'Trafic invalide');
+          }
           return voiceFrame(room, ws, data);
         }
-        if (++messages > 40 || session.expires <= Date.now()) return ws.close(1008, 'Session invalide');
+        ws.received.messages++;
+        if (++messages > 40 || session.expires <= Date.now()) {
+          record(room, { type: 'limit', member: id, reason: messages > 40 ? 'messages' : 'session' });
+          ws.killed = 'limit';
+          return ws.close(1008, 'Session invalide');
+        }
         try {
           const message = JSON.parse(data);
           if (message.type === 'identify') {
             if (typeof message.name !== 'string' || message.name.length > 40) throw new Error('Pseudo invalide.');
             const name = cleanText(message.name).trim();
             if (!name) throw new Error('Pseudo requis.');
-            ws.displayName = name; broadcast(room); return;
+            const from = ws.displayName;
+            ws.displayName = name; broadcast(room);
+            record(room, { type: 'identify', member: id, from, to: name });
+            return;
           }
           if (message.type === 'ping' && Number.isFinite(message.sentAt)) {
             return ws.send(JSON.stringify({ type: 'pong', sentAt: message.sentAt, serverNow: performance.now() }));
@@ -421,25 +492,59 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
           if (message.type === 'voice') return voiceControl(room, ws, message);
           if (message.type === 'webcam') return webcamControl(room, ws, message);
           if (message.type === 'report') {
+            let outcome;
+            try { outcome = room.engine.report(id, message); }
+            catch (error) {
+              record(room, { type: 'report-rejected', member: id, epoch: message.epoch,
+                seq: message.sequence, error: error.message });
+              throw error;
+            }
+            if (outcome.rejected) {
+              record(room, { type: 'report-rejected', member: id, epoch: message.epoch,
+                seq: message.sequence, error: outcome.rejected });
+              return;
+            }
+            // Only a changed readiness signature is worth a journal line.
+            const signature = JSON.stringify([message.ready, message.blockers, message.failure]);
+            if (room.reported.get(id) !== signature) {
+              room.reported.set(id, signature);
+              record(room, { type: 'report', member: id, epoch: message.epoch, seq: message.sequence,
+                pos: message.position, bufferedUntil: message.bufferedUntil,
+                bufferedStart: message.bufferedStart ?? null, ready: message.ready,
+                blockers: message.blockers ?? null, failure: message.failure ?? null });
+            }
             // Ordinary buffer reports share the ticker, transitions are sent immediately.
-            if (!room.engine.report(id, message).changed) return;
-          } else if (message.type === 'command') room.engine.command(id, { ...message, type: message.command });
-          else throw new Error('Message inconnu.');
+            if (!outcome.changed) return;
+          } else if (message.type === 'command') {
+            let outcome;
+            try { outcome = room.engine.command(id, { ...message, type: message.command }); }
+            catch (error) {
+              record(room, { type: 'command', member: id, cmd: message.command,
+                pos: message.position, epoch: message.epoch, result: 'invalid' });
+              throw error;
+            }
+            record(room, { type: 'command', member: id, cmd: message.command,
+              pos: message.position, epoch: message.epoch, result: outcome.changed ? 'applied' : 'stale-epoch' });
+          } else throw new Error('Message inconnu.');
           broadcast(room);
         } catch (error) {
           console.warn(`[room ${room.tag}] ${ws.memberId}: ${error.message}`);
+          record(room, { type: 'error', member: ws.memberId, error: error.message });
           ws.send(JSON.stringify({ type: 'error', error: 'Commande invalide.' }));
         }
       });
       ws.on('close', () => {
         if (room.utterance?.ws === ws) releaseUtterance(room, room.utterance, 'aborted:disconnect');
         room.clients.delete(ws); room.engine.leave(id);
+        record(room, { type: 'disconnect', member: id, ms: Date.now() - ws.connectedAt,
+          messages: ws.received.messages, frames: ws.received.frames, reason: ws.killed ?? 'client' });
         if (!rooms.has(room.id)) return;
         // Le pair restant raccroche sa session WebRTC : le flux n'a plus de
         // destinataire et sa vignette retombe sur l'attente.
         if (room.webcam) {
           const left = JSON.stringify({ type: 'webcam', action: 'peer-left', from: id });
           for (const client of room.clients) if (client.readyState === WebSocket.OPEN) client.send(left);
+          record(room, { type: 'webcam', kind: 'peer-left', from: id });
         }
         broadcast(room);
       });
@@ -450,11 +555,13 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
   const sweep = () => {
     for (const room of rooms.values()) {
       if (room.expires <= Date.now()) {
+        record(room, { type: 'expire' });
         if (room.utterance) releaseUtterance(room, room.utterance, 'closed');
-        for (const ws of room.clients) ws.close(1000, 'Room expirée'); rooms.delete(room.id); continue;
+        for (const ws of room.clients) { ws.killed = 'room'; ws.close(1000, 'Room expirée'); }
+        rooms.delete(room.id); continue;
       }
       for (const ws of room.clients) {
-        if (!ws.alive || !sessionActive(ws.session)) ws.terminate();
+        if (!ws.alive || !sessionActive(ws.session)) { ws.killed = 'sweep'; ws.terminate(); }
         else { ws.alive = false; ws.ping(); }
       }
     }
@@ -476,14 +583,22 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       probe: !!room.probe, languages: room.languages ?? room.voice?.pair ?? ['fr', 'ko'],
       expires: room.expires, participants: countSessions(room),
       link: `${origin}/#invite=${room.code}` })),
-    setMovie(room, movie) { room.movieId = movie.id; room.engine.load(movie.duration); broadcast(room); },
+    setMovie(room, movie) {
+      room.movieId = movie.id; room.engine.load(movie.duration);
+      record(room, { type: 'movie', movie: movie.id, duration: movie.duration });
+      broadcast(room);
+    },
     remove(id) {
       const room = rooms.get(id);
       if (room) {
+        record(room, { type: 'remove' });
         if (room.utterance) releaseUtterance(room, room.utterance, 'closed');
-        for (const client of room.clients) client.close(1000, 'Room fermée'); rooms.delete(id);
+        for (const client of room.clients) { client.killed = 'room'; client.close(1000, 'Room fermée'); }
+        rooms.delete(id);
       }
     },
+    // A member id stays valid for telemetry even after its socket is gone.
+    memberSeen: (roomId, memberId) => rooms.get(roomId)?.seenMembers.has(memberId) ?? false,
     // idleMovie guards edits; movie deletion guards any reference.
     movieInUse: movieId => [...rooms.values()].some(room => room.movieId === movieId && room.engine.members.size),
     movieAssigned: movieId => [...rooms.values()].some(room => room.movieId === movieId),
