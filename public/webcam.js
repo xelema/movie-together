@@ -12,7 +12,7 @@ const STATE_NAMES = {
 };
 const MIN_W = 140, MIN_H = 105, MAX_W = 480, MAX_H = 360;
 
-export function attachWebcam({ toggle, overlay, player, t, label }) {
+export function attachWebcam({ toggle, overlay, player, t, label, onEvent }) {
   const stage = overlay.parentElement;
   const body = overlay.querySelector('.webcam-body') || overlay;
   let remote = overlay.querySelector('#webcam-remote-video');
@@ -52,9 +52,54 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
   let makingOffer = false, ignoreOffer = false, dismissed = false, peerActive = false;
   let note = '', noteTimer = null, savedHeight = '', announcedFor = null;
   let pendingCandidates = [];
+  // Télémétrie : compteurs de signalisation et transitions, jamais le contenu
+  // des SDP ou des candidats ICE — types et états uniquement.
+  let tapAt = 0;
+  const sig = { negotiations: 0, candidates: 0, candidatesRx: 0, restarts: 0 };
+  const emit = fields => { try { onEvent?.('webcam', fields); } catch { } };
+  const emitSignal = () => emit({
+    conn: pc?.connectionState, peers: peerId ? 1 : 0, negotiations: sig.negotiations,
+    candidates: sig.candidates + sig.candidatesRx, queued: pendingCandidates.length, restarts: sig.restarts,
+  });
+  // Lecture périodique des compteurs RTP tant qu'une connexion existe.
+  const rtcPoll = async () => {
+    const conn = pc;
+    if (!conn || conn.connectionState === 'closed' || disposed || !conn.getStats) return;
+    try {
+      const stats = await conn.getStats();
+      let pair, inbound, outbound;
+      const candidates = {};
+      stats.forEach(r => {
+        if (r.type === 'local-candidate' || r.type === 'remote-candidate') candidates[r.id] = r;
+        else if (r.type === 'candidate-pair' && (r.selected || (!pair && r.state === 'succeeded' && r.nominated))) pair = r;
+        else if (r.type === 'inbound-rtp' && (r.kind ?? r.mediaType) === 'video') inbound = r;
+        else if (r.type === 'outbound-rtp' && (r.kind ?? r.mediaType) === 'video') outbound = r;
+      });
+      const local = candidates[pair?.localCandidateId], distant = candidates[pair?.remoteCandidateId];
+      onEvent?.('rtc', {
+        conn: conn.connectionState, ice: conn.iceConnectionState, iceGather: conn.iceGatheringState, signaling: conn.signalingState,
+        pair: pair ? { local: local?.candidateType, remote: distant?.candidateType, protocol: local?.protocol,
+          rtt: Number.isFinite(pair.currentRoundTripTime) ? Math.round(pair.currentRoundTripTime * 1000) : undefined,
+          outBitrate: pair.availableOutgoingBitrate } : undefined,
+        in: inbound ? { bytes: inbound.bytesReceived, packets: inbound.packetsReceived, lost: inbound.packetsLost,
+          jitter: inbound.jitter, frames: inbound.framesReceived, framesDecoded: inbound.framesDecoded, fps: inbound.framesPerSecond,
+          w: inbound.frameWidth, h: inbound.frameHeight, freeze: inbound.freezeCount,
+          freezeMs: Number.isFinite(inbound.totalFreezesDuration) ? Math.round(inbound.totalFreezesDuration * 1000) : undefined } : undefined,
+        out: outbound ? { bytes: outbound.bytesSent, packets: outbound.packetsSent, nack: outbound.nackCount, pli: outbound.pliCount,
+          retransmitted: outbound.retransmittedPacketsSent, frames: outbound.framesEncoded, fps: outbound.framesPerSecond,
+          w: outbound.frameWidth, h: outbound.frameHeight, qlim: outbound.qualityLimitationReason } : undefined,
+      });
+    } catch { }
+  };
+  const rtcTimer = setInterval(rtcPoll, 5000);
+  // Sous Node un minuteur oublié retiendrait le process ; unref est absent
+  // des navigateurs où la page vit de toute façon jusqu'à son déchargement.
+  rtcTimer.unref?.();
 
-  const setState = next => {
+  const setState = (next, err) => {
+    const changed = next !== state;
     state = next;
+    if (changed) emit({ state: next, err, ms: (next === 'active' || next === 'error') && tapAt ? Math.round(performance.now() - tapAt) : undefined });
     toggle.dataset.state = next;
     toggle.setAttribute('aria-pressed', String(next === 'active'));
     toggle.setAttribute('aria-label', label(STATE_NAMES[next] ?? STATE_NAMES.idle));
@@ -101,12 +146,14 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
       try {
         makingOffer = true;
         await pc.setLocalDescription();
+        sig.negotiations++;
         send({ action: 'signal', to: peerId ?? undefined, signal: { description: pc.localDescription } });
+        emitSignal();
       } catch { /* une négociation interrompue est reprise au changement suivant */ }
       finally { makingOffer = false; }
     };
     pc.onicecandidate = ({ candidate }) => {
-      if (candidate) send({ action: 'signal', to: peerId ?? undefined, signal: { candidate } });
+      if (candidate) { sig.candidates++; send({ action: 'signal', to: peerId ?? undefined, signal: { candidate } }); emitSignal(); }
     };
     pc.ontrack = event => {
       const v = ensureRemote();
@@ -116,10 +163,11 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
     };
     pc.onconnectionstatechange = () => {
       if (pc && ['failed'].includes(pc.connectionState)) {
-        try { pc.restartIce?.(); } catch {}
+        try { pc.restartIce?.(); sig.restarts++; } catch {}
       } else if (pc && ['closed'].includes(pc.connectionState) && remote) {
         remote.srcObject = null; render();
       }
+      emitSignal();
     };
     return pc;
   };
@@ -160,19 +208,23 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
           await conn.setRemoteDescription(signal.description);
           if (signal.description.type === 'offer') {
             await conn.setLocalDescription();
+            sig.negotiations++;
             send({ action: 'signal', to: peerId, signal: { description: conn.localDescription } });
           }
+          emitSignal();
           while (pendingCandidates.length) {
             const cand = pendingCandidates.shift();
             try { await conn.addIceCandidate(cand); } catch {}
           }
         } else if (signal.candidate) {
+          sig.candidatesRx++;
           if (!conn.remoteDescription) {
             pendingCandidates.push(signal.candidate);
           } else {
             try { await conn.addIceCandidate(signal.candidate); }
             catch (error) { if (!ignoreOffer) throw error; }
           }
+          emitSignal();
         }
       } catch { /* signalisation périmée ou malformée : ignorée */ }
       return;
@@ -212,7 +264,9 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
         try {
           makingOffer = true;
           await conn.setLocalDescription();
+          sig.negotiations++;
           send({ action: 'signal', to: peerId, signal: { description: conn.localDescription } });
+          emitSignal();
         } finally { makingOffer = false; }
         announce();
       }
@@ -237,6 +291,7 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
     if (state === 'starting') return;
     if (state === 'active') return stopCamera();
     setState('starting');
+    tapAt = performance.now();
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('caméra absente');
       const granted = await navigator.mediaDevices.getUserMedia({
@@ -252,8 +307,8 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
       announce();
       setState('active');
       render();
-    } catch {
-      setState('error');
+    } catch (error) {
+      setState('error', error?.name);
       say(label('Caméra indisponible sur cet appareil.'));
     }
   };
@@ -378,6 +433,7 @@ export function attachWebcam({ toggle, overlay, player, t, label }) {
     rename,
     dispose() {
       disposed = true;
+      clearInterval(rtcTimer);
       toggle.removeEventListener('click', tap);
       overlay.removeEventListener('pointerdown', beginDrag);
       header?.removeEventListener('pointerdown', beginDrag);

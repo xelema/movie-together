@@ -3,7 +3,7 @@ import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import { createServer } from 'node:http';
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
-import { appendFile, mkdir, readFile, writeFile, stat, statfs, rename, unlink, rm, readdir } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, stat, statfs, rename, unlink, rm, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './storage.js';
@@ -11,6 +11,7 @@ import { createSettings, FIELDS } from './settings.js';
 import { reprobeMovie, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat } from './media.js';
 import { SUBTITLE_FORMATS, SUBTITLE_EXT } from '../public/subtitle-formats.js';
 import { createRoomHub } from './sync/hub.js';
+import { createJournal } from './telemetry.js';
 import { createJobs } from './jobs.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
@@ -47,7 +48,8 @@ const previousSubtitles = movie => {
 };
 const publicMovie = movie => ({ id: movie.id, title: movie.title, status: movie.status,
   duration: movie.duration, audio: movie.audio, subtitles: movie.subtitles,
-  maxSegmentSeconds: movie.maxSegmentSeconds, bitrate: movie.probe?.bitrate, renditions: movie.renditions, generation: movie.generation });
+  maxSegmentSeconds: movie.maxSegmentSeconds, maxSegmentBytes: movie.maxSegmentBytes,
+  bufferRisk: movie.bufferRisk, bitrate: movie.probe?.bitrate, renditions: movie.renditions, generation: movie.generation });
 
 // Deux comptes admin dédiés : chaque rôle fige la paire de langues des
 // séances qu'il ouvre et des listes qu'il voit. `password` seul reste
@@ -104,7 +106,11 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     }
     next();
   });
-  app.use(express.json({ limit: '32kb' }));
+  // Le lot de télémétrie est le seul corps volumineux de l'API : le contrat
+  // autorise 400 événements de 3800 caractères, quand le reste garde 32 Ko.
+  const jsonSmall = express.json({ limit: '32kb' });
+  const jsonTelemetry = express.json({ limit: '4mb' });
+  app.use((req, res, next) => (req.path.endsWith('/telemetry') ? jsonTelemetry : jsonSmall)(req, res, next));
   const admin = (req, res, next) => req.session?.admin ? next() : next(fail(401, 'Connexion administrateur requise.'));
   const authenticated = (req, res, next) => req.session ? next() : next(fail(401, 'Rejoindre une room ou se connecter.'));
   const access = (req, room) => room && (req.session?.admin || req.session?.rooms.has(room.id));
@@ -117,6 +123,11 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   // Réglages opérationnels : les défauts viennent du registre (ou de l'env),
   // puis data/settings.json pose les valeurs sauvegardées par l'admin.
   const settings = createSettings({ env, saved: store.settings() });
+  // Journal de télémétrie : les bornes sont relues à chaque usage, un changement
+  // admin de rétention n'exige pas de redémarrage.
+  const journal = createJournal({ root: store.root,
+    days: () => settings.get('telemetryDays'), mb: () => settings.get('telemetryMb'),
+    fileMb: () => settings.get('telemetryFileMb') });
   const ttlMs = () => settings.get('ttlHours') * 3600_000;
   const chunkBytes = () => settings.get('chunkMb') * 1024 ** 2;
   const subtitleBytes = () => settings.get('maxSubtitleMb') * 1024 ** 2;
@@ -127,7 +138,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     sessionActive: session => session.expires > Date.now() && [...sessions.values()].includes(session),
     canAccess: (session, room) => access({ session }, room),
     movieFor: id => publicMovie(getMovie(id)),
-    moviePlayable: id => jobs.playable(store.movies.get(id)), voiceService, voiceTiming });
+    moviePlayable: id => jobs.playable(store.movies.get(id)), voiceService, voiceTiming, journal });
   // Probe sessions are kept in rooms.json so they survive restarts; they are
   // recreated as long as their film is still playable.
   const persistRoom = room => {
@@ -221,25 +232,27 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     if (!jobs.playable(movie)) throw fail(409, 'Film non préparé.');
     hub.setMovie(room, movie); if (room.probe) persistRoom(room); res.json({ ok: true });
   });
-  // Séances instrumentées : chaque participant y envoie sa télémétrie, appendée
-  // en NDJSON sous data/telemetry/<code>-<membre>.ndjson pour analyse a posteriori.
+  // Télémétrie : chaque participant envoie ses événements, journalisés en
+  // NDJSON sous data/telemetry/<code>-<membre>.ndjson pour analyse a posteriori.
+  // Le membre doit être connu de la séance : un identifiant jamais connecté est
+  // rejeté comme une room introuvable. L'écriture est tamponnée par le journal
+  // et ne peut jamais échouer côté client.
   const telemetryFiles = new Set();
-  app.post('/api/rooms/:id/telemetry', authenticated, async (req, res) => {
+  app.post('/api/rooms/:id/telemetry', authenticated, (req, res) => {
     const room = hub.get(req.params.id);
-    if (!access(req, room) || !room.probe) throw fail(404, 'Room introuvable.');
+    if (!access(req, room)) throw fail(404, 'Room introuvable.');
     const { memberId, events } = req.body;
     if (typeof memberId !== 'string' || !/^[a-f0-9-]{1,40}$/.test(memberId) ||
-      !Array.isArray(events) || !events.length || events.length > 600 ||
+      !Array.isArray(events) || !events.length || events.length > 1000 ||
       events.some(event => !event || typeof event !== 'object' || !Number.isFinite(event.t) ||
         typeof event.type !== 'string' || event.type.length > 40 || JSON.stringify(event).length > 4000)) {
       throw fail(400, 'Commande invalide.');
     }
-    const directory = path.join(store.root, 'telemetry');
-    await mkdir(directory, { recursive: true });
-    const file = path.join(directory, `${room.code}-${memberId}.ndjson`);
-    if (!telemetryFiles.has(file)) { telemetryFiles.add(file); console.log(`[room ${room.code}] télémétrie -> data/telemetry/${path.basename(file)}`); }
+    if (!hub.memberSeen(room.id, memberId)) throw fail(404, 'Room introuvable.');
+    const base = `${room.code}-${memberId}`;
+    if (!telemetryFiles.has(base)) { telemetryFiles.add(base); console.log(`[room ${room.tag}] télémétrie → data/telemetry/${base}.ndjson`); }
     const at = Date.now();
-    await appendFile(file, events.map(event => JSON.stringify({ at, member: memberId, ...event })).join('\n') + '\n');
+    journal.write(base, events.map(event => ({ at, room: room.code, member: memberId, ...event })));
     res.status(204).end();
   });
   const uploadPath = id => {
@@ -474,7 +487,19 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       res.set('ETag', `"${movie.generation}-${req.params.file}"`);
     }
     res.type(({ '.m3u8': 'application/vnd.apple.mpegurl', '.m4s': 'video/mp4', '.vtt': 'text/vtt', '.mp4': 'video/mp4' })[ext]);
-    res.sendFile(req.params.file, { root: path.join(store.directory(movie.id), movie.generation) }, error => { if (error) next(error); });
+    const started = Date.now();
+    res.sendFile(req.params.file, { root: path.join(store.directory(movie.id), movie.generation) }, error => {
+      // Une ligne par requête seulement (LOG_MEDIA=1), jamais par byte.
+      if (process.env.LOG_MEDIA === '1') {
+        const owners = hub.list().filter(item => item.movieId === movie.id);
+        const code = owners.length === 1 ? owners[0].code : null;
+        journal.write(code ? `${code}-server` : 'server', [{ at: Date.now(), ...(code ? { room: code } : {}),
+          type: 'media', file: req.params.file, status: res.statusCode,
+          bytes: Number(res.getHeader('content-length')) || 0,
+          ms: Date.now() - started, cache: res.statusCode === 304 }]);
+      }
+      if (error) next(error);
+    });
   });
   app.get('/vendor/hls.js', (req, res) => res.sendFile(path.join(ROOT, 'node_modules/hls.js/dist/hls.min.js'), { maxAge: '1d' }));
   app.get('/admin', (req, res) => res.sendFile(path.join(ROOT, 'public/index.html')));
@@ -485,18 +510,31 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.use((req, res) => res.status(404).json({ error: 'Page introuvable.' }));
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
-    if (!error.status || error.status >= 500) console.error(error.message);
+    if (!error.status || error.status >= 500) {
+      console.error(error.message);
+      // Une erreur serveur sur une route de séance rejoint le journal de la room.
+      const room = /^\/api\/rooms\/([a-f0-9-]{36})/.exec(req.path)?.[1];
+      const found = room && hub.get(room);
+      if (found) journal.write(`${found.code}-server`, [{ at: Date.now(), room: found.code,
+        type: 'error', method: req.method, path: req.path,
+        status: error.status || 500, error: error.message }]);
+    }
     res.status(error.status || 500).json({ error: error.status ? error.message : 'Erreur serveur. Consulter les journaux.' });
   });
 
   hub.attach(server);
+  // Rétention des journaux : au démarrage puis toutes les heures. L'échec d'un
+  // nettoyage ne doit jamais empêcher le serveur de tourner.
+  journal.prune().catch(() => {});
+  const pruner = setInterval(() => journal.prune().catch(() => {}), 3600_000);
   const cleaner = setInterval(() => {
     for (const [token, session] of sessions) if (session.expires <= Date.now()) sessions.delete(token);
   }, 10_000);
   const close = async () => {
-    clearInterval(cleaner);
+    clearInterval(cleaner); clearInterval(pruner);
     await hub.close();
     await new Promise(resolve => server.close(resolve));
+    await journal.close();
   };
-  return { app, server, store, hub, close };
+  return { app, server, store, hub, journal, close };
 }

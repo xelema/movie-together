@@ -206,7 +206,7 @@ test('admin manages a film and two named viewers join in their language with one
     await host.getByRole('tab', { name: 'Réglages' }).click();
     // Réglages opérationnels : le formulaire groupe les paramètres, une
     // modification persiste au rechargement et le reset rend les défauts.
-    await expect(host.locator('#settings-form fieldset')).toHaveCount(6);
+    await expect(host.locator('#settings-form fieldset')).toHaveCount(7);
     // L'input compact garde ses 86 px : la règle globale input{width:100%} ne
     // doit pas écraser le libellé de la ligne.
     const settingRow = host.locator('.setting-row').first();
@@ -215,7 +215,7 @@ test('admin manages a film and two named viewers join in their language with one
     expect(inputBox.width).toBe(86);
     expect(spanBox.width).toBeGreaterThan(inputBox.width);
     // Chaque réglage porte une description française exposée au survol via title.
-    await expect(host.locator('.setting-row label > span[title]')).toHaveCount(22);
+    await expect(host.locator('.setting-row label > span[title]')).toHaveCount(25);
     await expect(host.locator('.setting-row label > span').filter({ hasText: 'Buffer de démarrage' }))
       .toHaveAttribute('title', /tampon à accumuler/);
     await expect(host.locator('#set-loginLimit')).toHaveAttribute('title', /15 minutes/);

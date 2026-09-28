@@ -2,6 +2,7 @@
 // Two real adapters: hls.js over MSE, and the browser's native HLS (Safari).
 // Each owns track enumeration, track selection, fatal-error recovery and the
 // media-PTS anchor (timelineOffset) that maps séance positions onto media time.
+import { HLS_EVENTS, hlsErrorPayload, hlsEventPayload } from './hls-events.js';
 
 // Native HLS lists chapters and metadata alongside subtitles in textTracks.
 const subtitleTracks = video => Array.from(video.textTracks ?? []).filter(track => ['subtitles', 'captions'].includes(track.kind));
@@ -63,7 +64,7 @@ export class HlsJsBackend {
   recoversErrors = true;
 
   constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 8, bitrate } = {},
-    { onTracksChanged, onBuffered, onStalled, onFatal } = {}) {
+    { onTracksChanged, onBuffered, onStalled, onFatal, onEvent } = {}) {
     this.video = video; this.timelineOffset = timelineOffset; this.bitrate = bitrate;
     this.mediaRecoveries = 0; this.networkRecoveries = 0;
     this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
@@ -83,7 +84,17 @@ export class HlsJsBackend {
     for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) {
       this.hls.on(window.Hls.Events[name], () => onTracksChanged?.());
     }
+    // Journal de la chaîne MSE : les événements du cycle de vie passent par le
+    // traducteur pur de hls-events.js ; une erreur de lecture ne peut pas
+    // remonter dans le moteur.
+    const emit = (type, fields) => { try { onEvent?.(type, fields); } catch { } };
+    for (const name of HLS_EVENTS) {
+      this.hls.on(window.Hls.Events[name], (event, data) => {
+        try { const fields = hlsEventPayload(name, data, this.hls); if (fields) emit('hls', fields); } catch { }
+      });
+    }
     this.hls.on(window.Hls.Events.ERROR, (event, data) => {
+      try { emit('mediaError', hlsErrorPayload(data, this.hls)); } catch { }
       if (!data.fatal) return;
       onStalled?.();
       // Hls.js already retries transient requests. Bound recovery after a fatal error.

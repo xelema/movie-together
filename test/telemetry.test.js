@@ -40,28 +40,40 @@ test('probe rooms persist across restarts, accept telemetry and stay open', { ti
 
   const joined = await first.request('/api/join', { method: 'POST', body: { code: 'avant-premiere' } });
   const guest = joined.headers.get('set-cookie').split(';')[0];
-  const welcome = await new Promise((resolve, reject) => {
-    const socket = new WebSocket(`${first.base.replace('http', 'ws')}/ws?room=${probe.id}`, { headers: { Cookie: guest, Origin: origin } });
-    sockets.push(socket); socket.on('error', reject);
-    socket.on('message', data => { const message = JSON.parse(data); if (message.type === 'welcome') resolve(message); });
-  });
-  assert.equal(welcome.probe, true);
-  const memberId = welcome.id;
+  const connect = async roomId => {
+    const welcome = await new Promise((resolve, reject) => {
+      const socket = new WebSocket(`${first.base.replace('http', 'ws')}/ws?room=${roomId}`, { headers: { Cookie: guest, Origin: origin } });
+      sockets.push(socket); socket.on('error', reject);
+      socket.on('message', data => { const message = JSON.parse(data); if (message.type === 'welcome') resolve(message); });
+    });
+    return welcome.id;
+  };
+  const memberId = await connect(probe.id);
+  // Every séance accepts telemetry now: the guest joins the plain room too.
+  await first.request('/api/join', { cookie: guest, method: 'POST', body: { code: 'seance-normale' } });
+  const plainMemberId = await connect(plain.id);
 
   // Telemetry is appended to one NDJSON per member, rejected elsewhere.
-  const telemetry = (cookie, body) => first.request(`/api/rooms/${probe.id}/telemetry`, { cookie, method: 'POST', body });
+  const telemetry = (cookie, body, room = probe.id) => first.request(`/api/rooms/${room}/telemetry`, { cookie, method: 'POST', body });
   assert.equal((await telemetry(guest, { memberId, events: [{ t: 1, type: 'caps', ua: 'test' }, { t: 2, type: 'tick', pos: 0 }] })).status, 204);
+  assert.equal((await telemetry(guest, { memberId: plainMemberId, events: [{ t: 1, type: 'tick', pos: 3 }] }, plain.id)).status, 204);
   assert.equal((await telemetry(guest, { memberId, events: [] })).status, 400);
   assert.equal((await telemetry(guest, { memberId: '../etc', events: [{ t: 1, type: 'x' }] })).status, 400);
-  assert.equal((await first.request(`/api/rooms/${plain.id}/telemetry`, { cookie: guest, method: 'POST',
-    body: { memberId, events: [{ t: 1, type: 'x' }] } })).status, 404);
+  // A memberId the room never saw is refused, even a real member of another room.
+  assert.equal((await telemetry(guest, { memberId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', events: [{ t: 1, type: 'x' }] })).status, 404);
+  assert.equal((await telemetry(guest, { memberId, events: [{ t: 1, type: 'x' }] }, plain.id)).status, 404);
   assert.equal((await first.request(`/api/rooms/${probe.id}/telemetry`, { method: 'POST',
     body: { memberId, events: [{ t: 1, type: 'x' }] } })).status, 401);
+  await first.instance.journal.flush();
   const file = path.join(dataDir, 'telemetry', `avant-premiere-${memberId}.ndjson`);
   const lines = (await readFile(file, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.equal(lines.length, 2);
   assert.equal(lines[0].type, 'caps');
+  assert.equal(lines[0].room, 'avant-premiere');
+  assert.equal(lines[0].member, memberId);
   assert.ok(lines[0].at >= lines[0].t);
+  const plainFile = path.join(dataDir, 'telemetry', `seance-normale-${plainMemberId}.ndjson`);
+  assert.equal((await readFile(plainFile, 'utf8')).trim().split('\n').map(JSON.parse)[0].pos, 3);
 
   await first.instance.close();
 
@@ -77,5 +89,9 @@ test('probe rooms persist across restarts, accept telemetry and stay open', { ti
   const roomId = (await rejoined.json()).id;
   assert.equal((await second.request(`/api/rooms/${roomId}`, { cookie: second.cookie, method: 'DELETE' })).status, 200);
   assert.deepEqual(JSON.parse(await readFile(path.join(dataDir, 'rooms.json'), 'utf8')), []);
-  assert.equal((await readdir(path.join(dataDir, 'telemetry'))).length, 1);
+  // Member journals survive the restart untouched next to the server journals.
+  const kept = await readdir(path.join(dataDir, 'telemetry'));
+  assert.ok(kept.includes(`avant-premiere-${memberId}.ndjson`));
+  assert.ok(kept.includes(`seance-normale-${plainMemberId}.ndjson`));
+  assert.ok(kept.includes('avant-premiere-server.ndjson'));
 });

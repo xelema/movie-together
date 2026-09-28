@@ -197,3 +197,22 @@ test('changed marks epoch or phase moves only', () => {
   assert.equal(room.phase, 'playing');
   assert.equal(report('a').changed, false);
 });
+
+
+test('every freeze names its cause and the snapshot carries it', () => {
+  const { room, command, report, start, advance } = setup();
+  assert.equal(room.snapshot().cause, 'load');
+  command('play'); report('a'); report('b');
+  assert.equal(room.snapshot().cause, 'play');
+  room.leave('b');
+  assert.equal(room.snapshot().cause, 'leave');
+  room.join('b');
+  assert.equal(room.snapshot().cause, 'join');
+  start(); advance(2000);
+  report('b', { bufferedUntil: 1 });
+  assert.equal(room.snapshot().cause, 'low-buffer');
+  start(); advance(4000); room.tick();
+  assert.equal(room.snapshot().cause, 'stale-report');
+  command('seek', 30);
+  assert.equal(room.snapshot().cause, 'seek');
+});
