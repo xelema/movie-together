@@ -33,7 +33,16 @@ env:
 
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch' || (github.event.action != 'closed' && !github.event.pull_request.draft)
+    # Uniquement sur une PR (hors fermeture/brouillon) ou sur dispatch manuel.
+    # Sans la garde sur le nom de l'evenement, un declenchement `schedule` (menage
+    # quotidien) satisfaisait la condition : `github.event.action` et
+    # `github.event.pull_request` valent alors null, donc `null != 'closed'` et
+    # `!null` sont vrais et le job partait sans numero de PR (up.sh -> exit 2).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      !github.event.pull_request.draft)
     runs-on: self-hosted
     timeout-minutes: 25
     steps:
