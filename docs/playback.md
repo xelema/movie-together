@@ -260,3 +260,24 @@ sa séquence d'événements (`webkitbeginfullscreen`, `webkitpresentationmodecha
 `resize` de la fenêtre pour la rotation) et vérifient que la taille des
 sous-titres se recalcule depuis `screen`. Aucun iPhone ni iPad réel n'a confirmé
 ce comportement.
+
+## Timestamps des segments
+
+À la segmentation HLS (`-hls_segment_type fmp4`), ffmpeg ramène le `cto` du
+premier échantillon d'un fragment sur la plus petite PTS du fragment. Quand le
+fragment démarre sur une keyframe suivie d'images leading (open GOP : la
+keyframe est présentée après elles), deux échantillons du fragment portent
+alors exactement la même PTS. Chrome/MSE rejette l'`appendBuffer` entier en
+silence — aucune erreur, aucun quota — et la lecture gèle définitivement à cet
+endroit. Aucune option de muxing testée n'évite ce clamp.
+
+Après le packaging, `prepareMovie` scanne donc les tables `trun` de chaque
+segment (`src/hls-pts.js`, en-têtes seulement) et décale le `cto` de
+l'échantillon en collision d'une milliseconde — `round(timescale/1000)` ticks,
+le timescale étant lu dans le `mdhd` de l'init. Seul ce champ de 4 octets est
+réécrit, en place et atomiquement ; un second passage ne change rien.
+
+Pour vérifier ou réparer une bibliothèque déjà préparée :
+
+    node scripts/repair-hls-pts.mjs --check data/movies   # lecture seule, exit 1 si doublon
+    node scripts/repair-hls-pts.mjs --fix --journal rep.jsonl data/movies
