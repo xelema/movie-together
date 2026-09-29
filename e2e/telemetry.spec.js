@@ -211,4 +211,29 @@ test('une séance ordinaire écrit son journal client et serveur sur le disque',
       expect(/[가-힣]|Un sous-titre/.test(value), `texte parlé dans ${line.type}`).toBe(false);
     }
   }
+
+  // La dérogation documentée doit tenir jusqu'à l'attache : l'application
+  // réécrit le hash à l'entrée en salle (#room=…), donc un drapeau effacé
+  // rendrait #telemetry=off sans effet. Un second membre entre avec la
+  // dérogation et ne doit rien écrire, ni requête ni fichier.
+  const derogation = [];
+  page.on('response', response => { if (response.url().includes('/telemetry')) derogation.push(response.status()); });
+  await page.goto('/#telemetry=off');
+  await page.locator('#join-form input').fill(room.code);
+  await page.locator('#join-form button').click();
+  await expect(page.locator('#name-dialog')).toBeVisible();
+  await page.locator('#room-name').fill('Dérogation');
+  await page.locator('#name-dialog button').click();
+  await expect(page.locator('#movie-title')).toHaveText('fixture');
+  // L'identifiant de membre n'arrive qu'avec la connexion de la séance : il est
+  // attendu, jamais supposé présent au premier rendu.
+  await expect.poll(() => page.evaluate(() => window.player?.memberId ?? null), { timeout: 20_000 }).toBeTruthy();
+  const silent = await page.evaluate(() => window.player?.memberId ?? null);
+  expect(silent, 'membre du participant en dérogation').toBeTruthy();
+  // Deux cadences d'envoi s'écoulent : aucune ne doit rien produire.
+  await page.waitForTimeout(12_000);
+  expect(derogation, `lots envoyés malgré la dérogation : ${derogation.join(', ')}`).toEqual([]);
+  const afterwards = await journals(since);
+  expect(afterwards.some(entry => entry.file.includes(silent)), 'journal client malgré la dérogation').toBe(false);
+  await page.locator('#leave').click();
 });
