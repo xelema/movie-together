@@ -293,6 +293,25 @@ test('dispose vide la file par sendBeacon et arrête les minuteurs', async t => 
   assert.equal(posts.length, before);
 });
 
+test('l\'opt-out par l\'URL coupe l\'envoi même quand le hash porte aussi la salle', async t => {
+  const { posts } = stubBrowser(t);
+  // L'application réécrit le hash à l'entrée en salle : le drapeau doit y être
+  // conservé, sinon la lecture faite à l'attache arrive après son effacement.
+  globalThis.location.hash = '#room=room-1&telemetry=off';
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const { telemetry } = attach(t);
+  assert.equal(telemetry.enabled, false);
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(posts.length, 0);
+  telemetry.dispose();
+  // Sans le drapeau, la même entrée en salle journalise normalement.
+  globalThis.location.hash = '#room=room-1';
+  const { telemetry: live } = attach(t);
+  assert.equal(live.enabled, true);
+  live.dispose();
+});
+
 test('l\'opt-out localStorage empêche tout envoi mais rend le handle', async t => {
   const { posts, storage } = stubBrowser(t);
   storage.movieTelemetry = 'off';
