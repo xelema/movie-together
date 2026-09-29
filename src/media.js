@@ -6,6 +6,7 @@ import jschardet from 'jschardet';
 import { colorParameters, colorNeedsRenderer } from '../public/color-renderer.js';
 import { defaultTrackNames } from '../public/track-names.js';
 import { TEXT_SUBTITLE_CODECS, SUBTITLE_DEMUXERS } from '../public/subtitle-formats.js';
+import { scanSegment, repairFile } from './hls-pts.js';
 
 export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, includeStderr = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -349,6 +350,21 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
     path.join(directory, 'stream_%v.m3u8'));
   try {
   await run(process.env.FFMPEG_PATH || 'ffmpeg', args, { cwd: directory, onProgress: seconds => options.onProgress?.({ stage: 'packaging', percent: Math.min(95, Math.round(seconds / movie.probe.duration * 95)) }) });
+  // ffmpeg clamps a fragment's first sample cto onto the fragment's smallest
+  // PTS: on an open-GOP boundary the keyframe lands on a leading picture's
+  // PTS and Chrome's MSE silently drops the whole append. Shift the colliding
+  // cto by 1 ms in place — idempotent, no media bytes touched. docs/playback.md
+  let scannedSegments = 0, repairedSegments = 0;
+  for (const rendition of renditions) {
+    const init = await readFile(path.join(directory, `init_${rendition.streamIndex}.mp4`)).catch(() => null);
+    const timescale = init && scanSegment(init).timescale;
+    for (const file of await readdir(directory)) {
+      if (!file.startsWith(`segment_${rendition.streamIndex}_`) || !file.endsWith('.m4s')) continue;
+      scannedSegments++;
+      if ((await repairFile(path.join(directory, file), { timescale })).patches.length) repairedSegments++;
+    }
+  }
+  if (repairedSegments) console.log(`[media] ${movie.id} : ${repairedSegments}/${scannedSegments} segments avec PTS dupliquées réparés`);
   for (const rendition of renditions) {
     const playlist = path.join(directory, `stream_${rendition.streamIndex}.m3u8`);
     const probe = JSON.parse(await run(process.env.FFPROBE_PATH || 'ffprobe', ['-v', 'error', '-i', playlist,
