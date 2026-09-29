@@ -589,7 +589,10 @@ async function enterRoom(id, name, context = {}) {
   $('voice-mic').hidden = $('voice-local').hidden = $('voice-result').hidden = true;
   $('webcam-toggle').hidden = $('webcam-overlay').hidden = true;
   $('entry').hidden = true; $('library').hidden = true; $('watch').hidden = false; $('choose-film').hidden = !session.admin;
-  history.replaceState(null, '', `${adminPage ? '/admin' : '/'}#room=${id}`);
+  // La dérogation #telemetry=off est reportée dans le hash : la télémétrie la lit
+  // à l'attache, donc une réécriture qui l'efface la rendrait sans effet.
+  const keep = new URLSearchParams(location.hash.slice(1)).get('telemetry');
+  history.replaceState(null, '', `${adminPage ? '/admin' : '/'}#room=${id}${keep ? `&telemetry=${keep}` : ''}`);
   player = window.player = new SyncPlayer({ video: $('video'), roomId: id, name,
     forceShader: sessionStorage.getItem('hdr') === 'shader',
     onVoice: message => voice?.message(message),
