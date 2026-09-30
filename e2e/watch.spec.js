@@ -745,8 +745,18 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
         for (const mutation of mutations) window.voiceTest.states.push(mutation.target.dataset.state);
       }).observe(document.querySelector('#voice-mic'), { attributes: true, attributeFilter: ['data-state'] });
     });
-    await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
-    await host.locator('#voice-mic').click();
+    await expect(async () => {
+      // Un appui ne clôt qu'une prise 'listening' (public/voice.js) : l'état est
+      // lu avant l'appui, et une prise que le plafond de 20 s a refermée pendant
+      // le refus de l'invité est rouverte d'abord — appui synthétique, son
+      // hit-test n'est pas l'objet de ce passage — pour que l'appui réel qui
+      // suit la clôt vraiment au lieu d'en démarrer une autre.
+      const state = await host.locator('#voice-mic').evaluate(el => el.dataset.state);
+      if (state !== 'listening' && state !== 'starting') await host.locator('#voice-mic').evaluate(el => el.click());
+      await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening', { timeout: 6_000 });
+      await host.locator('#voice-mic').click({ timeout: 5_000 });
+      await expect(host.locator('#voice-mic')).not.toHaveAttribute('data-state', 'listening', { timeout: 3_000 });
+    }).toPass({ timeout: 30_000 });
     // À l'arrêt chaque barre relâche sa hauteur inline : aucune traînée de
     // pixels ne survit au-dessus ou en dessous du spectrogramme replié.
     await expect.poll(() => host.locator('#voice-mic .voice-bar')
