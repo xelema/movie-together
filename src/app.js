@@ -470,7 +470,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       store.save(movie); res.json(movie);
     } finally { release(); }
   });
-  app.get('/media/:id/:file', authenticated, (req, res, next) => {
+  app.get('/media/:id/:file', authenticated, async (req, res, next) => {
     // TCP_NODELAY : pas de latence Nagle sur le flux des segments vidéo.
     req.socket?.setNoDelay?.(true);
     req.socket?.setKeepAlive?.(true, 1000);
@@ -479,16 +479,23 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     if (movie.status !== 'ready' || !/^(master(?:_original|_compatible)?|stream_\d+|sub_[a-f0-9-]+(?:_original|_compatible)?)\.m3u8$|^(init_\d+\.mp4|segment_\d+_\d+\.m4s|sub_[a-f0-9-]+(?:_original|_compatible)?\.vtt)$/.test(req.params.file)) throw fail(404, 'Média introuvable.');
     res.set('Cache-Control', 'private, no-store');
     const ext = path.extname(req.params.file);
+    const directory = path.join(store.directory(movie.id), movie.generation);
     if (ext === '.m4s' || ext === '.mp4' || ext === '.vtt') {
-      // Les bytes peuvent être resservis du cache mémoire pendant 1 h sans RTT
-      // bloquant (reprise, re-buffer) ; l'ETag porte la génération pour
-      // invalider toute préparation ultérieure.
-      res.set('Cache-Control', 'private, max-age=3600');
-      res.set('ETag', `"${movie.generation}-${req.params.file}"`);
+      // Incident : une réparation in-place a réécrit les octets de segments
+      // déjà publiés sans changer de génération ; l'ETag de génération validait
+      // encore et les navigateurs rejouaient leur copie périmée (304, ~300
+      // octets pour un segment de 20 Mo). L'ETag porte donc taille + mtime du
+      // fichier servi et les bytes revalident à chaque requête (no-cache) :
+      // le corps vient toujours du cache local quand le fichier n'a pas bougé.
+      // Fichier absent : forme courte et sendFile produit le 404.
+      const info = await stat(path.join(directory, req.params.file)).catch(() => null);
+      const tag = info ? `${movie.generation}-${info.size}-${Math.trunc(info.mtimeMs)}` : movie.generation;
+      res.set('Cache-Control', 'private, no-cache');
+      res.set('ETag', `"${tag}-${req.params.file}"`);
     }
     res.type(({ '.m3u8': 'application/vnd.apple.mpegurl', '.m4s': 'video/mp4', '.vtt': 'text/vtt', '.mp4': 'video/mp4' })[ext]);
     const started = Date.now();
-    res.sendFile(req.params.file, { root: path.join(store.directory(movie.id), movie.generation) }, error => {
+    res.sendFile(req.params.file, { root: directory }, error => {
       // Une ligne par requête seulement (LOG_MEDIA=1), jamais par byte.
       if (process.env.LOG_MEDIA === '1') {
         const owners = hub.list().filter(item => item.movieId === movie.id);
