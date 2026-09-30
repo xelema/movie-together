@@ -281,3 +281,10 @@ Pour vérifier ou réparer une bibliothèque déjà préparée :
 
     node scripts/repair-hls-pts.mjs --check data/movies   # lecture seule, exit 1 si doublon
     node scripts/repair-hls-pts.mjs --fix --journal rep.jsonl data/movies
+
+Une réparation réécrit les octets en place : la génération ne change pas.
+L'ETag servi par `/media` porte taille et mtime du fichier (`no-cache` +
+revalidation à chaque requête), donc toute réparation rétroactive invalide
+automatiquement les clients — à la prochaine revalidation ils reçoivent un
+200 et le segment corrigé. Republier avec une nouvelle génération
+(re-préparation) reste le moyen de forcer un re-téléchargement complet.

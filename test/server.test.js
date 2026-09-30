@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir, mkdir, writeFile, utimes } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
@@ -139,11 +139,11 @@ test('authenticated upload, original video and audio, private rooms and access c
   assert.equal((master.match(/TYPE=AUDIO/g) ?? []).length, 2);
   const media = await request(`/media/${movie.id}/init_0.mp4`, { cookie });
   assert.equal(media.status, 200);
-  // Les segments sont resservis du cache mémoire 1 h : reprise et re-buffer
-  // sans RTT bloquant ; les playlists restent non cachées.
-  assert.equal(media.headers.get('cache-control'), 'private, max-age=3600');
+  // Les segments revalident à chaque requête : le corps reste servi du cache
+  // local après un 304 ; les playlists ne sont jamais cachées.
+  assert.equal(media.headers.get('cache-control'), 'private, no-cache');
   const segment = await request(`/media/${movie.id}/segment_0_000000.m4s`, { cookie });
-  assert.equal(segment.headers.get('cache-control'), 'private, max-age=3600');
+  assert.equal(segment.headers.get('cache-control'), 'private, no-cache');
   const freshPlaylist = await request(`/media/${movie.id}/master.m3u8`, { cookie });
   assert.equal(freshPlaylist.headers.get('cache-control'), 'private, no-store');
   const etag = media.headers.get('etag');
@@ -174,15 +174,30 @@ test('authenticated upload, original video and audio, private rooms and access c
   assert.equal(subtitle.status, 200);
   const withSubtitles = await subtitle.json();
   const vtt = await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`, { cookie });
-  // Les fichiers WebVTT se resservent comme les segments : cache 1 h, ETag de
-  // génération, 304 sur revalidation.
-  assert.equal(vtt.headers.get('cache-control'), 'private, max-age=3600');
+  // Les fichiers WebVTT revalident comme les segments : no-cache, ETag lié au
+  // fichier servi, 304 quand rien n'a bougé.
+  assert.equal(vtt.headers.get('cache-control'), 'private, no-cache');
   const vttEtag = vtt.headers.get('etag');
   assert.ok(vttEtag.includes(prepared.generation));
   assert.equal((await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`,
     { cookie, headers: { 'If-None-Match': vttEtag, 'Cache-Control': 'max-age=0' } })).status, 304);
   const vttText = await vtt.text();
   assert.match(vttText, /WEBVTT/); assert.match(vttText, /A subtitle\./);
+  // Une réparation in-place garde génération et nom de fichier : l'ETag porte
+  // taille et mtime pour invalider quand même les copies en cache.
+  const vttPath = path.join(instance.store.directory(movie.id), prepared.generation, withSubtitles.subtitles[0].filename);
+  const later = new Date(Date.now() + 60_000);
+  await utimes(vttPath, later, later);
+  const moved = await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`, { cookie });
+  assert.notEqual(moved.headers.get('etag'), vttEtag);
+  // L'ancien ETag d'un fichier modifié ne vaut plus rien : 200, jamais 304.
+  assert.equal((await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`,
+    { cookie, headers: { 'If-None-Match': vttEtag, 'Cache-Control': 'max-age=0' } })).status, 200);
+  // Le courant, si : le cache reste efficace entre deux modifications.
+  assert.equal((await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`,
+    { cookie, headers: { 'If-None-Match': moved.headers.get('etag'), 'Cache-Control': 'max-age=0' } })).status, 304);
+  await writeFile(vttPath, `${vttText}\n`);
+  assert.notEqual((await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`, { cookie })).headers.get('etag'), moved.headers.get('etag'));
   const smiSub = await request(`/api/movies/${movie.id}/subtitles?label=Korean&language=ko&name=korean.smi`, { cookie, method: 'POST',
     headers: { 'Content-Type': 'text/plain' }, body: smi });
   assert.equal(smiSub.status, 200);
