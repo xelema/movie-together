@@ -16,6 +16,7 @@ services:
       MIN_BUFFER_SECONDS: ${MIN_BUFFER_SECONDS:-20}
       LOW_BUFFER_SECONDS: ${LOW_BUFFER_SECONDS:-5}
       ENCODE_THREADS: ${ENCODE_THREADS:-2}
+      LOG_MEDIA: ${LOG_MEDIA:-0}
     volumes:
       - ${MEDIA_DIR:-movie-data}:/data
     expose:

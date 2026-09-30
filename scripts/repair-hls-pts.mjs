@@ -3,6 +3,9 @@
 // docs/playback.md). Lecture seule par défaut :
 //   node scripts/repair-hls-pts.mjs --check data/movies    # toute la bibliothèque
 //   node scripts/repair-hls-pts.mjs --fix --journal rep.jsonl <dossier|*.m4s>...
+// Après une réparation de médias publiés, les clients sont invalidés par
+// l'ETag lié au contenu (taille + mtime, cf. src/app.js) ; changer
+// movie.generation force un reset dur.
 import { readdir, readFile, appendFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { scanSegment, scanFile, repairFile } from '../src/hls-pts.js';
