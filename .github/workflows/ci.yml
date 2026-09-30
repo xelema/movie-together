@@ -11,7 +11,10 @@ permissions:
 jobs:
   test:
     runs-on: self-hosted
-    timeout-minutes: 20
+    # La suite e2e dure ~13 min sur une box au repos et partage ses 2 vCPU avec
+    # la prod : 20 min se faisaient dépasser au premier ralentissement, et un job
+    # annulé sur le commit de merge saute le déploiement (il exige un Checks vert).
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
