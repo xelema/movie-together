@@ -133,10 +133,27 @@ const flowingTime = page => page.locator('video').evaluate(video => new Promise(
 const ensurePlaying = () => expect.poll(async () => {
   try {
     const phase = await host.evaluate(() => {
-      const video = document.querySelector('video'), player = window.player;
-      if (video.currentTime >= 20) player.command('seek', 5);
-      if (player.state?.phase === 'paused') player.command('play');
-      return player.state?.phase;
+      const video = document.querySelector('video'), player = window.player, state = player.state;
+      if (!state) return undefined;
+      // Une commande par époque : 'seek' et 'play' figent la séance et vident
+      // les rapports dont la reprise attend l'alignement. Re-commander pendant
+      // qu'une commande précédente est encore en vol rallonge le cycle au lieu
+      // de le finir, et la cible de la séance — pas le temps de l'élément — dit
+      // si un recalage est encore utile : une position déjà basse signifie que
+      // la salle converge, l'élément rattrape tout seul.
+      const gate = window.__e2eGate ??= { epoch: -1, at: 0 };
+      // Une commande vraiment perdue (socket refermée au mauvais moment) ne fait
+      // jamais avancer l'époque : après 2 s sans nouvel état, retenter coûte un
+      // cycle, attendre bloque la passe entière.
+      if (state.epoch !== gate.epoch || performance.now() - gate.at > 2000) {
+        gate.epoch = state.epoch; gate.at = performance.now();
+        if (state.phase === 'paused') {
+          if (state.position >= 15) player.command('seek', 5); else player.command('play');
+        } else if (state.phase === 'playing' && player.target() >= 20) {
+          player.command('seek', 5);
+        }
+      }
+      return state.phase;
     });
     if (phase !== 'playing') return false;
     const [hostTime, guestTime] = await Promise.all([host, guest].map(flowingTime));
@@ -643,19 +660,13 @@ test('the picture layout holds across viewports and fullscreen', async () => {
   }
 });
 
-test('a voice prise is exclusive to one speaker and member failures pause the room', async ({ browser }) => {
+test('the voice mic follows the player chrome across hover and focus', async () => {
   test.skip(!joined, 'the séance setup pass did not complete');
-  // Chromium alone pays the trusted-touch pass on top of the prise journey.
-  test.setTimeout(180_000);
+  test.setTimeout(120_000);
   try {
-    // Traduction vocale : la permission micro n'est demandée qu'au premier
-    // appui, une seule prise est acceptée, le texte compris reste local et le
-    // surtitre traduit est partagé. La lecture ne bouge pas (#40, #48).
-    await ensurePlaying();
-    const micCalls = page => page.evaluate(() => window.voiceTest.micCalls);
-    expect(await micCalls(host)).toBe(0); expect(await micCalls(guest)).toBe(0);
     // Le micro suit la visibilité des contrôles Plyr hors enregistrement (#47) :
     // overlay caché, micro caché. L'overlay revient, le micro revient.
+    await ensurePlaying();
     await host.mouse.move(0, 0);
     await controlsAutoHide(host);
     await expect(host.locator('#voice-mic')).toBeHidden();
@@ -715,6 +726,24 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await ensurePlaying();
     await controlsAutoHide(host);
     await expect(host.locator('#watch')).toHaveAttribute('data-chrome', 'false');
+    await showControls(host);
+    await expect(host.locator('#voice-mic')).toBeVisible();
+  } catch (error) {
+    await reportFailure(error);
+    throw error;
+  }
+});
+
+test('a voice prise is exclusive to one speaker and orphan permissions stay mute', async () => {
+  test.skip(!joined, 'the séance setup pass did not complete');
+  test.setTimeout(120_000);
+  try {
+    // Traduction vocale : la permission micro n'est demandée qu'au premier
+    // appui, une seule prise est acceptée, le texte compris reste local et le
+    // surtitre traduit est partagé. La lecture ne bouge pas (#40, #48).
+    await ensurePlaying();
+    const micCalls = page => page.evaluate(() => window.voiceTest.micCalls);
+    expect(await micCalls(host)).toBe(0); expect(await micCalls(guest)).toBe(0);
     await showControls(host);
     await expect(host.locator('#voice-mic')).toBeVisible();
     await host.locator('#voice-mic').click();
@@ -883,6 +912,17 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
     await expect(host.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
     await expect(guest.locator('#voice-result')).toHaveText('엔딩 크레딧에서 만나요.');
+  } catch (error) {
+    await reportFailure(error);
+    throw error;
+  }
+});
+
+test('a voice prise survives member journeys and member failures pause the room', async ({ browser }) => {
+  test.skip(!joined, 'the séance setup pass did not complete');
+  // Chromium alone pays the trusted-touch pass on top of the prise journey.
+  test.setTimeout(120_000);
+  try {
     // Après l'erreur, l'invité reprend la parole : interface coréenne, sens
     // figé ko -> fr. Changer la langue du site pendant l'écoute n'y touche pas.
     await ensurePlaying();
@@ -953,10 +993,7 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
       await touchContext.close();
       // Le départ du membre fige la séance ou la laisse reprendre seule :
       // attendre la phase, jouer si nécessaire, jamais un délai.
-      await expect.poll(async () => {
-        if (latest.get(host)?.state?.phase === 'paused') await host.evaluate(() => window.player.command('play'));
-        return latest.get(host)?.state?.phase;
-      }, { timeout: 15_000 }).toBe('playing');
+      await ensurePlaying();
     } else {
       test.info().annotations.push({ type: 'skip', description: 'trusted-touch mic activation needs CDP-grade input, chromium-only pass' });
     }
