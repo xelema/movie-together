@@ -35,6 +35,22 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 30
     steps:
+      # Un sha court ne peut pas etre resolu par actions/checkout : il le traite
+      # comme un nom de branche et le git fetch echoue (`refs/heads/0f53faa*`).
+      # Le dire ici evite un depouillement de journal pour rien.
+      - name: Verifier le sha demande
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.sha != ''
+        run: |
+          set -euo pipefail
+          sha='${{ github.event.inputs.sha }}'
+          case "$sha" in
+            *[!0-9a-f]*) echo "::error::sha doit etre un sha hexadecimal minuscule (recu : '$sha')"; exit 1 ;;
+          esac
+          if [ "${#sha}" -ne 40 ]; then
+            echo "::error::sha doit etre le sha complet a 40 caracteres (recu ${#sha}) — utilise \`git rev-parse HEAD\`."
+            exit 1
+          fi
+
       - name: Recuperer le commit teste
         uses: actions/checkout@v4
         with:
@@ -181,6 +197,13 @@ jobs:
         run: |
           set -uo pipefail
           keep=$((5))
+          # Une etape amont peut avoir echoue avant d'ecrire SHORT_SHA : sans ce
+          # garde-fou, la purge plantait sur « unbound variable » et masquait la
+          # vraie erreur du deploiement derriere un second echec.
+          if [ -z "${SHORT_SHA:-}" ]; then
+            echo "sha de deploiement inconnu (etape amont en echec) : purge sautee"
+            exit 0
+          fi
           current="$IMAGE:main-$SHORT_SHA"
           docker image ls --format '{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}' \
             --filter "reference=$IMAGE:main-*" | sort -k2 -r | tail -n "+$((keep + 1))" | cut -f1 |
