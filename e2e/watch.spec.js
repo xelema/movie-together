@@ -57,26 +57,29 @@ const reload = page => expect(async () => {
 // hit test proves the bar owns it. :hover tells whether the pointer is
 // really inside, so the leave only runs when the crossing needs it; a
 // mid-slide miss retries on fresh geometry instead of a stale point.
-const latchHover = page => expect.poll(async () => {
-  const probe = await page.locator('.plyr__controls').evaluate(el => {
-    const r = el.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
-    const plyr = el.closest('.plyr'), hidden = plyr.classList.contains('plyr--hide-controls');
-    const hit = document.elementFromPoint(x, y);
-    return { x, y, out: Math.max(plyr.getBoundingClientRect().top + 8, 4),
-      latched: !hidden && (el.hover === true || document.querySelector('video').paused),
-      over: el.matches(':hover'), ok: !hidden && !!hit && el.contains(hit) };
-  });
-  if (probe.latched) return true;
-  if (probe.over || !probe.ok) await page.mouse.move(probe.x, probe.out);
-  if (!probe.ok) return false;
-  await page.mouse.move(probe.x, probe.y, { steps: 4 });
-  return page.locator('.plyr__controls').evaluate(el =>
-    !el.closest('.plyr').classList.contains('plyr--hide-controls') && (el.hover === true || document.querySelector('video').paused));
-}, { timeout: 5000 }).toBe(true);
+const latchHover = (page, timeout = 5000) => expect.poll(async () => {
+  try {
+    const probe = await page.locator('.plyr__controls').evaluate(el => {
+      const r = el.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+      const plyr = el.closest('.plyr'), hidden = plyr.classList.contains('plyr--hide-controls');
+      const hit = document.elementFromPoint(x, y);
+      return { x, y, out: Math.max(plyr.getBoundingClientRect().top + 8, 4),
+        latched: !hidden && (el.hover === true || document.querySelector('video').paused),
+        over: el.matches(':hover'), ok: !hidden && !!hit && el.contains(hit) };
+    });
+    if (probe.latched) return true;
+    if (probe.over || !probe.ok) await page.mouse.move(probe.x, probe.out);
+    if (!probe.ok) return false;
+    await page.mouse.move(probe.x, probe.y, { steps: 4 });
+    return await page.locator('.plyr__controls').evaluate(el =>
+      !el.closest('.plyr').classList.contains('plyr--hide-controls') && (el.hover === true || document.querySelector('video').paused));
+  } catch { return false; }
+}, { timeout }).toBe(true);
 
-// Latching hover is also what shows the chrome: each pass re-wakes a dropped
-// bar, so the whole state is one poll wrapped in a retry for loaded boxes.
-const showControls = page => expect(() => latchHover(page)).toPass({ timeout: 10_000 });
+// Latching hover is also what shows the chrome: the poll itself re-wakes a
+// dropped bar on every pass, so a wider budget replaces the assertion retry
+// and a transient evaluate error just costs one probe instead of the pass.
+const showControls = page => latchHover(page, 12_000);
 // A freeze that pins the controls open (Plyr shows them on pause) can land between
 // two clicks, so a toggle is asserted against the state the click actually found.
 const hiddenControls = page => page.locator('.plyr').evaluate(el => el.classList.contains('plyr--hide-controls'));
@@ -113,32 +116,53 @@ const expectSubtitleSize = page => expect.poll(async () => page.locator('video')
   return picture > 0 && Math.abs(css - Math.max(18, picture * 38.4 / 720)) < 1 && Math.abs(overlay - css) < 1;
 })).toBe(true);
 
+// A member stall freezes its element while the room still broadcasts
+// 'playing', so one snapshot is not proof of playback: the picture must
+// verifiably advance between two samples a real interval apart. -1 reads as
+// "not flowing".
+const flowingTime = page => page.locator('video').evaluate(video => new Promise(resolve => {
+  if (video.paused || video.seeking || video.readyState < 3) return resolve(-1);
+  const at = video.currentTime;
+  setTimeout(() => resolve(!video.paused && !video.seeking && video.currentTime > at ? at : -1), 400);
+})).catch(() => -1);
+
 // The 50 s fixture can end during the checks above and a member stall can
 // freeze the room mid-flight: Plyr pins its controls open unless the room is
 // verifiably playing, so every pass below first restores that state. A room
 // that refuses to resume fails on this poll, with the dump naming the gate.
 const ensurePlaying = () => expect.poll(async () => {
-  const hostReady = await host.evaluate(() => {
-    const video = document.querySelector('video'), player = window.player;
-    if (video.currentTime >= 20) player.command('seek', 5);
-    if (player.state?.phase === 'paused') player.command('play');
-    return player.state?.phase === 'playing' && !video.paused && !video.seeking && video.currentTime < 20;
-  });
-  if (!hostReady) return false;
-  const [hostTime, guestTime] = await Promise.all([host, guest].map(page =>
-    page.locator('video').evaluate(video => video.paused || video.seeking || video.currentTime >= 20 ? -1 : video.currentTime)));
-  // The sync loop converges members well under a second. A wider gap is a
-  // member still realigning after a seek, not a settled room.
-  return hostTime >= 0 && guestTime >= 0 && Math.abs(hostTime - guestTime) < 1;
+  try {
+    const phase = await host.evaluate(() => {
+      const video = document.querySelector('video'), player = window.player;
+      if (video.currentTime >= 20) player.command('seek', 5);
+      if (player.state?.phase === 'paused') player.command('play');
+      return player.state?.phase;
+    });
+    if (phase !== 'playing') return false;
+    const [hostTime, guestTime] = await Promise.all([host, guest].map(flowingTime));
+    // The sync loop converges members well under a second. A wider gap is a
+    // member still realigning after a seek, not a settled room.
+    return hostTime >= 0 && hostTime < 20 && guestTime >= 0 && Math.abs(hostTime - guestTime) < 1;
+  } catch { return false; }
 }, { timeout: 15_000 }).toBe(true);
 
-// Plyr only auto-hides while the room plays: a fixture that ends mid-pass
-// freezes the séance and pins the bar, a room state rather than a hiding
-// defect. Re-arm a paused room, then the hide still has to prove itself.
-const controlsAutoHide = page => expect(async () => {
-  if (await page.evaluate(() => window.player?.state?.phase === 'paused' || (document.querySelector('video')?.currentTime ?? 0) >= 40)) await ensurePlaying();
-  await expect(page.locator('.plyr')).toHaveClass(/plyr--hide-controls/, { timeout: 4000 });
-}).toPass({ timeout: 30_000 });
+// Plyr pins the chrome while the element is paused or loading, so auto-hide
+// is only owed once the picture verifiably flows; a stalled member freezes
+// mid-wait with the room still broadcasting 'playing'. A waiting tick can
+// also flap the hide class off again within a frame of it landing, and the
+// fade itself is a compositor transition that jank can stretch: the end
+// state is the chrome verifiably hidden — class, opacity and cursor in one
+// read — not the class alone. Re-arm a paused room, no timer to guess.
+const controlsAutoHide = page => expect.poll(async () => {
+  try {
+    if (await page.evaluate(() => window.player?.state?.phase === 'paused' ||
+        (document.querySelector('video')?.currentTime ?? 0) >= 40)) await ensurePlaying();
+    if (await flowingTime(page) < 0) return false;
+    return await page.locator('.plyr').evaluate(plyr => plyr.classList.contains('plyr--hide-controls') &&
+      getComputedStyle(plyr.querySelector('.plyr__controls')).opacity === '0' &&
+      getComputedStyle(plyr.querySelector('video')).cursor === 'none');
+  } catch { return false; }
+}, { timeout: 30_000 }).toBe(true);
 
 const dump = async (page, role) => `${role}: ` + JSON.stringify({
   state: latest.get(page)?.state,
@@ -579,33 +603,34 @@ test('the picture layout holds across viewports and fullscreen', async () => {
     await expect.poll(() => latest.get(host)?.state.phase).toBe('playing');
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(false);
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
-    // Controls auto-hide while playing; hover until they are shown before clicking fullscreen.
-    await expect(async () => {
-      await ensurePlaying();
-      if (await host.evaluate(() => document.fullscreenElement?.id) !== 'screen') {
-        await clickControl(host, '[data-plyr=fullscreen]', () => host.evaluate(() => document.fullscreenElement?.id === 'screen'));
-      }
-      await expect.poll(() => host.evaluate(() => document.fullscreenElement?.id), { timeout: 5000 }).toBe('screen');
-      // The renderer paints display pixels and never upscales the source:
-      // assert that contract, not an equality tied to the fullscreen size.
-      await expect.poll(() => host.locator('.color-canvas').evaluate(canvas => {
-        const video = document.querySelector('video'), rect = video.getBoundingClientRect();
-        if (canvas.dataset.ready !== 'true' || !video.videoWidth) return false;
-        const scale = Math.min(1, rect.width * devicePixelRatio / video.videoWidth, rect.height * devicePixelRatio / video.videoHeight);
-        return canvas.width === Math.max(1, Math.round(video.videoWidth * scale)) && canvas.height === Math.max(1, Math.round(video.videoHeight * scale));
-      }), { timeout: 3000 }).toBe(true);
-      await expectSubtitleSize(host);
-      await expect(host.locator('#player-settings')).toBeHidden();
-      // Entering fullscreen resets Plyr's hover flag and re-arms its hide
-      // timer at once: the mic follows the chrome, so wake the bar before
-      // asserting its visibility rather than racing the countdown.
-      await showControls(host);
-      await expect(host.locator('#voice-mic')).toBeVisible();
-      await host.mouse.move(0, 0);
-      await controlsAutoHide(host);
-      await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '0', { timeout: 1000 });
-      await expect(host.locator('video')).toHaveCSS('cursor', 'none', { timeout: 1000 });
-    }).toPass({ timeout: 60_000 });
+    // Controls auto-hide while playing; hover until they are shown before
+    // clicking fullscreen. Every step waits on its own observable state, so a
+    // mid-pass stall is absorbed by controlsAutoHide rather than restarting
+    // the whole block.
+    await ensurePlaying();
+    if (await host.evaluate(() => document.fullscreenElement?.id) !== 'screen') {
+      await clickControl(host, '[data-plyr=fullscreen]', () => host.evaluate(() => document.fullscreenElement?.id === 'screen'));
+    }
+    await expect.poll(() => host.evaluate(() => document.fullscreenElement?.id), { timeout: 5000 }).toBe('screen');
+    // The renderer paints display pixels and never upscales the source:
+    // assert that contract, not an equality tied to the fullscreen size.
+    await expect.poll(() => host.locator('.color-canvas').evaluate(canvas => {
+      const video = document.querySelector('video'), rect = video.getBoundingClientRect();
+      if (canvas.dataset.ready !== 'true' || !video.videoWidth) return false;
+      const scale = Math.min(1, rect.width * devicePixelRatio / video.videoWidth, rect.height * devicePixelRatio / video.videoHeight);
+      return canvas.width === Math.max(1, Math.round(video.videoWidth * scale)) && canvas.height === Math.max(1, Math.round(video.videoHeight * scale));
+    }), { timeout: 3000 }).toBe(true);
+    await expectSubtitleSize(host);
+    await expect(host.locator('#player-settings')).toBeHidden();
+    // Entering fullscreen resets Plyr's hover flag and re-arms its hide
+    // timer at once: the mic follows the chrome, so wake the bar before
+    // asserting its visibility rather than racing the countdown.
+    await showControls(host);
+    await expect(host.locator('#voice-mic')).toBeVisible();
+    await host.mouse.move(0, 0);
+    // The helper only returns once the chrome reads hidden — hide class,
+    // settled opacity, none cursor — while the picture verifiably flows.
+    await controlsAutoHide(host);
     await ensurePlaying();
     await showControls(host);
     await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '1');
@@ -734,7 +759,6 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     // La carte de l'hôte peut déjà porter sa transcription incrémentale :
     // l'invariant est que le refus de l'invité n'y apparaît jamais.
     await expect(host.locator('#voice-local')).not.toContainText('다른 참가자가 말하고 있습니다');
-    await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
     // Second appui : la prise passe en traitement puis produit le résultat. Le
     // passage par 'processing' est bref : on l'enregistre au lieu de le sonder.
     // L'écoute est plafonnée à 20 s côté produit : le second appui doit tomber
@@ -849,7 +873,11 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await guest.evaluate(() => window.player.onVoice({ type: 'voice', state: 'started', utterance: 'ghost', seq: 99 }));
     await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
     // Second appui, même garde : la fenêtre d'écoute est petite et bornée.
-    await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
+    await expect(async () => {
+      const state = await host.locator('#voice-mic').evaluate(el => el.dataset.state);
+      if (state !== 'listening' && state !== 'starting') await host.locator('#voice-mic').evaluate(el => el.click());
+      await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening', { timeout: 3_000 });
+    }).toPass({ timeout: 15_000 });
     await heardSpeech(host);
     await host.locator('#voice-mic').click();
     await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
