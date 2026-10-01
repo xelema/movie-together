@@ -57,22 +57,32 @@ const reload = page => expect(async () => {
 // hit test proves the bar owns it. :hover tells whether the pointer is
 // really inside, so the leave only runs when the crossing needs it; a
 // mid-slide miss retries on fresh geometry instead of a stale point.
+// What the poll has to prove is that the bar is on screen and clickable, which
+// is all a click needs. `controls.hover` is the mic/webcam hold latch the app
+// sets around the mic, not "the pointer is on the bar", and a playing element
+// never falls back to the paused shortcut: in fullscreen the flag stayed false
+// while the bar was up, so the old predicate could never latch.
 const latchHover = (page, timeout = 5000) => expect.poll(async () => {
   try {
     const probe = await page.locator('.plyr__controls').evaluate(el => {
       const r = el.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
-      const plyr = el.closest('.plyr'), hidden = plyr.classList.contains('plyr--hide-controls');
+      const plyr = el.closest('.plyr'), style = getComputedStyle(el);
       const hit = document.elementFromPoint(x, y);
+      const shown = !plyr.classList.contains('plyr--hide-controls') && style.visibility !== 'hidden'
+        && Number(style.opacity) > 0 && r.width > 0 && r.height > 0;
       return { x, y, out: Math.max(plyr.getBoundingClientRect().top + 8, 4),
-        latched: !hidden && (el.hover === true || document.querySelector('video').paused),
-        over: el.matches(':hover'), ok: !hidden && !!hit && el.contains(hit) };
+        shown, over: el.matches(':hover'), ok: shown && !!hit && el.contains(hit) };
     });
-    if (probe.latched) return true;
+    if (probe.ok && probe.over) return true;
     if (probe.over || !probe.ok) await page.mouse.move(probe.x, probe.out);
     if (!probe.ok) return false;
     await page.mouse.move(probe.x, probe.y, { steps: 4 });
-    return await page.locator('.plyr__controls').evaluate(el =>
-      !el.closest('.plyr').classList.contains('plyr--hide-controls') && (el.hover === true || document.querySelector('video').paused));
+    return await page.locator('.plyr__controls').evaluate(el => {
+      const r = el.getBoundingClientRect(), style = getComputedStyle(el);
+      const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return !el.closest('.plyr').classList.contains('plyr--hide-controls') && style.visibility !== 'hidden'
+        && Number(style.opacity) > 0 && r.width > 0 && r.height > 0 && !!hit && el.contains(hit);
+    });
   } catch { return false; }
 }, { timeout }).toBe(true);
 

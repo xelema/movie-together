@@ -117,6 +117,15 @@ test('une séance ordinaire écrit son journal client et serveur sur le disque',
     if (needsGesture) {
       if (await allow.isVisible()) await allow.click().catch(() => {});
       else if (await overlaid.isVisible()) await overlaid.click().catch(() => {});
+      else {
+        // In 'buffering' the app shows nothing but « Chargement du film… »:
+        // both activation affordances are off screen while autoplay still
+        // demands a gesture, so a pressed button can never be the condition.
+        // Any gesture on the player surface grants it, and the media is paused
+        // here, so the click only starts playback.
+        const paused = await page.locator('video').evaluate(video => video.paused).catch(() => false);
+        if (paused) await page.locator('.plyr__video-wrapper').click({ position: { x: 10, y: 10 } }).catch(() => {});
+      }
     }
     return page.evaluate(() => {
       const element = document.querySelector('video');
