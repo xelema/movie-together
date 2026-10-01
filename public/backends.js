@@ -42,6 +42,24 @@ export function createBackend(video, url, options, handlers) {
 export const bufferBytes = (bufferGoal, bitrate) =>
   Math.max(128 * 1024 ** 2, Math.ceil((bufferGoal ?? 60) * (bitrate ?? 25_000_000) / 8 * 1.5));
 
+// hls.js attaches one `<track>` node per subtitle rendition of the manifest and
+// gives it a placeholder src — `data:,WEBVTT`, hardcoded in its own createTrackNode
+// (utils/texttrack-utils) — so Chrome's captions menu lists the track and WebKit
+// keeps its cues. Our CSP (`media-src 'self' blob: mediastream:`) refuses data:,
+// so the moment hls.js raises the node's mode out of 'disabled' the browser blocks
+// the fetch: one `resource-error {tag: TRACK, src: data:,WEBVTT}` and one CSP
+// violation per subtitle rendition, and the element is left in the failed state.
+// Cues are unaffected either way (hls.js appends them to `track.track`, it never
+// reads the file), so the swap below is about the node loading for real: an empty
+// WebVTT blob is allowed by media-src and keeps the element a valid track.
+export const SUBTITLE_PLACEHOLDER = 'data:,WEBVTT';
+
+// hls.js raises the current track's mode in the same task it appends the node, so
+// the adoption has to happen between the append and that first fetch attempt.
+export function releaseSubtitlePlaceholders(nodes, src) {
+  for (const node of nodes) if (node.src === SUBTITLE_PLACEHOLDER) node.src = src;
+}
+
 // hls.js parks unselected subtitle tracks in 'disabled', and a WebVTT fragment
 // that finishes parsing there loses its cues for good: _appendCues bails on
 // 'disabled' and the cached fragment is never fetched again, so a fast
@@ -79,6 +97,12 @@ export class HlsJsBackend {
 
     const trackController = this.hls.subtitleTrackController;
     if (trackController) trackController.toggleTrackModes = () => pinSubtitleModes(trackController);
+    // The subtitle nodes land after the manifest is parsed, and hls.js may raise the
+    // current one in the same task it appends it: adopt them as they arrive, before
+    // the fetch the CSP would refuse (see releaseSubtitlePlaceholders).
+    this.subtitleVtt = URL.createObjectURL(new Blob(['WEBVTT\n\n'], { type: 'text/vtt' }));
+    this.trackNodes = new MutationObserver(() => releaseSubtitlePlaceholders(video.querySelectorAll('track'), this.subtitleVtt));
+    this.trackNodes.observe(video, { childList: true });
     this.hls.loadSource(url); this.hls.attachMedia(video);
     this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => onBuffered?.());
     for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) {
@@ -123,7 +147,7 @@ export class HlsJsBackend {
       this.hls.subtitleDisplay = subtitles >= 0;
     }
   }
-  destroy() { this.hls.destroy(); }
+  destroy() { this.trackNodes.disconnect(); URL.revokeObjectURL(this.subtitleVtt); this.hls.destroy(); }
 }
 
 export class NativeHlsBackend {
