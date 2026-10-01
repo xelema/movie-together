@@ -62,9 +62,43 @@ jobs:
             echo "PREVIEW_URL=https://pr-${{ github.event.pull_request.number || github.event.inputs.pr }}.$PREVIEW_DOMAIN:$PREVIEW_PORT"
           } >> "$GITHUB_ENV"
 
+      # Une PR qui ne touche que des tests, de la documentation ou le pilotage de
+      # la CI n'a rien a montrer dans un navigateur, alors qu'une preview coute un
+      # build d'image et un conteneur sur un runner unique. Le classement se fait
+      # ici plutot que par un filtre de declencheur : un `paths-ignore` aurait aussi
+      # filtre l'evenement `closed`, donc une PR devenue test-only apres avoir eu
+      # une preview n'aurait plus jamais ete demontee.
+      - name: Cette PR a-t-elle besoin d'une preview ?
+        id: relevance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          files=$(gh pr view "$PR_NUMBER" --json files --jq '.files[].path')
+          relevant=false
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            case "$path" in
+              e2e/*|test/*|docs/*|*.md|.github/workflows/ci.yml|.github/workflows/deploy.yml) ;;
+              *) relevant=true; break ;;
+            esac
+          done <<< "$files"
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+          if [ "$relevant" = false ]; then
+            echo "seuls des tests, de la doc ou le pilotage de la CI changent : preview inutile"
+            {
+              echo "### Preview sautee"
+              echo
+              echo "Aucun fichier servi par l'application ne change (tests, documentation ou pilotage de la CI)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            # Une preview peut deja exister : down.sh est idempotent, on la retire.
+            sudo -n bash deploy/preview/down.sh "$PR_NUMBER" || true
+          fi
+
       # La stack permanente est installee par ce script ; --ensure la laisse telle
       # quelle si elle tourne deja avec un token DuckDNS.
       - name: S'assurer que le proxy des previews tourne
+        if: steps.relevance.outputs.relevant == 'true'
         env:
           DUCKDNS_TOKEN: ${{ secrets.DUCKDNS_TOKEN }}
         run: |
@@ -78,12 +112,14 @@ jobs:
           fi
 
       - name: Construire l'image de la PR
+        if: steps.relevance.outputs.relevant == 'true'
         run: |
           set -euo pipefail
           docker build --tag "$IMAGE:pr-$PR_NUMBER-$SHORT_SHA" .
           docker image inspect "$IMAGE:pr-$PR_NUMBER-$SHORT_SHA" >/dev/null
 
       - name: Demarrer la preview
+        if: steps.relevance.outputs.relevant == 'true'
         env:
           PREVIEW_ADMIN_PASSWORD: ${{ secrets.PREVIEW_ADMIN_PASSWORD }}
         run: |
@@ -95,6 +131,7 @@ jobs:
             bash deploy/preview/up.sh "$PR_NUMBER" "$IMAGE:pr-$PR_NUMBER-$SHORT_SHA"
 
       - name: Verifier la preview
+        if: steps.relevance.outputs.relevant == 'true'
         run: |
           set -euo pipefail
           host="pr-$PR_NUMBER.$PREVIEW_DOMAIN"
@@ -135,7 +172,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publier l'URL sur la PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.relevance.outputs.relevant == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

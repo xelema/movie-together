@@ -2,7 +2,18 @@ name: Checks
 on:
   push:
     branches: [main]
+    # Documentation seule : la suite e2e (14 min de 2 vCPU partages avec la prod)
+    # ne dit rien d'un fichier markdown. Aucun filtre sur e2e/, src/, public/ ni
+    # .github/ : c'est exactement ce que la suite verifie. Un changement de doc
+    # ne declenche donc pas le Deploy (workflow_run sur Checks) : l'image reste
+    # sur le commit precedent, sans effet sur l'application servie.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -15,8 +26,42 @@ jobs:
     # la prod : 20 min se faisaient dépasser au premier ralentissement, et un job
     # annulé sur le commit de merge saute le déploiement (il exige un Checks vert).
     timeout-minutes: 40
+    env:
+      # Un merge dont l'arbre est deja celui que la CI de PR a verifie peut sauter
+      # la suite : le garde-fou ci-dessous refuse le raccourci si main a derive.
+      SKIP_E2E: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[skip-e2e]') }}
     steps:
       - uses: actions/checkout@v4
+      - name: Verifier que le merge est bien celui qui a ete teste
+        if: env.SKIP_E2E == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Le marqueur n'autorise a sauter la suite que si l'arbre du commit de
+          # merge est exactement celui que la PR a fait verifier : si main a bouge
+          # entre le run de PR et le merge, le resultat n'a jamais ete teste et on
+          # echoue au lieu de sauter en silence.
+          pr=$(python3 - "$GITHUB_SHA" <<'PY'
+          import json, os, sys, urllib.request
+          url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/commits/{sys.argv[1]}/pulls"
+          req = urllib.request.Request(url, headers={
+              "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+              "Accept": "application/vnd.github+json"})
+          pulls = json.load(urllib.request.urlopen(req))
+          print(pulls[0]["number"] if pulls else "")
+          PY
+          )
+          if [ -z "$pr" ]; then
+            echo "::error::marqueur [skip-e2e] sans PR associee : la suite doit tourner"
+            exit 1
+          fi
+          git fetch -q origin "pull/$pr/head:refs/remotes/origin/pr-head"
+          if ! git diff --quiet origin/pr-head HEAD; then
+            echo "::error::l'arbre du merge differe de celui verifie par la PR #$pr (main a bouge) : la suite doit tourner"
+            exit 1
+          fi
+          echo "arbre identique a celui verifie par la PR #$pr : suite e2e sautee"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -42,10 +87,15 @@ jobs:
           rm -rf "$tmp"
       - run: npm ci
       - run: npm test
+      # La suite, et son installation, ne tournent pas quand le marqueur atteste que
+      # l'arbre est celui que la CI de PR a deja verifie (le garde-fou ci-dessus a
+      # refuse le raccourci sinon).
       - run: npx playwright install --with-deps chromium firefox webkit
+        if: env.SKIP_E2E != 'true'
       - run: |
           pulseaudio --start --exit-idle-time=-1 || true
           xvfb-run -a npm run test:e2e
+        if: env.SKIP_E2E != 'true'
       - run: docker build -t movie-night:test .
       - uses: actions/upload-artifact@v4
         if: failure()
