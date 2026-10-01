@@ -391,8 +391,11 @@ test('admin manages a film and two named viewers join in their language with one
 
 test('track and settings choices stay viewer-local while only the transport moves the room', async ({ browser }) => {
   test.skip(!joined, 'the séance setup pass did not complete');
-  // Chromium alone pays the trusted-touch pass: this is the longest slice.
-  test.setTimeout(120_000);
+  // Chromium alone pays the trusted-touch pass: this is the longest slice, and
+  // it spends ~102 s on real playback waits (subtitle handoff, a seek, the
+  // bandwidth badge). The budget is a ceiling for a hang, not a race mask, so
+  // it keeps real headroom on a loaded runner instead of sitting at 85%.
+  test.setTimeout(180_000);
   try {
     await clickControl(guest, '.plyr__controls [data-plyr=play]', () => guest.locator('video').evaluate(video => video.paused));
     await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
