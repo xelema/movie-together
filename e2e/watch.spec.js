@@ -677,6 +677,43 @@ test('the picture layout holds across viewports and fullscreen', async () => {
   }
 });
 
+test('the fullscreen control recovers when the document keeps a fullscreen element the browser dropped', async () => {
+  test.skip(!joined, 'the séance setup pass did not complete');
+  test.setTimeout(90_000);
+  try {
+    await ensurePlaying();
+    // L'entrée passe par le contrôle lui-même, le chemin de l'appui réel.
+    if (await host.evaluate(() => document.fullscreenElement?.id) !== 'screen') {
+      await clickControl(host, '[data-plyr=fullscreen]', () => host.evaluate(() => document.fullscreenElement?.id === 'screen'));
+    }
+    await expect.poll(() => host.evaluate(() => document.fullscreenElement?.id), { timeout: 5000 }).toBe('screen');
+    // Le navigateur quitte le plein écran tout seul : c'est ce que fait
+    // Chrome pour Android quand l'invite de permission s'ouvre.
+    await host.evaluate(() => document.exitFullscreen());
+    await expect.poll(() => host.evaluate(() => document.fullscreenElement)).toBe(null);
+    // Le mensonge rapporté : le document continue de nommer #screen alors
+    // que l'élément est revenu dans la page. L'état propre à l'application —
+    // l'élément peint — dit déjà « pas plein écran ».
+    await host.evaluate(() => Object.defineProperty(document, 'fullscreenElement',
+      { configurable: true, get: () => document.getElementById('screen') }));
+    await expect.poll(() => host.evaluate(() => window.fullscreenControl?.active())).toBe(false);
+    // L'appui solde le mensonge puis redemande dans le même geste : sous le
+    // mensonge, fullscreenElement resterait « screen » quoi qu'il arrive,
+    // c'est l'élément peint qui prouve la rentrée.
+    await clickControl(host, '[data-plyr=fullscreen]', () => host.evaluate(() => window.fullscreenControl?.active()));
+    await host.evaluate(() => { delete document.fullscreenElement; });
+    await expect.poll(() => host.evaluate(() => document.fullscreenElement?.id), { timeout: 5000 }).toBe('screen');
+    await expect.poll(() => host.evaluate(() => window.fullscreenControl?.active())).toBe(true);
+  } catch (error) {
+    await reportFailure(error);
+    throw error;
+  } finally {
+    // Rendre la page aux passes suivantes : retirer le mensonge puis sortir
+    // d'un éventuel plein écran resté ouvert.
+    await host.evaluate(() => { delete document.fullscreenElement; if (document.fullscreenElement) return document.exitFullscreen(); }).catch(() => {});
+  }
+});
+
 test('the voice mic follows the player chrome across hover and focus', async () => {
   test.skip(!joined, 'the séance setup pass did not complete');
   test.setTimeout(120_000);

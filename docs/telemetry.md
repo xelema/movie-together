@@ -216,7 +216,10 @@ entière reste sans journal.
 - `action` — intention de l'utilisateur : `{act, value?, pos, phase, epoch}`
   pour `play`, `pause`, `seek`, `track-audio`, `track-subs`, `volume`, `mute`,
   `fullscreen`, `pip`, `hdr`, `settings`, `join`, `leave`, `nickname`,
-  `invite`.
+  `invite`. Le plein écran porte en plus `recovery` et `detail` quand le
+  lecteur a dû solder un état que le navigateur avait quitté sans le lui dire
+  (`recovery` nomme l'intervention : `stale`, `exit-failed`, `enter-failed`,
+  `fallback`).
 
 ## Événements du serveur (`<code>-server.ndjson`)
 
