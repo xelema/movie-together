@@ -19,6 +19,11 @@ concurrency:
   cancel-in-progress: true
 permissions:
   contents: read
+  # Le garde-fou du marqueur [skip-e2e] resout la PR depuis le commit de merge et
+  # lit la conclusion de son Checks : sans ces deux lectures, l'appel d'API
+  # repond 403 et le garde-fou tombe au lieu de laisser la suite tourner.
+  pull-requests: read
+  actions: read
 jobs:
   test:
     runs-on: self-hosted
@@ -34,33 +39,57 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verifier que le merge est bien celui qui a ete teste
         if: env.SKIP_E2E == 'true'
+        id: verified
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # Le marqueur n'autorise a sauter la suite que si l'arbre du commit de
-          # merge est exactement celui que la PR a fait verifier : si main a bouge
-          # entre le run de PR et le merge, le resultat n'a jamais ete teste et on
-          # echoue au lieu de sauter en silence.
+          # merge est exactement celui que la PR a fait verifier. Sinon le
+          # raccourci est simplement abandonne et la suite tourne : refuser en
+          # echouant bloquait le deploiement pour une combinaison que la suite
+          # aurait justement pu valider (constate : un merge sur une main qui a
+          # bouge entre le run de PR et le merge).
+          echo "skip=false" >> "$GITHUB_OUTPUT"
           pr=$(python3 - "$GITHUB_SHA" <<'PY'
           import json, os, sys, urllib.request
-          url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/commits/{sys.argv[1]}/pulls"
-          req = urllib.request.Request(url, headers={
-              "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
-              "Accept": "application/vnd.github+json"})
-          pulls = json.load(urllib.request.urlopen(req))
-          print(pulls[0]["number"] if pulls else "")
+          # Toute panne de l'API (jeton, reseau, quota) doit laisser la suite
+          # tourner : le raccourci est un confort, jamais une condition de succes.
+          try:
+              url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/commits/{sys.argv[1]}/pulls"
+              req = urllib.request.Request(url, headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/vnd.github+json"})
+              pulls = json.load(urllib.request.urlopen(req))
+              print(pulls[0]["number"] if pulls else "")
+          except Exception as error:
+              print(f"resolution de la PR impossible ({error}) : la suite tourne", file=sys.stderr)
+              print("")
           PY
           )
           if [ -z "$pr" ]; then
-            echo "::error::marqueur [skip-e2e] sans PR associee : la suite doit tourner"
-            exit 1
+            echo "marqueur [skip-e2e] sans PR associee : la suite tourne"
+            exit 0
           fi
-          git fetch -q origin "pull/$pr/head:refs/remotes/origin/pr-head"
+          if ! git fetch -q origin "pull/$pr/head:refs/remotes/origin/pr-head" 2>/dev/null; then
+            echo "tete de la PR #$pr introuvable : la suite tourne"
+            exit 0
+          fi
           if ! git diff --quiet origin/pr-head HEAD; then
-            echo "::error::l'arbre du merge differe de celui verifie par la PR #$pr (main a bouge) : la suite doit tourner"
-            exit 1
+            echo "l'arbre du merge differe de celui verifie par la PR #$pr (main a bouge) : la suite tourne"
+            exit 0
           fi
+          # Un arbre identique ne suffit pas : encore faut-il que ce soit un arbre
+          # que la PR a reellement fait passer. Un run rouge ne peut pas servir
+          # de reference, sinon le marqueur sauterait la suite d'une PR rouge.
+          head_sha=$(git rev-parse origin/pr-head)
+          conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$head_sha" \
+            --jq '[.workflow_runs[] | select(.name == "Checks")][0].conclusion' 2>/dev/null || echo "")
+          if [ "$conclusion" != "success" ]; then
+            echo "le Checks de la PR #$pr n'est pas vert (${conclusion:-introuvable}) : la suite tourne"
+            exit 0
+          fi
+          echo "skip=true" >> "$GITHUB_OUTPUT"
           echo "arbre identique a celui verifie par la PR #$pr : suite e2e sautee"
       - uses: actions/setup-node@v4
         with:
@@ -91,11 +120,11 @@ jobs:
       # l'arbre est celui que la CI de PR a deja verifie (le garde-fou ci-dessus a
       # refuse le raccourci sinon).
       - run: npx playwright install --with-deps chromium firefox webkit
-        if: env.SKIP_E2E != 'true'
+        if: steps.verified.outputs.skip != 'true'
       - run: |
           pulseaudio --start --exit-idle-time=-1 || true
           xvfb-run -a npm run test:e2e
-        if: env.SKIP_E2E != 'true'
+        if: steps.verified.outputs.skip != 'true'
       - run: docker build -t movie-night:test .
       - uses: actions/upload-artifact@v4
         if: failure()
