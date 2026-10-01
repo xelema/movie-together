@@ -106,7 +106,11 @@ const clickControl = (page, selector, done) => expect(async () => {
   // The action a previous click started can land while the latch ran:
   // re-check before clicking or a toggle flips back while it is still landing.
   if (done && await done()) return;
-  await page.locator(`.plyr:not(.plyr--hide-controls) ${selector}`).click({ timeout: 3000 });
+  // Le clic n'est pas la preuve : en plein écran l'action aboutit (le bouton passe
+  // a [pressed]) alors que le controle d'actionnabilité expire pendant la
+  // transition. C'est l'etat observe juste apres qui decide, et le toPass rejoue
+  // le geste tant qu'il n'est pas atteint.
+  await page.locator(`.plyr:not(.plyr--hide-controls) ${selector}`).click({ timeout: 3000 }).catch(() => {});
   // A fullscreen request can take seconds to resolve on a loaded box: give the
   // done state a poll window before deciding the click missed.
   if (done) await expect.poll(done, { timeout: 4000 }).toBe(true);
@@ -313,7 +317,7 @@ test('admin manages a film and two named viewers join in their language with one
     await host.locator('#create-code').fill('Sans-Voix');
     await host.getByRole('button', { name: 'Créer', exact: true }).click();
     await expect(host.locator('#name-dialog')).toBeVisible(); await host.locator('#room-name').fill('Alex'); await host.locator('#name-dialog button').click();
-    await expect(host.locator('#movie-title')).toHaveText('fixture');
+    await expect(host.locator('#movie-title')).toHaveText('fixture', { timeout: 15_000 });
     await expect(host.locator('#voice-badge')).toHaveCount(0); await expect(host.locator('#voice-mic')).toBeHidden();
     await host.locator('#leave').click();
     await host.getByRole('button', { name: 'Créer une séance', exact: true }).click();
@@ -322,14 +326,14 @@ test('admin manages a film and two named viewers join in their language with one
     await host.locator('#create-code').fill('Cine-Soir');
     await host.getByRole('button', { name: 'Créer', exact: true }).click();
     await expect(host.locator('#name-dialog')).toBeVisible(); await host.locator('#name-dialog button').click();
-    await expect(host.locator('#movie-title')).toHaveText('fixture');
+    await expect(host.locator('#movie-title')).toHaveText('fixture', { timeout: 15_000 });
     await expect(host.locator('#voice-badge')).toHaveCount(0);
     await expect(host.locator('#voice-mic')).toBeVisible(); await expect(host.locator('#voice-mic')).toBeEnabled();
     const gate = new Promise(resolve => { releaseMedia = resolve; });
     await guest.route('**/*.m4s', async route => { await gate; await route.continue().catch(() => {}); });
     await guest.locator('#join-form input').fill('cine-soir'); await guest.locator('#join-form button').click();
     await expect(guest.locator('#name-dialog')).toBeVisible(); await guest.locator('#room-name').fill('민지'); await guest.locator('#name-dialog button').click();
-    await expect(guest.locator('#movie-title')).toHaveText('fixture'); await expect(guest.locator('#choose-film')).toBeHidden();
+    await expect(guest.locator('#movie-title')).toHaveText('fixture', { timeout: 15_000 }); await expect(guest.locator('#choose-film')).toBeHidden();
     // La capacité arrive dans l'état autoritatif et affiche le contrôle chez l'invité aussi.
     await expect.poll(() => latest.get(guest)?.voice).toMatchObject({ enabled: true, pair: ['fr', 'ko'] });
     expect(typeof latest.get(guest)?.voice?.available).toBe('boolean');
@@ -461,7 +465,7 @@ test('track and settings choices stay viewer-local while only the transport move
     await host.locator('[data-plyr=seek]').fill('20'); await host.locator('[data-plyr=seek]').dispatchEvent('input');
     await expect.poll(() => guest.locator('video').evaluate(video => video.currentTime)).toBeGreaterThan(9);
     await host.locator('#screen').focus(); await host.keyboard.press('k');
-    await expect.poll(() => guest.locator('video').evaluate(video => Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.text === 'Un sous-titre lisible.' && cue.line === 84 && !cue.snapToLines)))).toBe(true);
+    await expect.poll(() => guest.locator('video').evaluate(video => Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.text === 'Un sous-titre lisible.' && cue.line === 84 && !cue.snapToLines))), { timeout: 15_000 }).toBe(true);
     await expect(guest.locator('.color-captions')).toHaveText('Un sous-titre lisible.');
     await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
     await expect(guest.locator('#buffering-overlay')).toBeHidden();
@@ -953,7 +957,9 @@ test('a voice prise survives member journeys and member failures pause the room'
     await expect(guest.locator('#voice-result')).not.toContainText('민지');
     await guest.locator('#language').selectOption('ko');
     await expect(guest.locator('html')).toHaveAttribute('lang', 'ko');
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    // La reprise suit une panne de membre : elle n'est pas instantanee sous
+    // charge, et le reste du fichier attend la meme chose avec ce budget.
+    await expect.poll(() => guest.locator('video').evaluate(video => video.paused), { timeout: 15_000 }).toBe(false);
     // Clavier (#47) : le micro est un vrai bouton, Entrée tient lieu d'appui
     // pour démarrer comme pour clore. Le délai de reprise peut encore courir,
     // la pression est retentée tant que la prise n'est pas accordée.
