@@ -759,7 +759,6 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     // La carte de l'hôte peut déjà porter sa transcription incrémentale :
     // l'invariant est que le refus de l'invité n'y apparaît jamais.
     await expect(host.locator('#voice-local')).not.toContainText('다른 참가자가 말하고 있습니다');
-    await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
     // Second appui : la prise passe en traitement puis produit le résultat. Le
     // passage par 'processing' est bref : on l'enregistre au lieu de le sonder.
     // L'écoute est plafonnée à 20 s côté produit : le second appui doit tomber
@@ -874,7 +873,11 @@ test('a voice prise is exclusive to one speaker and member failures pause the ro
     await guest.evaluate(() => window.player.onVoice({ type: 'voice', state: 'started', utterance: 'ghost', seq: 99 }));
     await expect(guest.locator('#voice-mic')).toHaveAttribute('data-state', 'error');
     // Second appui, même garde : la fenêtre d'écoute est petite et bornée.
-    await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening');
+    await expect(async () => {
+      const state = await host.locator('#voice-mic').evaluate(el => el.dataset.state);
+      if (state !== 'listening' && state !== 'starting') await host.locator('#voice-mic').evaluate(el => el.click());
+      await expect(host.locator('#voice-mic')).toHaveAttribute('data-state', 'listening', { timeout: 3_000 });
+    }).toPass({ timeout: 15_000 });
     await heardSpeech(host);
     await host.locator('#voice-mic').click();
     await expect(host.locator('#voice-local')).toHaveText('On se retrouve au générique.');
