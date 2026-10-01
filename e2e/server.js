@@ -38,7 +38,10 @@ const voiceService = {
     return session;
   },
 };
-const instance = createApplication({ dataDir, origin: 'http://localhost:3100', password: 'browser-test-password', voiceService });
+// Quota haut et cooldown court : une prise que le plafond de 20 s referme est
+// rouverte dans le test, et chaque réouverture consomme le quota de la session.
+const instance = createApplication({ dataDir, origin: 'http://localhost:3100', password: 'browser-test-password', voiceService,
+  env: { ...process.env, VOICE_QUOTA: '10', VOICE_COOLDOWN: '1' } });
 instance.server.listen(3100, '127.0.0.1');
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => {
   await instance.close(); await rm(dataDir, { recursive: true, force: true }); process.exit(0);
