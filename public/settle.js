@@ -4,13 +4,14 @@
 // Tout appelant doit donc rendre la main dans une borne et lire le résultat
 // observé, jamais attendre sans fin : « ok », le nom de l'erreur, ou « pending ».
 export function settle(promise, ms) {
+  let timer;
   return Promise.race([
-    Promise.resolve(promise).then(() => 'ok', error => error?.name ?? 'error'),
+    Promise.resolve(promise).then(
+      () => { clearTimeout(timer); return 'ok'; },
+      error => { clearTimeout(timer); return error?.name ?? 'error'; },
+    ),
     new Promise(resolve => {
-      const timer = setTimeout(() => resolve('pending'), ms);
-      // Un minuteur oublié retiendrait le process Node des tests ; la garde est
-      // absente des navigateurs, où la page vit jusqu'à son déchargement.
-      timer.unref?.();
+      timer = setTimeout(() => resolve('pending'), ms);
     }),
   ]);
 }
