@@ -68,6 +68,16 @@ jobs:
             echo "l'arbre du merge differe de celui verifie par la PR #$pr (main a bouge) : la suite tourne"
             exit 0
           fi
+          # Un arbre identique ne suffit pas : encore faut-il que ce soit un arbre
+          # que la PR a reellement fait passer. Un run rouge ne peut pas servir
+          # de reference, sinon le marqueur sauterait la suite d'une PR rouge.
+          head_sha=$(git rev-parse origin/pr-head)
+          conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$head_sha" \
+            --jq '[.workflow_runs[] | select(.name == "Checks")][0].conclusion' 2>/dev/null || echo "")
+          if [ "$conclusion" != "success" ]; then
+            echo "le Checks de la PR #$pr n'est pas vert (${conclusion:-introuvable}) : la suite tourne"
+            exit 0
+          fi
           echo "skip=true" >> "$GITHUB_OUTPUT"
           echo "arbre identique a celui verifie par la PR #$pr : suite e2e sautee"
       - uses: actions/setup-node@v4
