@@ -180,6 +180,15 @@ Aucun levier n'existe côté application : la page ne contrôle pas la
 présentation plein écran du navigateur. La mesure venant de l'écran virtuel de
 la session distante, elle reste à confirmer sur un écran physique.
 
+Sur Android, Chrome peut quitter le plein écran de lui-même quand une invite
+de permission (caméra, micro) s'ouvre, sans passer par l'API de la page. Le
+document peut alors continuer à nommer `#screen` comme élément plein écran
+alors que l'élément est revenu dans la page, et la commande semble morte :
+la sortie est refusée et une nouvelle demande pour cet élément est ignorée.
+Le lecteur décide donc depuis l'élément peint — la boîte qui recouvre la
+fenêtre ou non — solde cet état avant de rentrer, et ne rentre jamais sans
+geste : c'est l'appui qui suit l'invite qui ramène le plein écran.
+
 ## Son et préparation
 
 AAC-LC intégré mono/stéréo 44,1/48 kHz est copié. Le reste de l'audio est converti
