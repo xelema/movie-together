@@ -1,6 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { codecPlayable, pinSubtitleModes, HlsJsBackend, nativeHls, supportsMime } from '../public/backends.js';
+import { codecPlayable, pinSubtitleModes, releaseSubtitlePlaceholders, SUBTITLE_PLACEHOLDER, HlsJsBackend, nativeHls, supportsMime } from '../public/backends.js';
+
+// The adapter watches the media element for the subtitle <track> nodes hls.js
+// appends itself; node has no MutationObserver, and these stubs no DOM to watch.
+const stubMutationObserver = hooks => {
+  const saved = globalThis.MutationObserver;
+  globalThis.MutationObserver = class {
+    constructor(callback) { hooks?.created?.(callback); }
+    observe(target, options) { hooks?.observe?.(target, options); }
+    disconnect() { hooks?.disconnect?.(); }
+  };
+  return () => { saved === undefined ? delete globalThis.MutationObserver : globalThis.MutationObserver = saved; };
+};
 
 test('codecPlayable blocks a video codec the device rejects', () => {
   assert.equal(codecPlayable({ codec: 'hevc' }, () => false), false);
@@ -41,7 +53,7 @@ const fakeHls = () => {
   const hls = {
     config: { renderTextTracksNatively: true }, audioTracks: [{}], subtitleTracks: nodes.map(() => ({})),
     audioTrack: 0, subtitleTrackController: controller,
-    loadSource() {}, attachMedia() {}, on() {},
+    loadSource() {}, attachMedia() {}, on() {}, destroy() {},
   };
   controller.hls = hls;
   let selected = -1;
@@ -72,6 +84,7 @@ test('pinSubtitleModes keeps unselected tracks hidden rather than disabled', () 
 
 test('a fast subtitle re-selection never strands a track without cues', () => {
   const { hls, nodes } = fakeHls();
+  const restoreObserver = stubMutationObserver();
   const saved = globalThis.window;
   globalThis.window = { Hls: class { constructor() { return hls; } } };
   window.Hls.Events = { FRAG_BUFFERED: 'fb', MANIFEST_PARSED: 'mp', AUDIO_TRACKS_UPDATED: 'au', SUBTITLE_TRACKS_UPDATED: 'su', ERROR: 'err' };
@@ -89,11 +102,13 @@ test('a fast subtitle re-selection never strands a track without cues', () => {
     assert.deepEqual(nodes[0].trackNode.track.cues, [{ id: 'late' }]);
   } finally {
     saved === undefined ? delete globalThis.window : globalThis.window = saved;
+    restoreObserver();
   }
 });
 
 test('hls.js is configured for stall-free resume and deep segment reuse', () => {
   const { hls } = fakeHls();
+  const restoreObserver = stubMutationObserver();
   const saved = globalThis.window;
   let config;
   globalThis.window = { Hls: class { constructor(options) { config = options; return hls; } } };
@@ -107,6 +122,50 @@ test('hls.js is configured for stall-free resume and deep segment reuse', () => 
     assert.ok(config.maxBufferSize >= 128 * 1024 ** 2);
   } finally {
     saved === undefined ? delete globalThis.window : globalThis.window = saved;
+    restoreObserver();
+  }
+});
+
+// hls.js hardcodes `data:,WEBVTT` as the src of every subtitle track node it
+// creates (createTrackNode). The app CSP's media-src refuses data:, so leaving the
+// placeholder in place costs one blocked request and one `resource-error` per
+// subtitle rendition; the adapter swaps it for an empty WebVTT blob first.
+test('the hls.js subtitle placeholder is swapped for a loadable empty WebVTT', () => {
+  const nodes = [{ src: SUBTITLE_PLACEHOLDER }, { src: '/media/sub_fr.m3u8' }, { src: SUBTITLE_PLACEHOLDER }];
+  releaseSubtitlePlaceholders(nodes, 'blob:empty-vtt');
+  assert.deepEqual(nodes.map(node => node.src), ['blob:empty-vtt', '/media/sub_fr.m3u8', 'blob:empty-vtt']);
+  // The watcher fires on every later childList change too; a node already adopted
+  // and a real track node must both be left alone.
+  releaseSubtitlePlaceholders(nodes, 'blob:other');
+  assert.deepEqual(nodes.map(node => node.src), ['blob:empty-vtt', '/media/sub_fr.m3u8', 'blob:empty-vtt']);
+});
+
+test('the adapter adopts hls.js track nodes the moment they are appended', () => {
+  const { hls } = fakeHls();
+  const savedWindow = globalThis.window;
+  const seen = [];
+  let callback;
+  const restoreObserver = stubMutationObserver({
+    created: cb => { callback = cb; },
+    observe: (target, options) => seen.push([target, options]),
+    disconnect: () => seen.push('disconnect'),
+  });
+  globalThis.window = { Hls: class { constructor() { return hls; } } };
+  window.Hls.Events = { FRAG_BUFFERED: 'fb', MANIFEST_PARSED: 'mp', AUDIO_TRACKS_UPDATED: 'au', SUBTITLE_TRACKS_UPDATED: 'su', ERROR: 'err' };
+  window.Hls.ErrorTypes = { MEDIA_ERROR: 'media', NETWORK_ERROR: 'network' };
+  try {
+    const node = { src: SUBTITLE_PLACEHOLDER };
+    const video = { querySelectorAll: () => [node] };
+    const backend = new HlsJsBackend(video, 'u');
+    assert.deepEqual(seen[0], [video, { childList: true }]);
+    callback();
+    assert.equal(node.src, backend.subtitleVtt);
+    assert.match(backend.subtitleVtt, /^blob:/);
+    backend.destroy();
+    assert.equal(seen.at(-1), 'disconnect');
+  } finally {
+    savedWindow === undefined ? delete globalThis.window : globalThis.window = savedWindow;
+    restoreObserver();
   }
 });
 
