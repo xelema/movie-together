@@ -3,6 +3,8 @@
 // séance. Le flux reste pair-à-pair : le serveur ne voit que des messages
 // JSON. Aucun son n'est capturé (audio: false) pour préserver la fidélité du
 // film, et chaque piste est arrêtée proprement pour que le voyant s'éteigne.
+import { getUserMedia } from './media-permission.js';
+
 const STUN = ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'];
 const STATE_NAMES = {
   idle: 'Activer la caméra',
@@ -294,8 +296,12 @@ export function attachWebcam({ toggle, overlay, player, t, label, onEvent }) {
     tapAt = performance.now();
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('caméra absente');
-      const granted = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { max: 30 } }, audio: false });
+      // La demande passe par le module : une invite de permission ne doit jamais
+      // s'ouvrir pendant que la page est en plein écran, la rentrée se raconte
+      // dans la télémétrie de la vignette (recovery : permission-*).
+      const granted = await getUserMedia('camera', {
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { max: 30 } }, audio: false },
+      (reason, detail) => emit({ recovery: reason, detail: String(detail ?? '').slice(0, 60) }));
       // Une permission résolue après un second geste ou le démontage produirait
       // un flux orphelin encore actif : il est arrêté plutôt qu'adopté.
       if (disposed || state !== 'starting') { granted.getTracks().forEach(track => track.stop()); return; }

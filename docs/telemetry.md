@@ -217,9 +217,15 @@ entière reste sans journal.
   pour `play`, `pause`, `seek`, `track-audio`, `track-subs`, `volume`, `mute`,
   `fullscreen`, `pip`, `hdr`, `settings`, `join`, `leave`, `nickname`,
   `invite`. Le plein écran porte en plus `recovery` et `detail` quand le
-  lecteur a dû solder un état que le navigateur avait quitté sans le lui dire
-  (`recovery` nomme l'intervention : `stale`, `exit-failed`, `enter-failed`,
-  `fallback`).
+  lecteur a dû solder un état que le navigateur avait quitté sans le lui dire,
+  ou quand une promesse du navigateur n'a pas rendu la main : `stale` (élément
+  menteur soldé avant la rentrée), `dropped` (sortie subie détectée au
+  rétrécissement de la fenêtre), `exit-pending` / `enter-pending` (promesse
+  jamais résolue), `exit-failed` / `enter-failed` (promesse refusée), `fallback`
+  (surcouche CSS). Les événements `webcam` et `voice` portent le même `recovery`
+  pour le flux de permission : `permission-exit` (plein écran quitté avant la
+  demande), `permission-return` / `permission-return-denied` /
+  `permission-return-pending` (rentrée tentée après la réponse).
 
 ## Événements du serveur (`<code>-server.ndjson`)
 
