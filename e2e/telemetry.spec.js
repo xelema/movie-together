@@ -105,11 +105,24 @@ test('une séance ordinaire écrit son journal client et serveur sur le disque',
   const allow = page.locator('#allow-sound'), overlaid = page.locator('.plyr__control--overlaid');
   if (await allow.isVisible()) await allow.click();
   else if (await overlaid.isVisible()) await overlaid.click();
-  const playing = () => page.evaluate(() => {
-    const element = document.querySelector('video');
-    if (window.player?.state?.phase === 'paused') window.player.command('play');
-    return window.player?.state?.phase === 'playing' && !element.paused && element.currentTime > 0;
-  });
+  // 'paused' attend un ordre ; 'buffering' dont le membre n'est pas activé
+  // attend le geste : une activation interrompue n'est jamais retentée
+  // d'elle-même et un spectateur réappuierait sur Lecture.
+  const playing = async () => {
+    const needsGesture = await page.evaluate(() => {
+      const player = window.player;
+      if (player?.state?.phase === 'paused') player.command('play');
+      return !!player && !player.activated && !player.activating;
+    });
+    if (needsGesture) {
+      if (await allow.isVisible()) await allow.click().catch(() => {});
+      else if (await overlaid.isVisible()) await overlaid.click().catch(() => {});
+    }
+    return page.evaluate(() => {
+      const element = document.querySelector('video');
+      return window.player?.state?.phase === 'playing' && !element.paused && element.currentTime > 0;
+    });
+  };
   try {
     await expect.poll(playing, { timeout: 30_000 }).toBe(true);
   } catch (error) {
