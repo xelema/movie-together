@@ -20,6 +20,19 @@ Movie Night propose une fonctionnalité optionnelle de caméra en face-à-face, 
      - L'encoche s'estompe pendant la lecture du film lorsque les contrôles Plyr se masquent.
      - Parfaite compatibilité plein écran (`#screen:fullscreen`) avec cadrage `object-fit: cover` sans aucune bande noire de letterboxing.
 
+Sur Android, une invite de permission ne doit jamais s'ouvrir pendant que la
+page est en plein écran : Chrome en sort alors de lui-même et laisse le
+document dans un état où `requestFullscreen()` ne se résout plus jamais —
+aucune erreur, aucune entrée, seul un rechargement en sort (régression Chromium
+496907116, Android). `public/media-permission.js` sort donc du plein écran
+lui-même — dans le geste, et jusqu'à l'événement `fullscreenchange` qui prouve
+que le navigateur l'a soldé — avant de demander l'appareil ; la rentrée est
+retentée juste après la réponse sans jamais être attendue, et se raconte dans
+la télémétrie de la vignette (`permission-exit`, `permission-return`,
+`permission-return-denied`, `permission-return-pending`). Une permission déjà
+accordée n'ouvre aucune invite : rien n'est soldé et la caméra s'active en
+plein écran.
+
 ## Règle de capacité : 2 participants maximum
 
 Pour garantir une expérience optimale et sans surcharge réseau :
