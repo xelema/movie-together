@@ -3,6 +3,7 @@
 // contexte audio né hors appui. La permission n'est jamais demandée à
 // l'entrée de la séance. États intermédiaires et erreurs restent locaux.
 import { language } from './labels.js';
+import { getUserMedia } from './media-permission.js';
 
 const LISTEN_MS = 20_000, PROCESS_GRACE_MS = 15_000, RESULT_MS = 8_000;
 // Chaque état porte un nom annoncé : le bouton reste le seul contrôle et les
@@ -120,8 +121,12 @@ export function attachVoice({ mic, local, supertitle, player, t, label, onEvent 
     const stale = () => seq !== armSeq;
     try {
       audioContext ??= new AudioContext();
-      const granted = stream ?? await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+      // La demande passe par le module : une invite de permission ne doit jamais
+      // s'ouvrir pendant que la page est en plein écran, la rentrée se raconte
+      // dans la télémétrie de la voix (recovery : permission-*).
+      const granted = stream ?? await getUserMedia('microphone', {
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } },
+      (reason, detail) => emit({ recovery: reason, detail: String(detail ?? '').slice(0, 60) }));
       // Une permission résolue après une demande plus récente produirait un flux
       // orphelin encore actif : il est arrêté plutôt qu'adopté.
       if (stale()) {

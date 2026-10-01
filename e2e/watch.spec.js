@@ -677,6 +677,60 @@ test('the picture layout holds across viewports and fullscreen', async () => {
   }
 });
 
+test('a permission prompt never opens while the page is fullscreen', async () => {
+  test.skip(!joined, 'the séance setup pass did not complete');
+  test.setTimeout(90_000);
+  try {
+    await ensurePlaying();
+    // L'entrée passe par le contrôle lui-même, le chemin de l'appui réel.
+    if (await host.evaluate(() => document.fullscreenElement?.id) !== 'screen') {
+      await clickControl(host, '[data-plyr=fullscreen]', () => host.evaluate(() => document.fullscreenElement?.id === 'screen'));
+    }
+    await expect.poll(() => host.evaluate(() => document.fullscreenElement?.id), { timeout: 5000 }).toBe('screen');
+    await expect.poll(() => host.evaluate(() => window.fullscreenControl?.active())).toBe(true);
+    // La demande d'appareil passe par le module : la caméra est remplacée par un
+    // espion qui retient l'état du plein écran au moment de l'appel, et la
+    // permission est ramenée à « à demander » pour que la sortie ait bien lieu.
+    const probe = await host.evaluate(async () => {
+      const seen = [], saved = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
+      const realQuery = navigator.permissions.query;
+      // La régression est propre à Android : la page se donne l'agent d'un
+      // téléphone Chromium pour que le module emprunte le chemin qu'il protège.
+      const android = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36';
+      Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => android });
+      navigator.permissions.query = params => (params?.name === 'camera'
+        ? Promise.resolve({ state: 'prompt' }) : realQuery.call(navigator.permissions, params));
+      // Le harnais remplace navigator.mediaDevices : l'interception se pose sur
+      // navigator, jamais sur l'instance, et se retire ensuite.
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, get: () => ({
+        getUserMedia: async () => {
+          seen.push(document.fullscreenElement?.id ?? null);
+          throw Object.assign(new Error('denied'), { name: 'NotAllowedError' });
+        } }) });
+      let denied = null;
+      try {
+        const { getUserMedia } = await import('/media-permission.js');
+        try { await getUserMedia('camera', { video: true }, () => {}); } catch (error) { denied = error.name; }
+      } finally {
+        if (saved) Object.defineProperty(navigator, 'mediaDevices', saved);
+        else delete navigator.mediaDevices;
+        delete navigator.userAgent;
+        delete navigator.permissions.query;
+      }
+      return { seen, denied };
+    });
+    // L'invite aurait suivi la demande : elle ne doit donc jamais recevoir la
+    // page en plein écran — c'est la sortie du module qui le garantit.
+    expect(probe).toEqual({ seen: [null], denied: 'NotAllowedError' });
+  } catch (error) {
+    await reportFailure(error);
+    throw error;
+  } finally {
+    // Rendre la page aux passes suivantes : quitter tout plein écran resté ouvert.
+    await host.evaluate(() => (document.fullscreenElement ? document.exitFullscreen() : undefined)).catch(() => {});
+  }
+});
+
 test('the voice mic follows the player chrome across hover and focus', async () => {
   test.skip(!joined, 'the séance setup pass did not complete');
   test.setTimeout(120_000);

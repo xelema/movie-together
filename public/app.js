@@ -5,6 +5,7 @@ import { trackName, defaultTrackNames, sourceTitle, trackLayout, languageName } 
 import { SUBTITLE_EXT, SUBTITLE_ACCEPT, IMAGE_SUBTITLE_CODECS } from './subtitle-formats.js';
 import { attachVoice } from './voice.js';
 import { attachWebcam } from './webcam.js';
+import { attachFullscreen } from './fullscreen.js';
 
 const $ = id => document.getElementById(id);
 const LANGUAGE_OPTIONS = { fr: 'Français', ko: '한국어', vi: 'Tiếng Việt' };
@@ -34,6 +35,12 @@ const settingsButton = document.createElement('button');
 settingsButton.id = 'open-settings'; settingsButton.type = 'button'; settingsButton.className = 'plyr__control plyr__controls__item';
 settingsButton.textContent = '⚙'; settingsButton.setAttribute('aria-controls', 'player-settings'); settingsButton.setAttribute('aria-expanded', 'false');
 playbackUI.elements.controls.insertBefore(settingsButton, playbackUI.elements.buttons.fullscreen);
+// Le contrôle plein écran décide depuis l'élément peint plutôt que l'API :
+// Chrome pour Android quitte le plein écran derrière le dos de la page quand
+// une invite de permission s'ouvre, et le document garde alors un élément
+// plein écran que le navigateur a déjà lâché.
+const fullscreenControl = window.fullscreenControl = attachFullscreen({ screen: $('screen'), player: playbackUI,
+  onEvent: (reason, detail) => act('fullscreen', fullscreenControl.active(), { recovery: reason, detail: String(detail ?? '') }) });
 function showSettings(open, focus = false) {
   const wasOpen = !$('player-settings').hidden;
   $('player-settings').hidden = !open; settingsButton.setAttribute('aria-expanded', String(open));
@@ -47,7 +54,7 @@ settingsButton.addEventListener('click', () => showSettings($('player-settings')
 $('close-settings').addEventListener('click', event => showSettings(false, event.detail === 0));
 document.addEventListener('pointerdown', event => { if (!$('player-settings').contains(event.target) && !settingsButton.contains(event.target)) showSettings(false); });
 $('screen').addEventListener('keydown', event => { if (event.key === 'Escape' && !$('player-settings').hidden) { event.preventDefault(); event.stopPropagation(); showSettings(false, true); } });
-playbackUI.on('enterfullscreen exitfullscreen', () => { act('fullscreen', playbackUI.fullscreen.active); showSettings(false); });
+playbackUI.on('enterfullscreen exitfullscreen', () => { act('fullscreen', fullscreenControl.active()); showSettings(false); });
 let lastMuted, lastVol;
 playbackUI.on('volumechange', () => {
   const muted = playbackUI.muted, vol = playbackUI.volume;
@@ -174,7 +181,7 @@ $('screen').addEventListener('keydown', event => {
     player.changeTrack('subtitles', Number(next));
   }
   else if (key === 'm') playbackUI.muted = !playbackUI.muted;
-  else { act('fullscreen', !playbackUI.fullscreen.active); playbackUI.fullscreen.toggle(); }
+  else fullscreenControl.toggle().then(() => act('fullscreen', fullscreenControl.active()));
   clickHidden = false;
   playbackUI.toggleControls(true);
 });
@@ -269,7 +276,7 @@ new MutationObserver(records => {
 }).observe(document.querySelector('main'), { attributes: true, subtree: true, attributeFilter: ['hidden'] });
 // Journal des intentions utilisateur : la télémétrie enrichit chaque action
 // de la position et de la phase courantes (pos/phase/epoch).
-const act = (action, value) => { try { telemetry?.event('action', { act: action, value }); } catch { } };
+const act = (action, value, fields) => { try { telemetry?.event('action', { act: action, value, ...fields }); } catch { } };
 async function api(url, { body, method = 'GET', ...options } = {}) {
   const started = performance.now();
   let status;
