@@ -180,14 +180,19 @@ Aucun levier n'existe côté application : la page ne contrôle pas la
 présentation plein écran du navigateur. La mesure venant de l'écran virtuel de
 la session distante, elle reste à confirmer sur un écran physique.
 
-Sur Android, Chrome peut quitter le plein écran de lui-même quand une invite
-de permission (caméra, micro) s'ouvre, sans passer par l'API de la page. Le
-document peut alors continuer à nommer `#screen` comme élément plein écran
-alors que l'élément est revenu dans la page, et la commande semble morte :
-la sortie est refusée et une nouvelle demande pour cet élément est ignorée.
-Le lecteur décide donc depuis l'élément peint — la boîte qui recouvre la
-fenêtre ou non — solde cet état avant de rentrer, et ne rentre jamais sans
-geste : c'est l'appui qui suit l'invite qui ramène le plein écran.
+Sur Android, une invite de permission (caméra, micro) s'ouvre en plein écran au
+prix du plein écran lui-même : Chrome en sort de lui-même, sans passer par
+l'API de la page, et le document continue de nommer `#screen` comme élément
+plein écran alors que le navigateur l'a lâché. Pire, toute demande d'entrée qui
+suit reste sans réponse — la promesse ne se résout jamais, sans erreur
+(régression Chromium 496907116, Android). Le lecteur décide donc depuis une
+transition observée — un viewport qui rétrécit sans `fullscreenchange` vaut
+sortie —, ne retient jamais le bouton derrière une promesse qui ne se résout
+pas (`enter-pending` au journal, l'appui suivant retente) et ne rentre jamais
+sans geste : c'est l'appui qui suit l'invite qui ramène le plein écran. La
+source du mal est traitée en amont, dans `public/media-permission.js` : une
+invite ne s'ouvre jamais pendant que la page est en plein écran (voir
+`docs/webcam.md`).
 
 ## Son et préparation
 

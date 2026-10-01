@@ -3,15 +3,26 @@ import assert from 'node:assert/strict';
 import { attachFullscreen } from '../public/fullscreen.js';
 
 // Les globaux navigateurs que lit fullscreen.js sont posés puis restitués :
-// document (fullscreenElement, exitFullscreen, écouteurs), window, les
-// dimensions de la fenêtre. Les éléments sont de simples boîtes factices.
-const rig = (t, { paintedRect, fullscreenElement = null, exitFullscreen, requestFullscreen } = {}) => {
-  const names = ['document', 'window', 'innerWidth', 'innerHeight'];
+// document (fullscreenElement, exitFullscreen, écouteurs), window, l'écran
+// physique, et les dimensions de la fenêtre. Les éléments sont des boîtes
+// factices. `grantedAt` se pose par l'événement fullscreenchange, comme dans le
+// navigateur : les cas de sortie subie se jouent donc en déplaçant la fenêtre
+// après l'accord.
+const FULL = { left: 0, top: 0, width: 900, height: 620 };
+const WINDOWED = { left: 8, top: 8, width: 884, height: 150 };
+
+const rig = (t, { paintedRect = WINDOWED, fullscreenElement = null, display = { width: 900, height: 620 },
+  exitFullscreen, requestFullscreen } = {}) => {
+  const names = ['document', 'window', 'screen', 'innerWidth', 'innerHeight'];
   const saved = names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
   const calls = [], events = [], listeners = {};
   const classes = new Set();
   const screenEl = {
-    getBoundingClientRect: () => paintedRect ?? { left: 0, top: 0, width: 900, height: 620 },
+    id: 'screen',
+    // Un élément plein écran recouvre la fenêtre courante : la boîte suit donc
+    // le viewport, d'où les mesures de sortie subie qui la lisent rétrécie.
+    getBoundingClientRect: () => (paintedRect === FULL
+      ? { left: 0, top: 0, width: innerWidth, height: innerHeight } : paintedRect),
     requestFullscreen: requestFullscreen ?? (() => { calls.push('request'); return Promise.resolve(); }),
   };
   const doc = {
@@ -24,21 +35,23 @@ const rig = (t, { paintedRect, fullscreenElement = null, exitFullscreen, request
     addEventListener: (name, fn) => (listeners[`w:${name}`] ??= []).push(fn),
     removeEventListener: (name, fn) => { listeners[`w:${name}`] = (listeners[`w:${name}`] ?? []).filter(other => other !== fn); },
   };
-  const controls = {
+  const container = {
     listeners: {},
-    addEventListener: (name, fn) => (controls.listeners[name] ??= []).push(fn),
-    removeEventListener: (name, fn) => { controls.listeners[name] = (controls.listeners[name] ?? []).filter(other => other !== fn); },
+    classList: { contains: name => classes.has(name) },
+    addEventListener: (name, fn) => (container.listeners[name] ??= []).push(fn),
+    removeEventListener: (name, fn) => { container.listeners[name] = (container.listeners[name] ?? []).filter(other => other !== fn); },
   };
   const player = {
     config: { classNames: { fullscreen: { fallback: 'plyr--fullscreen-fallback' } } },
-    elements: { container: { classList: { contains: name => classes.has(name) } }, controls },
+    elements: { container },
     fullscreen: { toggleFallback: value => {
       calls.push(`fallback:${value}`);
       classes[value ? 'add' : 'delete']('plyr--fullscreen-fallback');
     } },
   };
   const define = (name, value) => Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
-  define('document', doc); define('window', win); define('innerWidth', 900); define('innerHeight', 620);
+  define('document', doc); define('window', win); define('screen', display);
+  define('innerWidth', 900); define('innerHeight', 620);
   t.after(() => {
     for (const [name, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -46,26 +59,34 @@ const rig = (t, { paintedRect, fullscreenElement = null, exitFullscreen, request
     }
   });
   const fullscreen = attachFullscreen({ screen: screenEl, player, onEvent: (reason, detail) => events.push([reason, detail]) });
-  return { fullscreen, calls, events, listeners, classes, doc, screenEl, controls };
+  // Entrer en plein écran comme le navigateur : l'API, l'événement, puis la
+  // fenêtre accordée — c'est l'ordre dont dépend le repère du module.
+  const grant = ({ w = 900, h = 620 } = {}) => {
+    define('innerWidth', w); define('innerHeight', h);
+    doc.fullscreenElement = screenEl;
+    for (const fn of listeners.fullscreenchange ?? []) fn();
+  };
+  const move = (w, h) => { define('innerWidth', w); define('innerHeight', h); };
+  return { fullscreen, calls, events, listeners, classes, doc, screenEl, container, grant, move, define };
 };
 
 test('hors plein écran, l\'appui demande le plein écran sans jamais sortir', async t => {
-  const { fullscreen, calls } = rig(t, { paintedRect: { left: 8, top: 8, width: 884, height: 150 } });
+  const { fullscreen, calls } = rig(t);
   assert.equal(fullscreen.active(), false);
   await fullscreen.toggle();
   assert.deepEqual(calls, ['request']);
 });
 
-test('en plein écran peint, l\'appui sort sans jamais redemander', async t => {
-  const { fullscreen, calls, doc, screenEl } = rig(t, {});
-  doc.fullscreenElement = screenEl;
+test('en plein écran, l\'appui sort sans jamais redemander', async t => {
+  const { fullscreen, calls, grant } = rig(t, { paintedRect: FULL });
+  grant();
   assert.equal(fullscreen.active(), true);
   await fullscreen.toggle();
   assert.deepEqual(calls, ['exit']);
 });
 
 test('état menteur : la sortie est soldée puis la rentrée demandée, dans l\'ordre', async t => {
-  const { fullscreen, calls, doc, screenEl } = rig(t, { paintedRect: { left: 8, top: 8, width: 884, height: 150 } });
+  const { fullscreen, calls, doc, screenEl } = rig(t, { paintedRect: WINDOWED });
   doc.fullscreenElement = screenEl;
   let release;
   doc.exitFullscreen = () => { calls.push('exit'); return new Promise(resolve => { release = resolve; }); };
@@ -79,7 +100,7 @@ test('état menteur : la sortie est soldée puis la rentrée demandée, dans l\'
 });
 
 test('état menteur : une sortie refusée n\'empêche pas la rentrée', async t => {
-  const { fullscreen, calls, events, doc, screenEl } = rig(t, { paintedRect: { left: 8, top: 8, width: 884, height: 150 } });
+  const { fullscreen, calls, events, doc, screenEl } = rig(t, { paintedRect: WINDOWED });
   doc.fullscreenElement = screenEl;
   doc.exitFullscreen = () => { calls.push('exit'); return Promise.reject(new TypeError('Document not active')); };
   await fullscreen.toggle();
@@ -87,26 +108,75 @@ test('état menteur : une sortie refusée n\'empêche pas la rentrée', async t 
   assert.deepEqual(events, [['stale', 'TypeError']]);
 });
 
-test('reconcile solde un état menteur et ne touche pas un état cohérent', async t => {
-  const { fullscreen, calls, doc, screenEl } = rig(t, { paintedRect: { left: 8, top: 8, width: 884, height: 150 } });
-  doc.fullscreenElement = screenEl;
-  fullscreen.reconcile();
-  assert.deepEqual(calls, ['exit']);
-  // Peint et nommé : rien à solder.
+test('sortie subie par le navigateur : la fenêtre rétrécie vaut sortie, l\'appui rentre', async t => {
+  // Téléphone en paysage : accordé en 853x394, puis la barre du navigateur
+  // revient et la fenêtre tombe à 291 — l'API nomme encore l'élément, le CSS
+  // :fullscreen le colle à cette fenêtre rétrécie, seul le repère le dit.
+  const { fullscreen, calls, doc, grant, move, define } = rig(t, { paintedRect: FULL, display: { width: 853, height: 394 } });
+  define('innerWidth', 853); define('innerHeight', 394);
   doc.fullscreenElement = null;
-  screenEl.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 620 });
-  doc.fullscreenElement = screenEl;
-  fullscreen.reconcile();
-  assert.deepEqual(calls, ['exit']);
+  grant({ w: 853, h: 394 });
+  assert.equal(fullscreen.active(), true);
+  move(853, 291);
+  assert.equal(fullscreen.active(), false);
+  // La rentrée solde d'abord l'élément menteur, dans le même geste.
+  doc.exitFullscreen = () => { calls.push('exit'); return Promise.reject(new TypeError('Document not active')); };
+  await fullscreen.toggle();
+  assert.deepEqual(calls, ['exit', 'request']);
 });
 
-test('le clic n\'est avalé que sur le contrôle plein écran, depuis la barre', t => {
-  const { fullscreen, calls, listeners, controls } = rig(t, { paintedRect: { left: 8, top: 8, width: 884, height: 150 } });
-  assert.equal(controls.listeners.click.length, 1);
-  // Jamais sur document : l'appui que la scène dépense sur la surcouche
-  // (commencé sur l'image) doit passer avant cette interception.
-  assert.equal(listeners.click, undefined);
-  const click = controls.listeners.click[0];
+test('la rotation en plein écran reste du plein écran', async t => {
+  const { fullscreen, doc, grant, move, define } = rig(t, { paintedRect: FULL, display: { width: 853, height: 394 } });
+  define('innerWidth', 853); define('innerHeight', 394);
+  grant({ w: 853, h: 394 });
+  move(394, 853);
+  define('screen', { width: 394, height: 853 });
+  assert.equal(fullscreen.active(), true);
+});
+
+test('une fenêtre figée plus petite que l\'écran ne vaut pas sortie (environnement sans gestionnaire de fenêtres)', async t => {
+  // La CI lance le navigateur sous xvfb : le viewport n'a jamais la taille de
+  // l'écran X. Aucun rétrécissement n'a lieu, le repère tient donc encore.
+  const { fullscreen, doc, grant } = rig(t, { paintedRect: FULL, display: { width: 1280, height: 1024 } });
+  grant({ w: 900, h: 620 });
+  assert.equal(fullscreen.active(), true);
+  assert.equal(doc.fullscreenElement.id, 'screen');
+});
+
+test('une demande qui ne se résout jamais ne retient pas le bouton', async t => {
+  const { fullscreen, calls, events } = rig(t, { requestFullscreen: () => { calls.push('request'); return new Promise(() => {}); } });
+  await fullscreen.toggle();
+  assert.deepEqual(calls, ['request']);
+  // L'appui a rendu la main : le journal dit pourquoi, et l'appui suivant retente.
+  assert.deepEqual(events, [['enter-pending', '1500']]);
+  await fullscreen.toggle();
+  assert.deepEqual(calls, ['request', 'request']);
+});
+
+test('reconcile journalise la sortie subie et se tait quand l\'état est cohérent', async t => {
+  const { fullscreen, events, doc, grant, move, define, listeners } = rig(t, { paintedRect: FULL, display: { width: 853, height: 394 } });
+  define('innerWidth', 853); define('innerHeight', 394);
+  grant({ w: 853, h: 394 });
+  fullscreen.reconcile();
+  assert.deepEqual(events, []);
+  move(853, 291);
+  for (const fn of listeners['w:resize'] ?? []) fn();
+  assert.deepEqual(events, [['dropped', '853x291']]);
+  // Hors plein écran nommé, plus rien à signaler.
+  doc.fullscreenElement = null;
+  move(853, 394);
+  fullscreen.reconcile();
+  assert.equal(events.length, 1);
+});
+
+test('le clic est intercepté sur le conteneur, avant les écouteurs de la scène', t => {
+  const { fullscreen, calls, listeners, container } = rig(t, { paintedRect: WINDOWED });
+  assert.equal(container.listeners.click.length, 1);
+  // Posé avant les écouteurs de la scène, sur le même nœud et en capture :
+  // l'appui ne peut plus être avalé avant d'atteindre le contrôle.
+  const order = [];
+  container.addEventListener('click', () => order.push('scene'), true);
+  const click = container.listeners.click[0];
   const foreign = { target: { closest: () => null }, prevented: false, stopped: false,
     preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } };
   click(foreign);
@@ -120,19 +190,19 @@ test('le clic n\'est avalé que sur le contrôle plein écran, depuis la barre',
   assert.equal(onButton.prevented, true);
   assert.equal(onButton.stopped, true);
   assert.deepEqual(calls, ['request']);
+  assert.equal(listeners.click, undefined);
   fullscreen.dispose();
-  assert.equal(controls.listeners.click.length, 0);
+  assert.equal(container.listeners.click.length, 1, 'seul l\'écouteur de scène reste');
 });
 
 test('la surcouche CSS de Plyr sort et entre sans toucher l\'API', async t => {
-  const { fullscreen, calls, classes, doc } = rig(t, { paintedRect: { left: 8, top: 8, width: 884, height: 150 } });
+  const { fullscreen, calls, classes } = rig(t, { paintedRect: WINDOWED });
   classes.add('plyr--fullscreen-fallback');
   assert.equal(fullscreen.active(), true);
   await fullscreen.toggle();
   assert.deepEqual(calls, ['fallback:false']);
   // Sans requestFullscreen, l'entrée prend la même surcouche.
-  doc.fullscreenElement = null;
-  const plain = rig(t, { paintedRect: { left: 8, top: 8, width: 884, height: 150 }, requestFullscreen: undefined });
+  const plain = rig(t, { requestFullscreen: undefined });
   delete plain.screenEl.requestFullscreen;
   await plain.fullscreen.toggle();
   assert.deepEqual(plain.calls, ['fallback:true']);
