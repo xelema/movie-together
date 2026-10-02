@@ -33,6 +33,35 @@ la télémétrie de la vignette (`permission-exit`, `permission-return`,
 accordée n'ouvre aucune invite : rien n'est soldé et la caméra s'active en
 plein écran.
 
+## Reprise d'une négociation perdue
+
+Une négociation peut se perdre sans erreur : le socket d'un participant est
+remplacé par une reconnexion (le serveur le voit encore vivant jusqu'au passage
+de la purge), une offre est perdue en route, ou les deux participants offrent
+dans la même seconde. Sans reprise, l'arrivant restait sur « En attente de la
+caméra… » jusqu'au rechargement de la page.
+
+Quatre règles ferment ce trou :
+
+- **Un signal adressé ne se perd plus en silence.** Un `memberId` dont le socket
+  a été remplacé reste adressable : la salle retient la session de chaque membre
+  (`memberSessions`) et livre le signal au socket vivant de cette session ; le
+  journal nomme le cas (`signal-rerouted`).
+- **La reprise se demande sur l'état, jamais sur un délai seul.** Tant qu'un pair
+  annonce sa caméra (`status`, `active: true`) sans qu'une image soit arrivée, la
+  vignette envoie `{ action: 'renegotiate' }`, relayé aux autres participants et
+  borné à une demande par seconde et par socket. C'est le camp qui détient la
+  caméra qui refait son offre ; l'autre ne peut que la demander. La garde est
+  bornée à trois tentatives espacées de 6 s et s'éteint à la première image reçue
+  ou sur `peer-left` (`recovery: renegotiate` puis `renegotiate-exhausted` dans
+  la télémétrie de la vignette).
+- **Le pair poli recule avant d'accepter une offre en collision**
+  (`setLocalDescription({ type: 'rollback' })`) : sans ce retour en arrière,
+  l'offre est refusée et les deux camps restent en attente.
+- **`peer-left` ne part qu'à la dernière socket d'une session.** Un socket
+  remplacé qui meurt ne fait pas raccrocher le pair resté en face : il est
+  toujours là, derrière son socket neuf.
+
 ## Règle de capacité : 2 participants maximum
 
 Pour garantir une expérience optimale et sans surcharge réseau :
