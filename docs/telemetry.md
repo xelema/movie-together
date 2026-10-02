@@ -225,7 +225,10 @@ entière reste sans journal.
   (surcouche CSS). Les événements `webcam` et `voice` portent le même `recovery`
   pour le flux de permission : `permission-exit` (plein écran quitté avant la
   demande), `permission-return` / `permission-return-denied` /
-  `permission-return-pending` (rentrée tentée après la réponse).
+  `permission-return-pending` (rentrée tentée après la réponse). La vignette y
+  ajoute la reprise de négociation : `renegotiate` (avec `attempts` et
+  `hasStream`) quand un pair annonce sa caméra sans que l'image arrive, puis
+  `renegotiate-exhausted` quand la garde a épuisé ses tentatives.
 
 ## Événements du serveur (`<code>-server.ndjson`)
 
@@ -255,7 +258,9 @@ Une ligne par transition, jamais par battement (`tickMs` = 200 ms) :
 - `voice` — `{kind, utterance, seq, speaker, bytes, ms, error, retryAfter,
   calls}` sans aucun contenu de texte.
 - `webcam` — `{kind, from, to, active}` (`status`, `signal`, `peer-joined`,
-  `peer-left`).
+  `peer-left`), plus `renegotiate` (`{from, peers}`), `signal-rerouted` (`{from,
+  to, member}` : un signal adressé à un memberId remplacé livré au socket vivant
+  de sa session) et `delivered` sur `signal` (nombre de sockets servis).
 - `limit` — fermeture par garde-fou : `{reason}` = `messages`, `frames`,
   `session` ou `backpressure`.
 - `error` — commande invalide (`{error}`) ou erreur HTTP 5xx du serveur.

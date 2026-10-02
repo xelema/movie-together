@@ -701,4 +701,28 @@ test('webcam is an opt-in capability and its signaling relays between two partic
   const revived = rooms.find(room => room.code === 'probe-cam');
   assert.ok(revived);
   assert.equal((await (await second.request(`/api/rooms/${revived.id}`, { cookie: second.cookie })).json()).webcam?.enabled, true);
+
+  // Un socket remplacé par la reconnexion de la même session ne fait plus
+  // raccrocher son pair, et un signal adressé à son memberId mort arrive au
+  // socket vivant de cette session : sans cela la réponse de l'arrivant se perd
+  // et sa vignette reste sur « En attente de la caméra… » jusqu'au rechargement.
+  const reroute = await (await first.request('/api/rooms', { cookie: first.cookie, method: 'POST',
+    body: { movieId, code: 'cam-reroute', webcam: true } })).json();
+  const cookieOwner = await join('cam-reroute');
+  const replaced = await connect(reroute, cookieOwner);
+  const live = await connect(reroute, cookieOwner);
+  const watcher = await connect(reroute, await join('cam-reroute'));
+  replaced.socket.send(JSON.stringify({ type: 'webcam', action: 'status', active: true }));
+  const declared = await until(watcher.frames, m => m.type === 'webcam' && m.action === 'status' && m.from === replaced.id);
+  assert.equal(declared.active, true);
+  // Le socket remplacé meurt (purge, réseau) : la session tient toujours debout
+  // derrière son socket neuf, donc le pair ne raccroche rien.
+  replaced.socket.terminate();
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(watcher.frames.some(m => m.type === 'webcam' && m.action === 'peer-left' && m.from === replaced.id), false);
+  // La réponse adressée au memberId mort est livrée au socket vivant.
+  watcher.socket.send(JSON.stringify({ type: 'webcam', action: 'signal', to: replaced.id,
+    signal: { candidate: { candidate: 'rerouted' } } }));
+  const rerouted = await until(live.frames, m => m.type === 'webcam' && m.action === 'signal' && m.signal?.candidate?.candidate === 'rerouted');
+  assert.equal(rerouted.from, watcher.id);
 });

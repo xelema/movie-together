@@ -323,3 +323,95 @@ test('a late-joining peer triggers a fresh offer and a status re-announce', asyn
 
   controller.dispose();
 });
+
+test('a peer announced in camera but never visible asks for a bounded renegotiation', async t => {
+  const savedNav = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const savedRTC = Object.getOwnPropertyDescriptor(globalThis, 'RTCPeerConnection');
+  FakeRTCPeerConnection.instances = [];
+
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true, writable: true,
+    value: { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [] }) } },
+  });
+  globalThis.RTCPeerConnection = FakeRTCPeerConnection;
+
+  t.after(() => {
+    if (savedNav) Object.defineProperty(globalThis, 'navigator', savedNav);
+    else delete globalThis.navigator;
+    if (savedRTC) Object.defineProperty(globalThis, 'RTCPeerConnection', savedRTC);
+    else delete globalThis.RTCPeerConnection;
+  });
+
+  const toggle = fakeElement('button', 'webcam-toggle');
+  const { overlay, placeholder } = createMockOverlay();
+  const sent = [];
+  const player = { memberId: 'mem-1234', send: msg => sent.push(msg) };
+  // Bornes injectées : la garde se vérifie en quelques dizaines de ms.
+  const controller = attachWebcam({ toggle, overlay, player, t: fr => fr, label: l => l,
+    timing: { retryMs: 20, retries: 2 } });
+
+  // Le pair déclare sa caméra : la vignette attend son image — c'est très
+  // exactement le « chargement de la caméra » qui ne se résolvait jamais.
+  await controller.message({ action: 'status', from: 'peer-77', name: 'Bob', active: true });
+  assert.equal(placeholder.textContent, 'En attente de la caméra…');
+
+  // Sans caméra locale, la garde redemande une négociation au pair, deux fois
+  // puis s'arrête : jamais de boucle, même si le pair reste muet.
+  await new Promise(resolve => setTimeout(resolve, 120));
+  assert.equal(sent.filter(m => m.action === 'renegotiate').length, 2);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(sent.filter(m => m.action === 'renegotiate').length, 2);
+
+  // L'image finit par arriver : la garde se tait définitivement.
+  await controller.message({ action: 'signal', from: 'peer-77', signal: { description: { type: 'offer', sdp: 'remote' } } });
+  const pc = FakeRTCPeerConnection.instances[0];
+  assert.ok(pc, 'la signalisation du pair ouvre une connexion');
+  pc.ontrack({ streams: [{ getTracks: () => [{ kind: 'video' }] }] });
+  assert.notEqual(placeholder.textContent, 'En attente de la caméra…');
+  await new Promise(resolve => setTimeout(resolve, 120));
+  assert.equal(sent.filter(m => m.action === 'renegotiate').length, 2);
+
+  controller.dispose();
+});
+
+test('a renegotiation request from the peer makes the camera side offer again', async t => {
+  const savedNav = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const savedRTC = Object.getOwnPropertyDescriptor(globalThis, 'RTCPeerConnection');
+  FakeRTCPeerConnection.instances = [];
+
+  const track = { kind: 'video', stopped: false, stop() { this.stopped = true; } };
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true, writable: true,
+    value: { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [track] }) } },
+  });
+  globalThis.RTCPeerConnection = FakeRTCPeerConnection;
+
+  t.after(() => {
+    if (savedNav) Object.defineProperty(globalThis, 'navigator', savedNav);
+    else delete globalThis.navigator;
+    if (savedRTC) Object.defineProperty(globalThis, 'RTCPeerConnection', savedRTC);
+    else delete globalThis.RTCPeerConnection;
+  });
+
+  const toggle = fakeElement('button', 'webcam-toggle');
+  const { overlay } = createMockOverlay();
+  const sent = [];
+  const player = { memberId: 'mem-1234', send: msg => sent.push(msg) };
+  const controller = attachWebcam({ toggle, overlay, player, t: fr => fr, label: l => l });
+
+  await toggle.click();
+  const first = FakeRTCPeerConnection.instances[0];
+  assert.ok(first);
+  sent.length = 0;
+
+  // Le pair réclame une négociation : la session est refaite et l'offre repart,
+  // adressée au nouveau memberId du pair.
+  await controller.message({ action: 'renegotiate', from: 'peer-88', name: 'Bob' });
+  const second = FakeRTCPeerConnection.instances[1];
+  assert.ok(second, 'une nouvelle connexion est construite');
+  assert.equal(first.connectionState, 'closed');
+  assert.deepEqual(second.tracks, [track]);
+  assert.ok(sent.some(m => m.action === 'signal' && m.to === 'peer-88' && m.signal?.description));
+
+  controller.dispose();
+});
