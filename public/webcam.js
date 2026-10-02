@@ -14,7 +14,7 @@ const STATE_NAMES = {
 };
 const MIN_W = 140, MIN_H = 105, MAX_W = 480, MAX_H = 360;
 
-export function attachWebcam({ toggle, overlay, player, t, label, onEvent }) {
+export function attachWebcam({ toggle, overlay, player, t, label, onEvent, timing }) {
   const stage = overlay.parentElement;
   const body = overlay.querySelector('.webcam-body') || overlay;
   let remote = overlay.querySelector('#webcam-remote-video');
@@ -54,6 +54,9 @@ export function attachWebcam({ toggle, overlay, player, t, label, onEvent }) {
   let makingOffer = false, ignoreOffer = false, dismissed = false, peerActive = false;
   let note = '', noteTimer = null, savedHeight = '', announcedFor = null;
   let pendingCandidates = [];
+  // Bornes de la garde de négociation : la reprise est bornée, jamais une boucle.
+  const retryMs = timing?.retryMs ?? 6000, maxRetries = timing?.retries ?? 3;
+  let retryTimer = null, attempts = 0;
   // Télémétrie : compteurs de signalisation et transitions, jamais le contenu
   // des SDP ou des candidats ICE — types et états uniquement.
   let tapAt = 0;
@@ -161,6 +164,7 @@ export function attachWebcam({ toggle, overlay, player, t, label, onEvent }) {
       const v = ensureRemote();
       v.srcObject = event.streams[0];
       dismissed = false;
+      stopWatch();
       render();
     };
     pc.onconnectionstatechange = () => {
@@ -175,6 +179,7 @@ export function attachWebcam({ toggle, overlay, player, t, label, onEvent }) {
   };
   const resetRemote = reconnect => {
     peerActive = false; peerId = null;
+    stopWatch();
     if (peerName) peerName.textContent = '';
     if (remote) {
       remote.srcObject = null;
@@ -193,6 +198,48 @@ export function attachWebcam({ toggle, overlay, player, t, label, onEvent }) {
     }
     render();
   };
+  // Reprise de négociation : la session est raccrochée puis refaite proprement,
+  // avec les pistes locales. Elle sert quand un pair arrive, quand un pair la
+  // réclame, et quand l'image n'arrive pas — jamais sur un simple délai seul.
+  const renegotiate = async () => {
+    ignoreOffer = false;
+    pendingCandidates = [];
+    try { pc?.close(); } catch {}
+    pc = null;
+    if (!stream) return false;
+    const conn = connect();
+    for (const track of stream.getTracks()) conn.addTrack(track, stream);
+    try {
+      makingOffer = true;
+      await conn.setLocalDescription();
+      sig.negotiations++;
+      send({ action: 'signal', to: peerId ?? undefined, signal: { description: conn.localDescription } });
+      emitSignal();
+    } finally { makingOffer = false; }
+    announce();
+    return true;
+  };
+  // Un pair annoncé en caméra dont l'image n'arrive pas laisse la vignette sur
+  // « En attente de la caméra… » indéfiniment : une offre perdue, une réponse
+  // routée vers un socket remplacé ou une collision de négociation ne se
+  // rattrapent jamais seules. La garde observe l'état — pair actif, aucune
+  // image — et redemande une négociation, un nombre de fois borné, en laissant
+  // la trace de chaque tentative dans la télémétrie.
+  const stopWatch = () => { clearTimeout(retryTimer); retryTimer = null; attempts = 0; };
+  const watchPeer = () => {
+    clearTimeout(retryTimer);
+    attempts = 0;
+    const tick = () => {
+      retryTimer = null;
+      if (disposed || !peerActive || remote?.srcObject) return;
+      if (attempts >= maxRetries) { emit({ recovery: 'renegotiate-exhausted', peers: peerId ? 1 : 0 }); return; }
+      attempts++;
+      emit({ recovery: 'renegotiate', attempts, hasStream: !!stream });
+      if (stream) renegotiate(); else if (peerId) send({ action: 'renegotiate' });
+      retryTimer = setTimeout(tick, retryMs);
+    };
+    retryTimer = setTimeout(tick, retryMs);
+  };
   const message = async event => {
     // Déconnexion de la séance : le distant est parti, on raccroche sans
     // toucher à la caméra locale.
@@ -207,6 +254,13 @@ export function attachWebcam({ toggle, overlay, player, t, label, onEvent }) {
           const collision = signal.description.type === 'offer' && (makingOffer || conn.signalingState !== 'stable');
           ignoreOffer = !polite() && collision;
           if (ignoreOffer) return;
+          // Le poli recule explicitement avant d'accepter l'offre : sans ce
+          // retour en arrière, une offre qui entre en collision avec la sienne
+          // est refusée et les deux pairs restent sur « En attente de la
+          // caméra… » sans jamais se rattraper.
+          if (collision && conn.signalingState !== 'stable') {
+            try { await conn.setLocalDescription({ type: 'rollback' }); } catch { }
+          }
           await conn.setRemoteDescription(signal.description);
           if (signal.description.type === 'offer') {
             await conn.setLocalDescription();
@@ -241,6 +295,9 @@ export function attachWebcam({ toggle, overlay, player, t, label, onEvent }) {
         remote = null;
       }
       dismissed = false;
+      // Le pair déclare sa caméra : l'image est surveillée, et redemandée si
+      // elle ne vient pas. Le silence n'est jamais interprété comme un accord.
+      if (peerActive) watchPeer(); else stopWatch();
       if (peerActive && stream) {
         const conn = connect();
         const senders = conn.getSenders?.() ?? [];
@@ -256,22 +313,15 @@ export function attachWebcam({ toggle, overlay, player, t, label, onEvent }) {
     if (event.action === 'peer-joined') {
       peerId = event.from;
       if (peerName && event.name) peerName.textContent = event.name;
-      if (stream) {
-        ignoreOffer = false;
-        pendingCandidates = [];
-        try { pc?.close(); } catch {}
-        pc = null;
-        const conn = connect();
-        for (const track of stream.getTracks()) conn.addTrack(track, stream);
-        try {
-          makingOffer = true;
-          await conn.setLocalDescription();
-          sig.negotiations++;
-          send({ action: 'signal', to: peerId, signal: { description: conn.localDescription } });
-          emitSignal();
-        } finally { makingOffer = false; }
-        announce();
-      }
+      if (stream) await renegotiate();
+      return;
+    }
+    // Un pair réclame une négociation : on refait l'offre, c'est le seul camp
+    // qui détient peut-être la caméra — l'autre ne peut que la demander.
+    if (event.action === 'renegotiate') {
+      if (event.from) peerId = event.from;
+      if (peerName && event.name) peerName.textContent = event.name;
+      if (stream) await renegotiate();
       return;
     }
     if (event.action === 'peer-left') resetRemote(false);
@@ -440,6 +490,7 @@ export function attachWebcam({ toggle, overlay, player, t, label, onEvent }) {
     dispose() {
       disposed = true;
       clearInterval(rtcTimer);
+      clearTimeout(retryTimer);
       toggle.removeEventListener('click', tap);
       overlay.removeEventListener('pointerdown', beginDrag);
       header?.removeEventListener('pointerdown', beginDrag);

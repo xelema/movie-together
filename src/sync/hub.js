@@ -254,11 +254,24 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
         throw new Error('Message invalide.');
       }
       const data = JSON.stringify({ type: 'webcam', action: 'signal', from: ws.memberId, name: ws.displayName, signal: message.signal });
+      let delivered = 0;
       for (const client of others) {
         if (message.to !== undefined && client.memberId !== message.to) continue;
-        client.send(data);
+        client.send(data); delivered++;
       }
-      record(room, { type: 'webcam', kind: 'signal', from: ws.memberId, to: message.to ?? null });
+      // Le pair visé peut avoir été remplacé par un socket neuf (reconnexion du
+      // même participant) : sa réponse s'adresserait alors à un memberId mort.
+      // La livrer au socket vivant de la même session évite une négociation
+      // perdue d'avance, où l'arrivant attend une caméra qui ne viendra jamais.
+      if (message.to !== undefined && !delivered) {
+        const session = room.memberSessions.get(message.to);
+        const live = session ? [...others].reverse().find(client => client.session === session) : null;
+        if (live) {
+          live.send(data); delivered++;
+          record(room, { type: 'webcam', kind: 'signal-rerouted', from: ws.memberId, to: message.to, member: live.memberId });
+        }
+      }
+      record(room, { type: 'webcam', kind: 'signal', from: ws.memberId, to: message.to ?? null, delivered });
       return;
     }
     if (message.action === 'status') {
@@ -266,6 +279,17 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       const data = JSON.stringify({ type: 'webcam', action: 'status', from: ws.memberId, name: ws.displayName, active: !!message.active });
       for (const client of others) client.send(data);
       record(room, { type: 'webcam', kind: 'status', from: ws.memberId, active: !!message.active });
+      return;
+    }
+    // Un pair qui n'a toujours pas d'image demande une nouvelle négociation : la
+    // demande est bornée par le client, le hub ne fait que la relayer.
+    if (message.action === 'renegotiate') {
+      const now = Date.now();
+      if (now - (ws.renegotiatedAt ?? 0) < 1000) return;
+      ws.renegotiatedAt = now;
+      const data = JSON.stringify({ type: 'webcam', action: 'renegotiate', from: ws.memberId, name: ws.displayName });
+      for (const client of others) client.send(data);
+      record(room, { type: 'webcam', kind: 'renegotiate', from: ws.memberId, peers: others.length });
       return;
     }
     throw new Error('Message inconnu.');
@@ -347,8 +371,10 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
         startDelay: settings.get('startDelay') * 1000 }), clients: new Set(),
       probe: !!probe, logged: new Map(), loggedPhase: null,
       // Every websocket ever accepted: telemetry stays valid for a member even
-      // after disconnect, for the room's whole life.
-      seenMembers: new Set(), reported: new Map() };
+      // after disconnect, for the room's whole life. memberSessions garde la
+      // session de chaque memberId : un signal adressé à un socket mort reste
+      // routable vers le socket vivant de la même session.
+      seenMembers: new Set(), memberSessions: new Map(), reported: new Map() };
     room.languages = Object.freeze([...languages]);
     // Traduction vocale : capacité figée à la création. La disponibilité reflète
     // le service injecté, absent tant qu'aucun fournisseur n'est câblé.
@@ -430,6 +456,7 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       const isVi = room.languages?.includes('vi');
       ws.displayName = session.admin ? (isVi ? 'Hôte / Chủ nhà' : 'Hôte / 호스트') : (isVi ? 'Invité / Khách' : 'Invité / 게스트');
       room.clients.add(ws); room.engine.join(id); room.seenMembers.add(id);
+      room.memberSessions.set(id, session);
       // The client derives its cadence and buffer targets from these thresholds:
       // shipping them keeps the timing contract explicit instead of hardcoded twice.
       const { minBuffer, lowBuffer, reportTimeout, startDelay } = room.engine;
@@ -540,8 +567,10 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
           messages: ws.received.messages, frames: ws.received.frames, reason: ws.killed ?? 'client' });
         if (!rooms.has(room.id)) return;
         // Le pair restant raccroche sa session WebRTC : le flux n'a plus de
-        // destinataire et sa vignette retombe sur l'attente.
-        if (room.webcam) {
+        // destinataire et sa vignette retombe sur l'attente. Un socket supplanté
+        // (reconnexion de la même session) n'annonce rien : le pair est toujours
+        // là, derrière son socket neuf, et sa vignette doit rester en place.
+        if (room.webcam && ![...room.clients].some(client => client.session === ws.session)) {
           const left = JSON.stringify({ type: 'webcam', action: 'peer-left', from: id });
           for (const client of room.clients) if (client.readyState === WebSocket.OPEN) client.send(left);
           record(room, { type: 'webcam', kind: 'peer-left', from: id });
