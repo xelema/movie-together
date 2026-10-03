@@ -134,7 +134,8 @@
         <button id="timing-close" class="ghost" type="button" aria-label="Fermer / 닫기 / Đóng">×</button></div>
       <p id="timing-context" class="hint"></p>
       <div class="timing-stage"><video id="timing-video" playsinline preload="metadata"></video>
-        <div id="timing-overlay" aria-hidden="true"></div></div>
+        <div id="timing-overlay" aria-hidden="true"></div>
+        <p id="timing-loading" data-fr="Chargement de l’aperçu…" data-ko="미리보기 불러오는 중…" data-vi="Đang tải bản xem trước…"></p></div>
       <div class="timing-bar">
         <button id="timing-play" type="button" class="ghost" data-fr="Lecture" data-ko="재생" data-vi="Phát"></button>
         <button id="timing-back" type="button" class="ghost">−5 s</button>
@@ -145,14 +146,18 @@
       <div id="timing-track"><div id="timing-playhead"></div></div>
       <ol id="timing-cues"></ol>
       <div id="timing-edit" hidden>
-        <label><span data-fr="Début (s)" data-ko="시작 (초)" data-vi="Bắt đầu (s)"></span><input id="timing-edit-start" type="number" min="0" step="0.001"></label>
-        <button id="timing-edit-start-minus" type="button" class="ghost">−100 ms</button>
-        <button id="timing-edit-start-plus" type="button" class="ghost">+100 ms</button>
-        <button id="timing-edit-start-playhead" type="button" class="ghost" data-fr="Début sur la position" data-ko="시작을 재생 위치로" data-vi="Đầu tại vị trí phát"></button>
-        <label><span data-fr="Fin (s)" data-ko="끝 (초)" data-vi="Kết thúc (s)"></span><input id="timing-edit-end" type="number" min="0" step="0.001"></label>
-        <button id="timing-edit-end-minus" type="button" class="ghost">−100 ms</button>
-        <button id="timing-edit-end-plus" type="button" class="ghost">+100 ms</button>
-        <button id="timing-edit-end-playhead" type="button" class="ghost" data-fr="Fin sur la position" data-ko="끝을 재생 위치로" data-vi="Cuối tại vị trí phát"></button>
+        <div class="timing-edit-row">
+          <label><span data-fr="Début (s)" data-ko="시작 (초)" data-vi="Bắt đầu (s)"></span><input id="timing-edit-start" type="number" min="0" step="0.001"></label>
+          <button id="timing-edit-start-minus" type="button" class="ghost">−100 ms</button>
+          <button id="timing-edit-start-plus" type="button" class="ghost">+100 ms</button>
+          <button id="timing-edit-start-playhead" type="button" class="ghost" data-fr="Début sur la position" data-ko="시작을 재생 위치로" data-vi="Đầu tại vị trí phát"></button>
+        </div>
+        <div class="timing-edit-row">
+          <label><span data-fr="Fin (s)" data-ko="끝 (초)" data-vi="Kết thúc (s)"></span><input id="timing-edit-end" type="number" min="0" step="0.001"></label>
+          <button id="timing-edit-end-minus" type="button" class="ghost">−100 ms</button>
+          <button id="timing-edit-end-plus" type="button" class="ghost">+100 ms</button>
+          <button id="timing-edit-end-playhead" type="button" class="ghost" data-fr="Fin sur la position" data-ko="끝을 재생 위치로" data-vi="Cuối tại vị trí phát"></button>
+        </div>
       </div>
       <div class="timing-offset">
         <label><span data-fr="Décalage (ms)" data-ko="오프셋 (ms)" data-vi="Độ lệch (ms)"></span><input id="timing-offset" type="number" step="100" value="0"></label>
