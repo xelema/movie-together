@@ -860,13 +860,14 @@ const timingAiNote = () => t('L’alignement automatique du timing arrivera dans
   '자동 타이밍 정렬은 다음 버전에서 제공됩니다.', 'Căn timing tự động sẽ có trong phiên bản sau.');
 async function openTiming(movie, track) {
   const payload = await api(`/api/movies/${movie.id}/subtitles/${track.id}/cues`);
-  timing = { movie, track, cues: payload.cues, duration: payload.duration || 1, selected: -1, active: -1, hls: null };
+  timing = { movie, track, cues: payload.cues, duration: payload.duration || 1, selected: -1, active: -1, hls: null, positioned: false };
   $('timing-context').textContent = `${movie.title} · ${track.label} · ${track.language}`;
   $('timing-play').textContent = t('Lecture', '재생', 'Phát');
   $('timing-offset').value = '0'; $('timing-propagate').checked = false;
   $('timing-seek').value = '0'; $('timing-time').textContent = formatTimestamp(0);
   $('timing-playhead').style.left = '0%'; $('timing-overlay').textContent = '';
   timingVideo.removeAttribute('src'); timingVideo.load();
+  $('timing-loading').hidden = false;
   // Pas de pistes natives : hls.js créerait des <track> en data: que la CSP
   // refuse, et l'éditeur rend lui-même la réplique courante dans l'overlay.
   const url = `/media/${movie.id}/master.m3u8`;
@@ -978,7 +979,16 @@ $('timing-forward').addEventListener('click', () => { timingVideo.currentTime = 
 $('timing-seek').addEventListener('input', () => { if (timing) timingVideo.currentTime = Number($('timing-seek').value) / 1000 * timing.duration; });
 $('timing-seek').addEventListener('pointerdown', () => { timingScrubbing = true; });
 $('timing-seek').addEventListener('pointerup', () => { timingScrubbing = false; });
-timingVideo.addEventListener('loadedmetadata', timingLayout);
+// À l'ouverture l'aperçu se cale sur la première réplique : le texte apparaît
+// sur l'image tout de suite, sans attendre un premier clic dans du noir.
+timingVideo.addEventListener('loadedmetadata', () => {
+  timingLayout();
+  $('timing-loading').hidden = true;
+  if (timing && !timing.positioned && timing.cues[0]?.start > 0) {
+    timing.positioned = true;
+    timingVideo.currentTime = timing.cues[0].start;
+  }
+});
 window.addEventListener('resize', timingLayout);
 timingVideo.addEventListener('timeupdate', () => {
   if (!timing) return;
