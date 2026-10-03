@@ -11,6 +11,8 @@ import { createSettings, FIELDS } from './settings.js';
 import { reprobeMovie, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat, readSubtitleCues, writeSubtitleCues } from './media.js';
 import { SUBTITLE_FORMATS, SUBTITLE_EXT, IMAGE_SUBTITLE_CODECS } from '../public/subtitle-formats.js';
 import { clampCues } from '../public/subtitle-timing.js';
+import { speechMask } from './speech-mask.js';
+import { findOffset } from './subtitle-sync.js';
 import { createRoomHub } from './sync/hub.js';
 import { createJournal } from './telemetry.js';
 import { createJobs } from './jobs.js';
@@ -496,6 +498,40 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       await writeSubtitleCues(directory, track, movie.renditions, clean);
       res.json({ cues: clean });
     } finally { release(); }
+  });
+  // Recalage automatique : la mesure (ffmpeg + VAD neuronal) est un gros
+  // travail lancé en tâche de fond, le client sonde l'état sur la même URL.
+  // Un décalage introuvable (pas de parole, trop peu de répliques) est un
+  // résultat honnête, pas une erreur — et un résultat resté « done » reste
+  // consultable à la réouverture de la boîte.
+  const timingAnalyses = new Map();
+  app.post('/api/movies/:id/subtitles/:track/auto-timing', admin, async (req, res) => {
+    const movie = getMovie(req.params.id);
+    if (movie.status !== 'ready') throw fail(409, 'Film non préparé.');
+    const track = timingTrack(movie, req.params.track);
+    const key = `${movie.id}:${track.id}`;
+    const current = timingAnalyses.get(key);
+    if (current?.state === 'running') return res.status(202).json(current);
+    const done = jobs.claimHeavy('Une analyse de timing est déjà en cours.');
+    const entry = { state: 'running', startedAt: Date.now() };
+    timingAnalyses.set(key, entry);
+    res.status(202).json(entry);
+    const directory = path.join(store.directory(movie.id), movie.generation);
+    (async () => {
+      try {
+        const mask = await speechMask(path.join(store.directory(movie.id), 'source'), { index: movie.audio?.[0]?.index ?? 0 });
+        const cues = await readSubtitleCues(directory, track);
+        const result = findOffset({ cues, speech: mask.intervals, duration: movie.duration });
+        Object.assign(entry, { state: 'done', result: { ...result, speechRatio: mask.speechRatio, audioMinutes: +(mask.duration / 60).toFixed(1) } });
+      } catch (error) {
+        Object.assign(entry, { state: 'error', error: error.message });
+      } finally { done(); }
+    })();
+  });
+  app.get('/api/movies/:id/subtitles/:track/auto-timing', admin, (req, res) => {
+    const movie = getMovie(req.params.id);
+    const track = timingTrack(movie, req.params.track);
+    res.json(timingAnalyses.get(`${movie.id}:${track.id}`) ?? { state: 'idle' });
   });
   app.delete('/api/movies/:id/external/:track', admin, async (req, res) => {
     const movie = jobs.idle(req.params.id);
