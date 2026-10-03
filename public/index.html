@@ -128,6 +128,47 @@
       <label class="check"><input id="create-webcam" type="checkbox"><span data-fr="Caméra (face-à-face à 2)" data-ko="웹캠 (2인용)" data-vi="Camera (2 người đối mặt)"></span></label>
       <div class="dialog-actions"><button id="random-code" class="secondary" type="button" data-fr="Aléatoire" data-ko="무작위" data-vi="Ngẫu nhiên"></button><button data-fr="Créer" data-ko="만들기" data-vi="Tạo"></button></div>
     </form></dialog>
+
+    <dialog id="timing-dialog">
+      <div class="dialog-head"><h2 data-fr="Timing des sous-titres" data-ko="자막 싱크" data-vi="Timing phụ đề"></h2>
+        <button id="timing-close" class="ghost" type="button" aria-label="Fermer / 닫기 / Đóng">×</button></div>
+      <p id="timing-context" class="hint"></p>
+      <div class="timing-stage"><video id="timing-video" playsinline preload="metadata"></video>
+        <div id="timing-overlay" aria-hidden="true"></div></div>
+      <div class="timing-bar">
+        <button id="timing-play" type="button" class="ghost" data-fr="Lecture" data-ko="재생" data-vi="Phát"></button>
+        <button id="timing-back" type="button" class="ghost">−5 s</button>
+        <button id="timing-forward" type="button" class="ghost">+5 s</button>
+        <input id="timing-seek" type="range" min="0" max="1000" step="1" value="0">
+        <span id="timing-time">00:00:00.000</span>
+      </div>
+      <div id="timing-track"><div id="timing-playhead"></div></div>
+      <ol id="timing-cues"></ol>
+      <div id="timing-edit" hidden>
+        <label><span data-fr="Début (s)" data-ko="시작 (초)" data-vi="Bắt đầu (s)"></span><input id="timing-edit-start" type="number" min="0" step="0.001"></label>
+        <button id="timing-edit-start-minus" type="button" class="ghost">−100 ms</button>
+        <button id="timing-edit-start-plus" type="button" class="ghost">+100 ms</button>
+        <button id="timing-edit-start-playhead" type="button" class="ghost" data-fr="Début sur la position" data-ko="시작을 재생 위치로" data-vi="Đầu tại vị trí phát"></button>
+        <label><span data-fr="Fin (s)" data-ko="끝 (초)" data-vi="Kết thúc (s)"></span><input id="timing-edit-end" type="number" min="0" step="0.001"></label>
+        <button id="timing-edit-end-minus" type="button" class="ghost">−100 ms</button>
+        <button id="timing-edit-end-plus" type="button" class="ghost">+100 ms</button>
+        <button id="timing-edit-end-playhead" type="button" class="ghost" data-fr="Fin sur la position" data-ko="끝을 재생 위치로" data-vi="Cuối tại vị trí phát"></button>
+      </div>
+      <div class="timing-offset">
+        <label><span data-fr="Décalage (ms)" data-ko="오프셋 (ms)" data-vi="Độ lệch (ms)"></span><input id="timing-offset" type="number" step="100" value="0"></label>
+        <button id="timing-offset-minus-1s" type="button" class="secondary">−1 s</button>
+        <button id="timing-offset-minus-100ms" type="button" class="secondary">−100 ms</button>
+        <button id="timing-offset-plus-100ms" type="button" class="secondary">+100 ms</button>
+        <button id="timing-offset-plus-1s" type="button" class="secondary">+1 s</button>
+        <label class="check"><input id="timing-propagate" type="checkbox"><span data-fr="À partir de la réplique sélectionnée" data-ko="선택한 대사부터" data-vi="Từ câu đã chọn"></span></label>
+      </div>
+      <p class="hint" data-fr="Les séances déjà ouvertes sur ce film devront être rechargées pour voir le nouveau timing." data-ko="이미 열린 시청방은 새로고침해야 새 자막 싱크가 보입니다." data-vi="Các buổi xem đang mở phải tải lại để thấy timing mới."></p>
+      <div class="dialog-actions">
+        <button id="timing-auto" type="button" class="secondary" data-fr="Timing automatique (IA)" data-ko="자동 싱크 (AI)" data-vi="Timing tự động (AI)"></button>
+        <button id="timing-cancel" type="button" class="ghost" data-fr="Annuler" data-ko="취소" data-vi="Hủy"></button>
+        <button id="timing-save" type="button" data-fr="Enregistrer" data-ko="저장" data-vi="Lưu"></button>
+      </div>
+    </dialog>
   </main>
 </body>
 </html>

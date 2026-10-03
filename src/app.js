@@ -8,8 +8,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './storage.js';
 import { createSettings, FIELDS } from './settings.js';
-import { reprobeMovie, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat } from './media.js';
-import { SUBTITLE_FORMATS, SUBTITLE_EXT } from '../public/subtitle-formats.js';
+import { reprobeMovie, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat, readSubtitleCues, writeSubtitleCues } from './media.js';
+import { SUBTITLE_FORMATS, SUBTITLE_EXT, IMAGE_SUBTITLE_CODECS } from '../public/subtitle-formats.js';
+import { clampCues } from '../public/subtitle-timing.js';
 import { createRoomHub } from './sync/hub.js';
 import { createJournal } from './telemetry.js';
 import { createJobs } from './jobs.js';
@@ -106,11 +107,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     }
     next();
   });
-  // Le lot de télémétrie est le seul corps volumineux de l'API : le contrat
-  // autorise 400 événements de 3800 caractères, quand le reste garde 32 Ko.
+  // Corps volumineux de l'API : le lot de télémétrie (400 événements de
+  // 3800 caractères) et l'écriture des cues de sous-titres (un film entier
+  // dépasse 32 Ko), quand le reste garde 32 Ko.
   const jsonSmall = express.json({ limit: '32kb' });
   const jsonTelemetry = express.json({ limit: '4mb' });
-  app.use((req, res, next) => (req.path.endsWith('/telemetry') ? jsonTelemetry : jsonSmall)(req, res, next));
+  app.use((req, res, next) => (req.path.endsWith('/telemetry') || req.path.endsWith('/cues') ? jsonTelemetry : jsonSmall)(req, res, next));
   const admin = (req, res, next) => req.session?.admin ? next() : next(fail(401, 'Connexion administrateur requise.'));
   const authenticated = (req, res, next) => req.session ? next() : next(fail(401, 'Rejoindre une room ou se connecter.'));
   const access = (req, room) => room && (req.session?.admin || req.session?.rooms.has(room.id));
@@ -456,6 +458,43 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         for (const ext of ['vtt', 'm3u8']) await rm(path.join(directory, `sub_${track.id}_${rendition.id}.${ext}`), { force: true });
       }
       res.json(movie);
+    } finally { release(); }
+  });
+  // Le .vtt est la seule source de vérité du timing : rien à persister dans
+  // movie.json. Une séance ouverte sur ce film n'est pas bloquée — ses clients
+  // verront le nouveau timing à la revalidation de l'ETag (taille+mtime).
+  const timingTrack = (movie, id) => {
+    const track = movie.subtitles?.find(item => item.id === id);
+    if (!track?.external) throw fail(404, 'Piste introuvable.');
+    const codec = track.codec ?? movie.probe?.subtitles?.find(item => item.index === track.index)?.codec;
+    if (IMAGE_SUBTITLE_CODECS.includes(codec)) throw fail(400, 'Ce format de sous-titres ne contient pas de texte.');
+    return track;
+  };
+  app.get('/api/movies/:id/subtitles/:track/cues', admin, async (req, res) => {
+    const movie = getMovie(req.params.id);
+    if (movie.status !== 'ready') throw fail(409, 'Film non préparé.');
+    const track = timingTrack(movie, req.params.track);
+    const directory = path.join(store.directory(movie.id), movie.generation);
+    res.json({ duration: movie.duration, cues: await readSubtitleCues(directory, track) });
+  });
+  app.put('/api/movies/:id/subtitles/:track/cues', admin, async (req, res) => {
+    const movie = getMovie(req.params.id);
+    if (movie.status !== 'ready' || jobs.heavyBusy()) throw fail(409, 'Film indisponible.');
+    const track = timingTrack(movie, req.params.track);
+    const cues = req.body.cues;
+    const valid = Array.isArray(cues) && cues.length <= 5000 && cues.every(cue =>
+      cue && typeof cue === 'object' &&
+      Number.isFinite(cue.start) && Number.isFinite(cue.end) &&
+      cue.start >= 0 && cue.end > cue.start && cue.start <= movie.duration + 60 &&
+      typeof cue.text === 'string' && cue.text.length <= 500 &&
+      (cue.settings === undefined || (typeof cue.settings === 'string' && cue.settings.length <= 200)));
+    if (!valid) throw fail(400, 'Timing de sous-titres invalide.');
+    const release = jobs.claimEdit(movie);
+    try {
+      const directory = path.join(store.directory(movie.id), movie.generation);
+      const clean = clampCues(cues, movie.duration);
+      await writeSubtitleCues(directory, track, movie.renditions, clean);
+      res.json({ cues: clean });
     } finally { release(); }
   });
   app.delete('/api/movies/:id/external/:track', admin, async (req, res) => {
