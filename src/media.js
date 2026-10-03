@@ -6,6 +6,7 @@ import jschardet from 'jschardet';
 import { colorParameters, colorNeedsRenderer } from '../public/color-renderer.js';
 import { defaultTrackNames } from '../public/track-names.js';
 import { TEXT_SUBTITLE_CODECS, SUBTITLE_DEMUXERS } from '../public/subtitle-formats.js';
+import { parseVtt, serializeVtt } from '../public/subtitle-timing.js';
 import { scanSegment, repairFile } from './hls-pts.js';
 
 export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, includeStderr = false } = {}) {
@@ -239,9 +240,6 @@ export async function writeMaster(directory, audio, subtitles, renditions) {
       const subs = [];
       for (const track of subtitles) {
         const name = `sub_${track.id}_${rendition.id}`;
-        const raw = (await readFile(path.join(directory, track.filename), 'utf8')).replace(/^X-TIMESTAMP-MAP=.*\r?\n/gm, '');
-        const mapped = raw.replace(/^WEBVTT[^\r\n]*/, `WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:${Math.round(rendition.timelineOffset * 90000)}`);
-        await writeFile(path.join(directory, `${name}.vtt`), mapped);
         const playlist = (await readFile(path.join(directory, `sub_${track.id}.m3u8`), 'utf8')).replace(track.filename, `${name}.vtt`);
         await writeFile(path.join(directory, `${name}.m3u8`), playlist);
         subs.push(`#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="${quote(track.label)}",LANGUAGE="${language(track.language)}",AUTOSELECT=NO,DEFAULT=NO,FORCED=NO,URI="${name}.m3u8"`);
@@ -249,10 +247,36 @@ export async function writeMaster(directory, audio, subtitles, renditions) {
       await writeFile(path.join(directory, `${rendition.manifest}.tmp`), [...shared, ...subs, info, lines[index]].join('\n') + '\n');
       await rename(path.join(directory, `${rendition.manifest}.tmp`), path.join(directory, rendition.manifest));
     }
+    // Les .vtt de chaque rendition sont (ré)écrits par le même chemin que
+    // l'édition de timing : base normalisée + X-TIMESTAMP-MAP par variante.
+    for (const track of subtitles) {
+      await writeSubtitleCues(directory, track, renditions,
+        parseVtt(await readFile(path.join(directory, track.filename), 'utf8')));
+    }
     // Both entry points reference the same video bytes.
     await writeFile(path.join(directory, 'master.m3u8.tmp'), await readFile(path.join(directory, renditions[0].manifest)));
     await rename(path.join(directory, 'master.m3u8.tmp'), path.join(directory, 'master.m3u8'));
   }
+}
+
+// La copie d'une piste par rendition porte le décalage MPEGTS de sa variante
+// dans X-TIMESTAMP-MAP ; la base reste sans en-tête de mapping. Réécrire en
+// place suffit : l'ETag /media porte taille+mtime et invalide le cache client.
+export async function writeSubtitleCues(directory, track, renditions, cues) {
+  const { rename } = await import('node:fs/promises');
+  const write = async (file, content) => {
+    await writeFile(`${file}.tmp`, content);
+    await rename(`${file}.tmp`, file);
+  };
+  await write(path.join(directory, track.filename), serializeVtt(cues));
+  for (const rendition of renditions ?? []) {
+    const timestampMap = `LOCAL:00:00:00.000,MPEGTS:${Math.round(rendition.timelineOffset * 90000)}`;
+    await write(path.join(directory, `sub_${track.id}_${rendition.id}.vtt`), serializeVtt(cues, { timestampMap }));
+  }
+}
+
+export async function readSubtitleCues(directory, track) {
+  return parseVtt(await readFile(path.join(directory, track.filename), 'utf8'));
 }
 
 export async function addSubtitle(directory, input, { label, language: lang, index, duration, format }) {

@@ -3,6 +3,8 @@ import { attachTelemetry } from './telemetry.js';
 import { label, language, setScopeLanguages, scopeLanguages, vietnamese } from './labels.js';
 import { trackName, defaultTrackNames, sourceTitle, trackLayout, languageName } from './track-names.js';
 import { SUBTITLE_EXT, SUBTITLE_ACCEPT, IMAGE_SUBTITLE_CODECS } from './subtitle-formats.js';
+import { shiftCues, cueIndexAt, formatTimestamp } from './subtitle-timing.js';
+import { subtitleFontSize } from './sync-core.js';
 import { attachVoice } from './voice.js';
 import { attachWebcam } from './webcam.js';
 import { attachFullscreen } from './fullscreen.js';
@@ -216,6 +218,10 @@ function translate() {
   $('player-settings').setAttribute('aria-label', t('Réglages', '설정')); $('close-settings').setAttribute('aria-label', t('Fermer', '닫기'));
   $('notice-close').setAttribute('aria-label', t('Fermer', '닫기'));
   $('room-name').setAttribute('aria-label', t('Votre pseudo', '닉네임'));
+  $('timing-seek').setAttribute('aria-label', t('Avancer ou reculer', '재생 위치'));
+  $('timing-track').setAttribute('aria-label', t('Frise des répliques', '대사 타임라인', 'Dòng thời gian phụ đề'));
+  $('timing-auto').title = t('L’alignement automatique du timing arrivera dans une prochaine version.',
+    '자동 타이밍 정렬은 다음 버전에서 제공됩니다.', 'Căn timing tự động sẽ có trong phiên bản sau.');
   $('screen').setAttribute('aria-label', t('Lecteur vidéo', '동영상 플레이어'));
   if (voice) voice.rename(); else $('voice-mic').setAttribute('aria-label', t('Parler', '말하기'));
   if (webcam) webcam.rename(); else $('webcam-toggle').setAttribute('aria-label', t('Activer la caméra', '카메라 켜기'));
@@ -534,6 +540,11 @@ function manageDetails(movie, selection) {
     const row = el('div', undefined, 'track-row');
     row.append(el('span', `${track.label} · ${track.language}`, 'track-name'));
     if (pending && movie.status === 'ready') row.append(el('small', t('en attente', '대기 중'), 'track-tag'));
+    // Le retiming n'a de sens que sur une piste déjà convertie en .vtt servi.
+    const timingButton = button(t('Éditer le timing', '싱크 편집', 'Sửa timing'), () => openTiming(movie, track), 'ghost');
+    timingButton.disabled = pending;
+    if (pending) timingButton.title = t('Préparer le film pour éditer le timing.', '싱크를 편집하려면 영화를 먼저 준비하세요.', 'Hãy chuẩn bị phim trước để sửa timing.');
+    row.append(timingButton);
     row.append(button(t('Retirer', '제거'), async () => {
       await api(`/api/movies/${movie.id}/${pending ? 'external' : 'subtitles'}/${track.id}`, { method: 'DELETE' });
       await refresh();
@@ -839,6 +850,191 @@ $('settings-form').addEventListener('submit', handle(async () => {
   renderSettings(await api('/api/settings', { method: 'PATCH', body }));
   notice(t('Réglages enregistrés.', '설정을 저장했습니다.'));
 }));
+// ── Éditeur de timing d'une piste de sous-titres ajoutée ────────────────
+// Le brouillon vit dans la boîte de dialogue : les répliques ne sont
+// persistées qu'à l'enregistrement, donc annuler/Esc ne coûte rien. Le lecteur
+// reste minimal (pas de Plyr) — ici on vérifie une piste, on ne fait pas séance.
+let timing = null, timingBlocks = [], timingRows = [], timingDrag = null, timingScrubbing = false;
+const timingDialog = $('timing-dialog'), timingVideo = $('timing-video');
+const timingAiNote = () => t('L’alignement automatique du timing arrivera dans une prochaine version.',
+  '자동 타이밍 정렬은 다음 버전에서 제공됩니다.', 'Căn timing tự động sẽ có trong phiên bản sau.');
+async function openTiming(movie, track) {
+  const payload = await api(`/api/movies/${movie.id}/subtitles/${track.id}/cues`);
+  timing = { movie, track, cues: payload.cues, duration: payload.duration || 1, selected: -1, active: -1, hls: null };
+  $('timing-context').textContent = `${movie.title} · ${track.label} · ${track.language}`;
+  $('timing-play').textContent = t('Lecture', '재생', 'Phát');
+  $('timing-offset').value = '0'; $('timing-propagate').checked = false;
+  $('timing-seek').value = '0'; $('timing-time').textContent = formatTimestamp(0);
+  $('timing-playhead').style.left = '0%'; $('timing-overlay').textContent = '';
+  timingVideo.removeAttribute('src'); timingVideo.load();
+  // Pas de pistes natives : hls.js créerait des <track> en data: que la CSP
+  // refuse, et l'éditeur rend lui-même la réplique courante dans l'overlay.
+  const url = `/media/${movie.id}/master.m3u8`;
+  if (window.Hls?.isSupported()) {
+    timing.hls = new window.Hls({ renderTextTracksNatively: false });
+    timing.hls.loadSource(url); timing.hls.attachMedia(timingVideo);
+  } else if (timingVideo.canPlayType('application/vnd.apple.mpegurl')) timingVideo.src = url;
+  buildTiming(); renderTiming();
+  timingDialog.showModal();
+  timingLayout();
+}
+// Blocs et lignes persistent pendant l'édition : les répliques ne s'ajoutent
+// ni ne se suppriment ici, et un bloc gardé garde sa capture de pointeur.
+function buildTiming() {
+  timingBlocks = timing.cues.map(() => {
+    const block = el('button', undefined, 'timing-cue'); block.type = 'button';
+    return block;
+  });
+  $('timing-track').replaceChildren($('timing-playhead'), ...timingBlocks);
+  timingRows = timing.cues.map((cue, index) => {
+    const row = el('li');
+    row.append(el('span', '', 'timing-range'), el('span', cue.text.replaceAll('\n', ' ⏎ '), 'cue-text'));
+    row.addEventListener('click', () => {
+      timing.selected = index; timingVideo.currentTime = timing.cues[index].start; renderTiming();
+    });
+    return row;
+  });
+  $('timing-cues').replaceChildren(...timingRows);
+}
+function renderTiming() {
+  const span = timing.duration || 1;
+  for (const [index, cue] of timing.cues.entries()) {
+    const block = timingBlocks[index];
+    block.style.left = `${Math.min(100, cue.start / span * 100)}%`;
+    block.style.width = `${Math.max(0.4, (cue.end - cue.start) / span * 100)}%`;
+    block.dataset.selected = String(index === timing.selected);
+    block.title = `${formatTimestamp(cue.start)} → ${formatTimestamp(cue.end)}`;
+    const row = timingRows[index];
+    row.dataset.selected = String(index === timing.selected);
+    row.firstChild.textContent = `${formatTimestamp(cue.start)} → ${formatTimestamp(cue.end)}`;
+  }
+  const cue = timing.cues[timing.selected];
+  $('timing-edit').hidden = !cue;
+  if (cue) {
+    if (document.activeElement !== $('timing-edit-start')) $('timing-edit-start').value = cue.start.toFixed(3);
+    if (document.activeElement !== $('timing-edit-end')) $('timing-edit-end').value = cue.end.toFixed(3);
+  }
+  timingOverlayText();
+}
+function timingOverlayText() {
+  if (!timing) return;
+  const active = cueIndexAt(timing.cues, timingVideo.currentTime);
+  $('timing-overlay').textContent = active >= 0 ? timing.cues[active].text : '';
+  if (active !== timing.active) {
+    timing.active = active;
+    timingBlocks.forEach((node, index) => node.dataset.active = String(index === active));
+    timingRows.forEach((node, index) => node.dataset.active = String(index === active));
+    if (active >= 0) timingRows[active]?.scrollIntoView({ block: 'nearest' });
+  }
+}
+// La taille de la réplique affichée suit la hauteur réellement peinte, comme
+// les sous-titres de la séance sur .video-stage.
+const timingLayout = () => {
+  if (!timing) return;
+  const box = timingVideo.getBoundingClientRect(), aspect = timingVideo.videoWidth / timingVideo.videoHeight || 16 / 9;
+  const picture = Math.min(box.height, box.width / aspect);
+  if (picture > 0) timingDialog.querySelector('.timing-stage').style.setProperty('--subtitle-size', `${subtitleFontSize(picture)}px`);
+};
+// Clic sur la piste = seek ; clic sur une réplique = sélection + seek à son
+// début ; glisser la décale d'un bloc (snap 10 ms), ainsi que les suivantes
+// quand la propagation est cochée.
+$('timing-track').addEventListener('pointerdown', event => {
+  if (!timing) return;
+  const box = $('timing-track').getBoundingClientRect();
+  const index = timingBlocks.indexOf(event.target.closest('.timing-cue'));
+  if (index < 0) {
+    timingVideo.currentTime = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width)) * timing.duration;
+    return;
+  }
+  timingDrag = { index, x: event.clientX, moved: false, cues: timing.cues };
+  event.target.setPointerCapture(event.pointerId);
+});
+$('timing-track').addEventListener('pointermove', event => {
+  if (!timingDrag || !timing) return;
+  const box = $('timing-track').getBoundingClientRect();
+  const delta = Math.round((event.clientX - timingDrag.x) / box.width * timing.duration * 100) / 100;
+  if (!timingDrag.moved && !delta) return;
+  timingDrag.moved = true;
+  const to = $('timing-propagate').checked ? timing.cues.length : timingDrag.index + 1;
+  timing.cues = shiftCues(timingDrag.cues, delta, timingDrag.index, to);
+  renderTiming();
+});
+$('timing-track').addEventListener('pointerup', () => {
+  if (!timingDrag) return;
+  const { index, moved } = timingDrag; timingDrag = null;
+  if (!moved && timing) { timing.selected = index; timingVideo.currentTime = timing.cues[index].start; }
+  if (timing) renderTiming();
+});
+$('timing-track').addEventListener('pointercancel', () => { timingDrag = null; });
+const timingPlayLabel = () => { $('timing-play').textContent = timingVideo.paused ? t('Lecture', '재생', 'Phát') : t('Pause', '일시정지', 'Tạm dừng'); };
+timingVideo.addEventListener('play', timingPlayLabel);
+timingVideo.addEventListener('pause', timingPlayLabel);
+$('timing-play').addEventListener('click', () => {
+  if (!timing) return;
+  if (timingVideo.paused) timingVideo.play().catch(() => {}); else timingVideo.pause();
+});
+$('timing-back').addEventListener('click', () => { timingVideo.currentTime = Math.max(0, timingVideo.currentTime - 5); });
+$('timing-forward').addEventListener('click', () => { timingVideo.currentTime = Math.min(timing?.duration ?? Infinity, timingVideo.currentTime + 5); });
+$('timing-seek').addEventListener('input', () => { if (timing) timingVideo.currentTime = Number($('timing-seek').value) / 1000 * timing.duration; });
+$('timing-seek').addEventListener('pointerdown', () => { timingScrubbing = true; });
+$('timing-seek').addEventListener('pointerup', () => { timingScrubbing = false; });
+timingVideo.addEventListener('loadedmetadata', timingLayout);
+window.addEventListener('resize', timingLayout);
+timingVideo.addEventListener('timeupdate', () => {
+  if (!timing) return;
+  const now = timingVideo.currentTime;
+  $('timing-playhead').style.left = `${Math.min(100, now / timing.duration * 100)}%`;
+  if (!timingScrubbing) $('timing-seek').value = String(Math.round(now / timing.duration * 1000));
+  $('timing-time').textContent = formatTimestamp(now);
+  timingOverlayText();
+});
+// Champs de la réplique sélectionnée : une valeur invalide est réaffichée
+// telle que dans le brouillon — rien n'est perdu.
+const timingCommit = () => {
+  const cue = timing?.cues[timing.selected];
+  if (!cue) return;
+  const start = Number($('timing-edit-start').value), end = Number($('timing-edit-end').value);
+  if (Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end > start) { cue.start = start; cue.end = end; }
+  renderTiming();
+};
+$('timing-edit-start').addEventListener('change', timingCommit);
+$('timing-edit-end').addEventListener('change', timingCommit);
+for (const [id, input, ms] of [
+  ['timing-edit-start-minus', 'timing-edit-start', -100], ['timing-edit-start-plus', 'timing-edit-start', 100],
+  ['timing-edit-end-minus', 'timing-edit-end', -100], ['timing-edit-end-plus', 'timing-edit-end', 100]]) {
+  $(id).addEventListener('click', () => { $(input).value = (Number($(input).value) + ms / 1000).toFixed(3); timingCommit(); });
+}
+$('timing-edit-start-playhead').addEventListener('click', () => { $('timing-edit-start').value = timingVideo.currentTime.toFixed(3); timingCommit(); });
+$('timing-edit-end-playhead').addEventListener('click', () => { $('timing-edit-end').value = timingVideo.currentTime.toFixed(3); timingCommit(); });
+// Décalage : l'input porte un montant en ms appliqué à la saisie, les quatre
+// boutons sont des raccourcis appliqués tout de suite. La case limite le
+// décalage à la réplique sélectionnée et aux suivantes.
+const applyOffset = ms => {
+  if (!timing || !Number.isFinite(ms) || !ms) return;
+  const from = $('timing-propagate').checked && timing.selected >= 0 ? timing.selected : 0;
+  timing.cues = shiftCues(timing.cues, ms / 1000, from);
+  renderTiming();
+};
+for (const [id, ms] of [['timing-offset-minus-1s', -1000], ['timing-offset-minus-100ms', -100],
+  ['timing-offset-plus-100ms', 100], ['timing-offset-plus-1s', 1000]]) {
+  $(id).addEventListener('click', () => { $('timing-offset').value = ms; applyOffset(ms); });
+}
+$('timing-offset').addEventListener('change', () => applyOffset(Number($('timing-offset').value)));
+$('timing-auto').addEventListener('click', () => notice(timingAiNote()));
+$('timing-cancel').addEventListener('click', () => timingDialog.close());
+$('timing-close').addEventListener('click', () => timingDialog.close());
+$('timing-save').addEventListener('click', handle(async () => {
+  if (!timing) return;
+  await api(`/api/movies/${timing.movie.id}/subtitles/${timing.track.id}/cues`, { method: 'PUT', body: { cues: timing.cues } });
+  timingDialog.close();
+  notice(t('Timing enregistré.', '싱크를 저장했습니다.', 'Đã lưu timing.'));
+}));
+timingDialog.addEventListener('close', () => {
+  timing?.hls?.destroy(); timing = null; timingDrag = null;
+  timingVideo.pause(); timingVideo.removeAttribute('src'); timingVideo.load();
+  $('timing-overlay').textContent = '';
+});
+
 window.addEventListener('beforeunload', event => { if (uploadBusy) { event.preventDefault(); event.returnValue = ''; } });
 setInterval(() => { if (!player && !uploadBusy && movies.some(movie => ['processing', 'probing'].includes(movie.status))) refresh().catch(error => notice(error)); }, 3000);
 translate();
