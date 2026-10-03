@@ -15,6 +15,7 @@
 // probabilité constante et un masque vide.
 
 import { spawn } from 'node:child_process';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const MODEL = fileURLToPath(new URL('./models/silero_vad.onnx', import.meta.url));
@@ -57,7 +58,17 @@ function toIntervals(probs) {
 // Analyse la piste audio `index` du fichier `source` en flux : ffmpeg écrit du
 // PCM 16 kHz mono sur sa sortie standard, qui est découpée en fenêtres au fil
 // de l'eau — jamais 230 Mo de WAV intermédiaire sur le disque.
-export async function speechMask(source, { index = 0, ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg', signal } = {}) {
+//
+// `cache` (facultatif) : chemin d'un fichier JSON où garder le masque. Il ne
+// dépend que de la piste audio, et le recalculer coûte ~4 min sur un film de
+// 2 h contre quelques millisecondes de lecture. À placer dans le dossier de la
+// génération courante : le film re-préparé change de génération et l'ancien
+// dossier est supprimé, donc le cache ne peut pas survivre à un nouveau source.
+export async function speechMask(source, { index = 0, ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg', signal, cache } = {}) {
+  if (cache) {
+    const kept = await readFile(cache, 'utf8').then(text => JSON.parse(text)).catch(() => null);
+    if (Array.isArray(kept?.intervals)) return kept;
+  }
   const { ort, run } = await session();
   const process_ = spawn(ffmpeg, ['-v', 'error', '-i', source, '-map', `0:${index}`,
     '-ac', '1', '-ar', String(RATE), '-f', 's16le', '-'], { signal });
@@ -106,5 +117,8 @@ export async function speechMask(source, { index = 0, ffmpeg = process.env.FFMPE
   const duration = samples / RATE;
   const intervals = toIntervals(probs);
   const spoken = intervals.reduce((total, item) => total + item.end - item.start, 0);
-  return { intervals, duration, speechRatio: duration ? spoken / duration : 0 };
+  const result = { intervals, duration, speechRatio: duration ? spoken / duration : 0 };
+  // Un cache qu'on n'a pas su écrire ne doit jamais faire échouer l'analyse.
+  if (cache) await writeFile(`${cache}.tmp`, JSON.stringify(result)).then(() => rename(`${cache}.tmp`, cache)).catch(() => {});
+  return result;
 }
