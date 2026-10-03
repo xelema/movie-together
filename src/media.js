@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, writeFile, readdir, stat, statfs, rm, unlink, rename } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, stat, statfs, rm, unlink, rename, copyFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import jschardet from 'jschardet';
@@ -271,7 +271,12 @@ export async function writeRenditionVtt(directory, track, rendition, text) {
 // par rendition. Réécrire en place suffit, l'ETag /media porte taille+mtime et
 // invalide le cache client sans nouvelle préparation.
 export async function writeSubtitleCues(directory, track, renditions, cues) {
-  const text = serializeVtt(cues);
+  await writeSubtitleText(directory, track, renditions, serializeVtt(cues));
+}
+
+// Restauration verbatim (retour à la copie d'origine) : le texte est déjà un
+// .vtt valide, le re-sérialiser perdrait notes et identifiants de répliques.
+export async function writeSubtitleText(directory, track, renditions, text) {
   const base = path.join(directory, track.filename);
   await writeFile(`${base}.tmp`, text);
   await rename(`${base}.tmp`, base);
@@ -280,6 +285,13 @@ export async function writeSubtitleCues(directory, track, renditions, cues) {
 
 export async function readSubtitleCues(directory, track) {
   return parseVtt(await readFile(path.join(directory, track.filename), 'utf8'));
+}
+
+// La copie d'origine d'une piste ajoutée fige le timing tel qu'importé : c'est
+// la référence du décalage affiché et de la réinitialisation. Les pistes
+// importées avant le suivi n'en ont pas (null).
+export async function readSubtitleOrigin(directory, track) {
+  return readFile(path.join(directory, `sub_${track.id}.original.vtt`), 'utf8').then(parseVtt, () => null);
 }
 
 export async function addSubtitle(directory, input, { label, language: lang, index, duration, format }) {
@@ -297,6 +309,14 @@ export async function addSubtitle(directory, input, { label, language: lang, ind
   } catch (error) {
     await unlink(path.join(directory, filename)).catch(() => {});
     throw error;
+  }
+  // Référence intacte du timing tel qu'importé : l'éditeur mesure le décalage
+  // courant contre elle et la réinitialisation l'y ramène. Sa perte dégrade
+  // en « origine inconnue », jamais en échec d'import.
+  try {
+    await copyFile(path.join(directory, filename), path.join(directory, `sub_${id}.original.vtt`));
+  } catch (error) {
+    console.warn(`[media] piste ${id} : copie d'origine non écrite (${error.message})`);
   }
   await writeFile(path.join(directory, `sub_${id}.m3u8`),
     `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:${Math.ceil(duration)}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:${duration},\n${filename}\n#EXT-X-ENDLIST\n`);
@@ -420,6 +440,9 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   for (const track of movie.subtitles ?? []) if (track.external && movie.generation) {
     await writeFile(path.join(directory, track.filename), await readFile(path.join(store.directory(movie.id), movie.generation, track.filename)));
     await writeFile(path.join(directory, `sub_${track.id}.m3u8`), await readFile(path.join(store.directory(movie.id), movie.generation, `sub_${track.id}.m3u8`)));
+    // La copie d'origine voyage elle aussi ; les vieilles pistes n'en ont pas.
+    await copyFile(path.join(store.directory(movie.id), movie.generation, `sub_${track.id}.original.vtt`),
+      path.join(directory, `sub_${track.id}.original.vtt`)).catch(() => {});
     subtitles.push(track);
   }
   const preparedAudio = audio.map(track => ({ ...track, sourceCodec: track.codec, codec: 'aac', channels: track.copy ? track.channels : 2,

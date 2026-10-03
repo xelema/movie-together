@@ -8,9 +8,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './storage.js';
 import { createSettings, FIELDS } from './settings.js';
-import { reprobeMovie, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat, readSubtitleCues, writeSubtitleCues } from './media.js';
+import { reprobeMovie, prepareMovie, addSubtitle, writeMaster, decodeSubtitleText, subtitleFileFormat, readSubtitleCues, readSubtitleOrigin, writeSubtitleCues, writeSubtitleText } from './media.js';
 import { SUBTITLE_FORMATS, SUBTITLE_EXT, IMAGE_SUBTITLE_CODECS } from '../public/subtitle-formats.js';
-import { clampCues } from '../public/subtitle-timing.js';
+import { clampCues, parseVtt, shiftSummary } from '../public/subtitle-timing.js';
 import { speechMask } from './speech-mask.js';
 import { findOffset } from './subtitle-sync.js';
 import { createRoomHub } from './sync/hub.js';
@@ -456,6 +456,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       await writeMaster(directory, movie.audio, subtitles, movie.renditions);
       movie.subtitles = subtitles; store.save(movie);
       await unlink(path.join(directory, track.filename)); await unlink(path.join(directory, `sub_${track.id}.m3u8`));
+      await rm(path.join(directory, `sub_${track.id}.original.vtt`), { force: true });
       for (const rendition of movie.renditions ?? []) {
         for (const ext of ['vtt', 'm3u8']) await rm(path.join(directory, `sub_${track.id}_${rendition.id}.${ext}`), { force: true });
       }
@@ -477,7 +478,10 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     if (movie.status !== 'ready') throw fail(409, 'Film non préparé.');
     const track = timingTrack(movie, req.params.track);
     const directory = path.join(store.directory(movie.id), movie.generation);
-    res.json({ duration: movie.duration, cues: await readSubtitleCues(directory, track) });
+    const cues = await readSubtitleCues(directory, track);
+    const origin = await readSubtitleOrigin(directory, track);
+    res.json({ duration: movie.duration, cues, shift: shiftSummary(cues, origin),
+      origin: origin?.map(({ start, end }) => ({ start, end })) ?? null });
   });
   app.put('/api/movies/:id/subtitles/:track/cues', admin, async (req, res) => {
     const movie = getMovie(req.params.id);
@@ -497,6 +501,23 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       const clean = clampCues(cues, movie.duration);
       await writeSubtitleCues(directory, track, movie.renditions, clean);
       res.json({ cues: clean });
+    } finally { release(); }
+  });
+  // Retour au timing d'origine : la copie figée à l'import réécrit le .vtt de
+  // travail verbatim — les retouches, enregistrées ou en brouillon, sont
+  // perdues ; le client le confirme avant d'appeler.
+  app.post('/api/movies/:id/subtitles/:track/cues/reset', admin, async (req, res) => {
+    const movie = getMovie(req.params.id);
+    if (movie.status !== 'ready' || jobs.heavyBusy()) throw fail(409, 'Film indisponible.');
+    const track = timingTrack(movie, req.params.track);
+    const release = jobs.claimEdit(movie);
+    try {
+      const directory = path.join(store.directory(movie.id), movie.generation);
+      const text = await readFile(path.join(directory, `sub_${track.id}.original.vtt`), 'utf8').catch(() => null);
+      if (text === null) throw fail(409, 'Aucune copie d’origine conservée pour cette piste.');
+      await writeSubtitleText(directory, track, movie.renditions, text);
+      const cues = parseVtt(text);
+      res.json({ cues, shift: shiftSummary(cues, cues) });
     } finally { release(); }
   });
   // Recalage automatique : la mesure (ffmpeg + VAD neuronal) est un gros
