@@ -423,7 +423,10 @@ dialog button{width:100%}
 #timing-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;margin:0;color:var(--text-3);font-size:13px;pointer-events:none}
 #timing-loading[hidden]{display:none}
 .timing-bar{display:flex;align-items:center;gap:8px;margin-bottom:8px}
-#timing-play{flex:0 0 auto;min-width:86px}
+#timing-play{flex:0 0 auto;min-width:44px;padding:6px 10px}
+#timing-play .icon-pause{display:none}
+#timing-play[data-state=playing] .icon-play{display:none}
+#timing-play[data-state=playing] .icon-pause{display:block}
 #timing-seek{flex:1;min-width:0}
 #timing-time{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12px;color:var(--text-2);white-space:nowrap}
 #timing-track{position:relative;height:44px;margin-bottom:10px;border:1px solid var(--line);border-radius:8px;background:var(--sunk);cursor:pointer;overflow:hidden;user-select:none;touch-action:none}

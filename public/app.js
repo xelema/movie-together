@@ -220,6 +220,7 @@ function translate() {
   $('room-name').setAttribute('aria-label', t('Votre pseudo', '닉네임'));
   $('timing-seek').setAttribute('aria-label', t('Avancer ou reculer', '재생 위치'));
   $('timing-track').setAttribute('aria-label', t('Frise des répliques', '대사 타임라인', 'Dòng thời gian phụ đề'));
+  timingPlayLabel();
   $('timing-auto').title = t('L’alignement automatique du timing arrivera dans une prochaine version.',
     '자동 타이밍 정렬은 다음 버전에서 제공됩니다.', 'Căn timing tự động sẽ có trong phiên bản sau.');
   $('screen').setAttribute('aria-label', t('Lecteur vidéo', '동영상 플레이어'));
@@ -862,7 +863,7 @@ async function openTiming(movie, track) {
   const payload = await api(`/api/movies/${movie.id}/subtitles/${track.id}/cues`);
   timing = { movie, track, cues: payload.cues, duration: payload.duration || 1, selected: -1, active: -1, hls: null, positioned: false };
   $('timing-context').textContent = `${movie.title} · ${track.label} · ${track.language}`;
-  $('timing-play').textContent = t('Lecture', '재생', 'Phát');
+  timingPlayLabel();
   $('timing-offset').value = '0'; $('timing-propagate').checked = false;
   $('timing-seek').value = '0'; $('timing-time').textContent = formatTimestamp(0);
   $('timing-playhead').style.left = '0%'; $('timing-overlay').textContent = '';
@@ -967,7 +968,13 @@ $('timing-track').addEventListener('pointerup', () => {
   if (timing) renderTiming();
 });
 $('timing-track').addEventListener('pointercancel', () => { timingDrag = null; });
-const timingPlayLabel = () => { $('timing-play').textContent = timingVideo.paused ? t('Lecture', '재생', 'Phát') : t('Pause', '일시정지', 'Tạm dừng'); };
+// Déclaration de fonction (hissée) : translate() l'appelle et s'exécute plus haut
+// dans le module que cet éditeur.
+function timingPlayLabel() {
+  const playing = !timingVideo.paused;
+  $('timing-play').dataset.state = playing ? 'playing' : 'paused';
+  $('timing-play').setAttribute('aria-label', playing ? t('Pause', '일시정지', 'Tạm dừng') : t('Lecture', '재생', 'Phát'));
+}
 timingVideo.addEventListener('play', timingPlayLabel);
 timingVideo.addEventListener('pause', timingPlayLabel);
 $('timing-play').addEventListener('click', () => {
