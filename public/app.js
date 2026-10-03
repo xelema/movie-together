@@ -221,8 +221,8 @@ function translate() {
   $('timing-seek').setAttribute('aria-label', t('Avancer ou reculer', '재생 위치'));
   $('timing-track').setAttribute('aria-label', t('Frise des répliques', '대사 타임라인', 'Dòng thời gian phụ đề'));
   timingPlayLabel();
-  $('timing-auto').title = t('L’alignement automatique du timing arrivera dans une prochaine version.',
-    '자동 타이밍 정렬은 다음 버전에서 제공됩니다.', 'Căn timing tự động sẽ có trong phiên bản sau.');
+  $('timing-auto').title = t('Recaler automatiquement les répliques sur la bande son.',
+    '음성에 맞춰 대사 싱크를 자동으로 맞춥니다.', 'Tự động căn phụ đề theo âm thanh.');
   $('screen').setAttribute('aria-label', t('Lecteur vidéo', '동영상 플레이어'));
   if (voice) voice.rename(); else $('voice-mic').setAttribute('aria-label', t('Parler', '말하기'));
   if (webcam) webcam.rename(); else $('webcam-toggle').setAttribute('aria-label', t('Activer la caméra', '카메라 켜기'));
@@ -857,8 +857,6 @@ $('settings-form').addEventListener('submit', handle(async () => {
 // reste minimal (pas de Plyr) — ici on vérifie une piste, on ne fait pas séance.
 let timing = null, timingBlocks = [], timingRows = [], timingDrag = null, timingScrubbing = false;
 const timingDialog = $('timing-dialog'), timingVideo = $('timing-video');
-const timingAiNote = () => t('L’alignement automatique du timing arrivera dans une prochaine version.',
-  '자동 타이밍 정렬은 다음 버전에서 제공됩니다.', 'Căn timing tự động sẽ có trong phiên bản sau.');
 async function openTiming(movie, track) {
   const payload = await api(`/api/movies/${movie.id}/subtitles/${track.id}/cues`);
   timing = { movie, track, cues: payload.cues, duration: payload.duration || 1, selected: -1, active: -1, hls: null, positioned: false };
@@ -1037,7 +1035,46 @@ for (const [id, ms] of [['timing-offset-minus-1s', -1000], ['timing-offset-minus
   $(id).addEventListener('click', () => { $('timing-offset').value = ms; applyOffset(ms); });
 }
 $('timing-offset').addEventListener('change', () => applyOffset(Number($('timing-offset').value)));
-$('timing-auto').addEventListener('click', () => notice(timingAiNote()));
+// Recalage automatique : le serveur mesure le décalage répliques/parole en
+// tâche de fond (POST 202 puis sondage), le résultat est ensuite posé comme
+// un décalage saisi à la main — l'aperçu reste un brouillon à valider. Le
+// sondage s'arrête avec la boîte : `timing` repasse à null à la fermeture.
+$('timing-auto').addEventListener('click', handle(async () => {
+  if (!timing) return;
+  const url = `/api/movies/${timing.movie.id}/subtitles/${timing.track.id}/auto-timing`;
+  $('timing-auto').disabled = true;
+  try {
+    await api(url, { method: 'POST', body: {} });
+    notice(t('Analyse de la bande son…', '음성 분석 중…', 'Đang phân tích âm thanh…'));
+    const deadline = Date.now() + 300_000;
+    while (timing && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      if (!timing) return;
+      const state = await api(url);
+      if (state.state === 'running') continue;
+      if (state.state === 'error') throw new Error(state.error);
+      const result = state.result;
+      if (!result) return;
+      if (result.offset === null) {
+        notice(result.reason === 'no-speech'
+          ? t('Aucune parole détectée dans la bande son.', '음성이 감지되지 않았습니다.', 'Không phát hiện lời thoại trong âm thanh.')
+          : result.reason === 'too-few-cues'
+            ? t('Pas assez de répliques pour mesurer un décalage.', '대사가 너무 적어 오프셋을 측정할 수 없습니다.', 'Không đủ câu thoại để đo độ lệch.')
+            : t('Aucun décalage fiable trouvé.', '신뢰할 수 있는 오프셋을 찾지 못했습니다.', 'Không tìm thấy độ lệch đáng tin.'));
+        return;
+      }
+      const ms = Math.round(result.offset * 1000);
+      $('timing-offset').value = ms;
+      applyOffset(ms);
+      const confidence = { high: t('confiance haute', '신뢰도 높음', 'độ tin cậy cao'),
+        medium: t('confiance moyenne', '신뢰도 보통', 'độ tin cậy trung bình'),
+        low: t('confiance faible', '신뢰도 낮음', 'độ tin cậy thấp') }[result.confidence] ?? result.confidence;
+      notice(`${t('Décalage trouvé', '오프셋 발견', 'Đã tìm thấy độ lệch')} : ${result.offset > 0 ? '+' : ''}${result.offset.toFixed(2)} s · ${confidence}`);
+      return;
+    }
+    if (timing) notice(t('Analyse trop longue : réessayez.', '분석이 너무 오래 걸립니다. 다시 시도하세요.', 'Phân tích quá lâu, hãy thử lại.'));
+  } finally { $('timing-auto').disabled = false; }
+}));
 $('timing-cancel').addEventListener('click', () => timingDialog.close());
 $('timing-close').addEventListener('click', () => timingDialog.close());
 $('timing-save').addEventListener('click', handle(async () => {
