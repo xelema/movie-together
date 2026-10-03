@@ -45,9 +45,10 @@ const voiceService = {
 // elle-meme repondre 429, ce qui faisait tomber la preparation et huit tests
 // qui en dependent. Le limiteur reste arme pour de vrai, il ne s'applique
 // simplement pas au serveur de test.
-const instance = createApplication({ dataDir, origin: 'http://localhost:3100', password: 'browser-test-password', voiceService,
+const port = Number(process.env.E2E_PORT) || 3100;
+const instance = createApplication({ dataDir, origin: `http://localhost:${port}`, password: 'browser-test-password', voiceService,
   env: { ...process.env, VOICE_QUOTA: '10', VOICE_COOLDOWN: '1', LOGIN_LIMIT: '1000', INVITE_LIMIT: '1000' } });
-instance.server.listen(3100, '127.0.0.1');
+instance.server.listen(port, '127.0.0.1');
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => {
   await instance.close(); await rm(dataDir, { recursive: true, force: true }); process.exit(0);
 });

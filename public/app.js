@@ -3,7 +3,7 @@ import { attachTelemetry } from './telemetry.js';
 import { label, language, setScopeLanguages, scopeLanguages, vietnamese } from './labels.js';
 import { trackName, defaultTrackNames, sourceTitle, trackLayout, languageName } from './track-names.js';
 import { SUBTITLE_EXT, SUBTITLE_ACCEPT, IMAGE_SUBTITLE_CODECS } from './subtitle-formats.js';
-import { shiftCues, cueIndexAt, formatTimestamp } from './subtitle-timing.js';
+import { shiftCues, cueIndexAt, shiftSummary, formatTimestamp } from './subtitle-timing.js';
 import { subtitleFontSize } from './sync-core.js';
 import { attachVoice } from './voice.js';
 import { attachWebcam } from './webcam.js';
@@ -221,6 +221,7 @@ function translate() {
   $('timing-seek').setAttribute('aria-label', t('Avancer ou reculer', '재생 위치'));
   $('timing-track').setAttribute('aria-label', t('Frise des répliques', '대사 타임라인', 'Dòng thời gian phụ đề'));
   timingPlayLabel();
+  renderTimingOrigin();
   $('timing-auto').title = t('Recaler automatiquement les répliques sur la bande son.',
     '음성에 맞춰 대사 싱크를 자동으로 맞춥니다.', 'Tự động căn phụ đề theo âm thanh.');
   $('screen').setAttribute('aria-label', t('Lecteur vidéo', '동영상 플레이어'));
@@ -859,7 +860,7 @@ let timing = null, timingBlocks = [], timingRows = [], timingDrag = null, timing
 const timingDialog = $('timing-dialog'), timingVideo = $('timing-video');
 async function openTiming(movie, track) {
   const payload = await api(`/api/movies/${movie.id}/subtitles/${track.id}/cues`);
-  timing = { movie, track, cues: payload.cues, duration: payload.duration || 1, selected: -1, active: -1, hls: null, positioned: false };
+  timing = { movie, track, cues: payload.cues, origin: payload.origin ?? null, duration: payload.duration || 1, selected: -1, active: -1, hls: null, positioned: false };
   $('timing-context').textContent = `${movie.title} · ${track.label} · ${track.language}`;
   timingPlayLabel();
   $('timing-offset').value = '0'; $('timing-propagate').checked = false;
@@ -915,6 +916,25 @@ function renderTiming() {
     if (document.activeElement !== $('timing-edit-end')) $('timing-edit-end').value = cue.end.toFixed(3);
   }
   timingOverlayText();
+  renderTimingOrigin();
+}
+// Le décalage courant par rapport à la copie d'origine figée à l'import : il
+// se recalcule à chaque rendu, donc il décrit le brouillon affiché (recalage
+// compris) et ne reste jamais périmé. Une piste importée avant le suivi n'a
+// pas de référence : l'affichage l'annonce au lieu d'inventer un chiffre.
+function renderTimingOrigin() {
+  if (!timing) return;
+  const shift = shiftSummary(timing.cues, timing.origin);
+  const label = t('Décalage actuel', '현재 오프셋', 'Độ lệch hiện tại');
+  $('timing-origin').textContent = !shift.origin
+    ? `${label} : ${t('origine inconnue', '원본 불명', 'không rõ nguồn gốc')}`
+    : `${label} : ${(shift.shiftMs / 1000).toLocaleString(language(), { minimumFractionDigits: 3, maximumFractionDigits: 3, signDisplay: 'exceptZero' })} s`
+      + (shift.uniform ? '' : ` · ${t(`${shift.editedCues} répliques ajustées individuellement`,
+        `대사 ${shift.editedCues}개 개별 조정`, `${shift.editedCues} câu chỉnh riêng`)}`);
+  // Le bouton n'a rien à rétablir que si le brouillon porte déjà le timing
+  // d'origine (décalage uniforme nul, durées intactes). Une retouche isolée —
+  // médiane nulle mais non uniforme, durée changée — garde un chemin de retour.
+  $('timing-reset').disabled = !timing.origin || (shift.origin && shift.uniform && !shift.shiftMs && !shift.durationsChanged);
 }
 function timingOverlayText() {
   if (!timing) return;
@@ -1074,6 +1094,18 @@ $('timing-auto').addEventListener('click', handle(async () => {
     }
     if (timing) notice(t('Analyse trop longue : réessayez.', '분석이 너무 오래 걸립니다. 다시 시도하세요.', 'Phân tích quá lâu, hãy thử lại.'));
   } finally { $('timing-auto').disabled = false; }
+}));
+// La réinitialisation réécrit le .vtt servi côté serveur : le brouillon est
+// remplacé par les répliques relues, pas par une copie de l'affichage.
+$('timing-reset').addEventListener('click', handle(async () => {
+  if (!timing) return;
+  if (!confirm(t('Rétablir le timing du fichier d’origine ? Les retouches seront perdues.',
+    '원본 파일의 싱크로 되돌릴까요? 수정 내용이 사라집니다.', 'Khôi phục timing của tệp gốc? Mọi chỉnh sửa sẽ mất.'))) return;
+  const payload = await api(`/api/movies/${timing.movie.id}/subtitles/${timing.track.id}/cues/reset`, { method: 'POST', body: {} });
+  timing.cues = payload.cues;
+  timing.selected = -1; timing.active = -1;
+  buildTiming(); renderTiming();
+  notice(t('Timing réinitialisé.', '싱크를 되돌렸습니다.', 'Đã khôi phục timing.'));
 }));
 $('timing-cancel').addEventListener('click', () => timingDialog.close());
 $('timing-close').addEventListener('click', () => timingDialog.close());

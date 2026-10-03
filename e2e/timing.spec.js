@@ -59,6 +59,32 @@ test('admin retimes an added subtitle track and the shift persists', async ({ br
     await expect.poll(() => page.locator('#timing-video').evaluate(video => video.paused)).toBe(true);
     const firstCue = page.locator('#timing-cues li').first();
     await expect(firstCue).toContainText('00:00:01.000');
+    // Fraîchement importée, la piste n'a aucun décalage et la
+    // réinitialisation n'a rien à rétablir.
+    await expect(page.locator('#timing-origin')).toContainText('Décalage actuel : 0,000 s');
+    await expect(page.locator('#timing-reset')).toBeDisabled();
+    page.on('dialog', dialog => dialog.accept());
+    await page.locator('#timing-offset-plus-1s').click();
+    await expect(firstCue).toContainText('00:00:02.000');
+    // Le décalage courant se lit par rapport au fichier importé.
+    await expect(page.locator('#timing-origin')).toContainText('Décalage actuel : +1,000 s');
+    await expect(page.locator('#timing-reset')).toBeEnabled();
+    // La réinitialisation réécrit le .vtt servi : les répliques reviennent
+    // au timing d'origine sans enregistrer.
+    await page.locator('#timing-reset').click();
+    await expect(firstCue).toContainText('00:00:01.000');
+    await expect(page.locator('#timing-origin')).toContainText('Décalage actuel : 0,000 s');
+    await expect(page.locator('#timing-reset')).toBeDisabled();
+    // Une retouche isolée ne déplace pas la médiane mais laisse la
+    // réinitialisation disponible : sans elle, aucun retour à l'origine.
+    await page.locator('#timing-cues li').nth(1).click();
+    await page.locator('#timing-edit-start').fill('6.000');
+    await page.locator('#timing-edit-start').press('Tab');
+    await expect(page.locator('#timing-origin')).toContainText('1 répliques ajustées');
+    await expect(page.locator('#timing-reset')).toBeEnabled();
+    await page.locator('#timing-reset').click();
+    await expect(page.locator('#timing-origin')).toContainText('Décalage actuel : 0,000 s');
+    await expect(page.locator('#timing-reset')).toBeDisabled();
     await page.locator('#timing-offset-plus-1s').click();
     await expect(firstCue).toContainText('00:00:02.000');
     await page.locator('#timing-save').click();
@@ -68,5 +94,6 @@ test('admin retimes an added subtitle track and the shift persists', async ({ br
     const saved = await (await page.request.get(`/api/movies/${movie.id}/subtitles/${track.id}/cues`)).json();
     expect(saved.cues[0].start).toBe(2);
     expect(saved.cues[1].start).toBe(6);
+    expect(saved.shift).toMatchObject({ origin: true, uniform: true, shiftMs: 1000 });
   } finally { await context.close(); }
 });
