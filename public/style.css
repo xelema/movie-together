@@ -456,6 +456,27 @@ dialog button{width:100%}
 .timing-offset .check input{margin:0}
 .timing-offset .check span{white-space:nowrap}
 #timing-dialog .dialog-actions{flex-wrap:wrap}
+
+/* Assistant de préparation : étapes guidées dans la même boîte sombre. */
+#prepare-dialog{width:min(560px,calc(100% - 24px));max-height:calc(100% - 24px);text-align:left;padding:22px 24px;overflow-y:auto}
+#prepare-dialog h2{margin:0}
+#prepare-dialog input{margin-bottom:0}
+#prepare-dialog button{width:auto}
+#prepare-steps{margin:10px 0 18px}
+#prepare-body h3{margin:0 0 12px;overflow-wrap:anywhere}
+#prepare-body h3:focus{outline:none}
+#prepare-body .hint{margin:0 0 10px}
+#prepare-body label{margin:14px 0 0}
+#prepare-error{margin:14px 0 0}
+.recap-group{margin:0 0 12px}
+.recap-label{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--label)}
+.recap-list{list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0;padding:0}
+.recap-list li{padding:4px 12px;border:1px solid var(--line-soft);border-radius:999px;font-size:13px;color:var(--text-2);overflow-wrap:anywhere}
+.recap-list .recap-empty{color:var(--text-4);border-style:dashed}
+#prepare-dialog .dialog-actions{margin-top:20px}
+@media(max-width:700px){
+  #prepare-dialog{padding:16px}
+}
 @media(max-width:700px){
   #timing-dialog{padding:16px}
   .timing-stage video{max-height:30vh}
