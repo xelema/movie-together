@@ -25,7 +25,6 @@ test('admin retimes an added subtitle track and the shift persists', async ({ br
     await page.locator('#refresh').click();
     await page.locator('#upload-file').setInputFiles({ name: 'fixture.mp4', mimeType: 'video/mp4', buffer: await readFile('data/e2e/fixture.mp4') });
     await expect(page.locator('#movies')).toContainText('À préparer');
-    await openDetails();
     // Dix répliques minimum pour que le recalage automatique accepte de
     // mesurer (le moteur refuse en deçà) : le srt en porte douze.
     const srt = Array.from({ length: 12 }, (_, index) => {
@@ -33,12 +32,18 @@ test('admin retimes an added subtitle track and the shift persists', async ({ br
       const stamp = seconds => `00:00:${String(seconds).padStart(2, '0')},000`;
       return `${index + 1}\n${stamp(at)} --> ${stamp(at + 2)}\nRéplique ${index + 1}.\n`;
     }).join('\n');
-    await page.locator('#movies input[type=file]').setInputFiles({ name: 'dialogue.srt', mimeType: 'text/plain', buffer: Buffer.from(srt) });
-    await page.getByLabel('Nom affiché').fill('Français');
-    await page.getByRole('button', { name: 'Ajouter', exact: true }).click();
-    await expect(page.locator('#movies')).toContainText('Français · fr');
-    await openDetails();
-    await page.getByRole('button', { name: 'Préparer le film' }).first().click();
+    await page.getByRole('button', { name: 'Préparer le film' }).click();
+    const wizard = page.locator('#prepare-dialog');
+    await expect(wizard).toBeVisible();
+    await wizard.getByRole('button', { name: 'Continuer' }).click();
+    await wizard.getByRole('button', { name: 'Continuer' }).click();
+    await wizard.locator('input[type=file]').setInputFiles({ name: 'dialogue.srt', mimeType: 'text/plain', buffer: Buffer.from(srt) });
+    await wizard.getByLabel('Nom affiché').fill('Français');
+    await wizard.getByRole('button', { name: 'Ajouter', exact: true }).click();
+    await expect(wizard).toContainText('Français · fr');
+    await wizard.getByRole('button', { name: 'Continuer' }).click();
+    await wizard.getByRole('button', { name: 'Confirmer et préparer' }).click();
+    await expect(wizard).toBeHidden();
     await expect(page.getByRole('button', { name: 'Créer une séance', exact: true })).toBeVisible({ timeout: 60_000 });
     await openDetails();
     await page.getByRole('button', { name: 'Éditer le timing' }).click();
