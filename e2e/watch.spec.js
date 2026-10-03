@@ -116,12 +116,12 @@ const clickControl = (page, selector, done) => expect(async () => {
   if (done) await expect.poll(done, { timeout: 4000 }).toBe(true);
 }).toPass({ timeout: 15_000 });
 
-const subtitleModes = page => page.locator('video').evaluate(video =>
+const subtitleModes = page => page.locator('#video').evaluate(video =>
   Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind)).map(track => track.mode));
-const showingTracks = page => page.locator('video').evaluate(video =>
+const showingTracks = page => page.locator('#video').evaluate(video =>
   Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind) && track.mode === 'showing').length);
 
-const expectSubtitleSize = page => expect.poll(async () => page.locator('video').evaluate(video => {
+const expectSubtitleSize = page => expect.poll(async () => page.locator('#video').evaluate(video => {
   const rect = video.getBoundingClientRect(), aspect = video.videoWidth / video.videoHeight || 16 / 9;
   const picture = Math.min(rect.height, rect.width / aspect);
   const css = parseFloat(getComputedStyle(video.parentElement).getPropertyValue('--subtitle-size'));
@@ -134,7 +134,7 @@ const expectSubtitleSize = page => expect.poll(async () => page.locator('video')
 // 'playing', so one snapshot is not proof of playback: the picture must
 // verifiably advance between two samples a real interval apart. -1 reads as
 // "not flowing".
-const flowingTime = page => page.locator('video').evaluate(video => new Promise(resolve => {
+const flowingTime = page => page.locator('#video').evaluate(video => new Promise(resolve => {
   if (video.paused || video.seeking || video.readyState < 3) return resolve(-1);
   const at = video.currentTime;
   setTimeout(() => resolve(!video.paused && !video.seeking && video.currentTime > at ? at : -1), 400);
@@ -147,7 +147,7 @@ const flowingTime = page => page.locator('video').evaluate(video => new Promise(
 const ensurePlaying = () => expect.poll(async () => {
   try {
     const phase = await host.evaluate(() => {
-      const video = document.querySelector('video'), player = window.player, state = player.state;
+      const video = document.querySelector('#video'), player = window.player, state = player.state;
       if (!state) return undefined;
       // Une commande par époque : 'seek' et 'play' figent la séance et vident
       // les rapports dont la reprise attend l'alignement. Re-commander pendant
@@ -187,17 +187,17 @@ const ensurePlaying = () => expect.poll(async () => {
 const controlsAutoHide = page => expect.poll(async () => {
   try {
     if (await page.evaluate(() => window.player?.state?.phase === 'paused' ||
-        (document.querySelector('video')?.currentTime ?? 0) >= 40)) await ensurePlaying();
+        (document.querySelector('#video')?.currentTime ?? 0) >= 40)) await ensurePlaying();
     if (await flowingTime(page) < 0) return false;
     return await page.locator('.plyr').evaluate(plyr => plyr.classList.contains('plyr--hide-controls') &&
       getComputedStyle(plyr.querySelector('.plyr__controls')).opacity === '0' &&
-      getComputedStyle(plyr.querySelector('video')).cursor === 'none');
+      getComputedStyle(plyr.querySelector('#video')).cursor === 'none');
   } catch { return false; }
 }, { timeout: 30_000 }).toBe(true);
 
 const dump = async (page, role) => `${role}: ` + JSON.stringify({
   state: latest.get(page)?.state,
-  media: await page.locator('video').evaluate(video => ({ ready: video.readyState, error: video.error?.message,
+  media: await page.locator('#video').evaluate(video => ({ ready: video.readyState, error: video.error?.message,
     paused: video.paused, seeking: video.seeking, time: video.currentTime, width: video.videoWidth,
     source: video.currentSrc, buffered: video.buffered.length, nativeHls: video.canPlayType('application/vnd.apple.mpegurl'),
     mse: window.Hls.isSupported(), vendor: navigator.vendor,
@@ -338,8 +338,8 @@ test('admin manages a film and two named viewers join in their language with one
     await expect.poll(() => latest.get(guest)?.voice).toMatchObject({ enabled: true, pair: ['fr', 'ko'] });
     expect(typeof latest.get(guest)?.voice?.available).toBe('boolean');
     await expect(guest.locator('#voice-mic')).toBeVisible();
-    await expect(host.locator('video')).toHaveCSS('filter', 'none');
-    await expect(guest.locator('video')).toHaveCSS('filter', 'none');
+    await expect(host.locator('#video')).toHaveCSS('filter', 'none');
+    await expect(guest.locator('#video')).toHaveCSS('filter', 'none');
     await expect(host.locator('#picture-settings')).toHaveCount(0);
     await expect(guest.locator('#picture-settings')).toHaveCount(0);
     await expect(host.locator('#participants')).toContainText('민지');
@@ -363,21 +363,21 @@ test('admin manages a film and two named viewers join in their language with one
     await host.locator('.plyr__control--overlaid').click();
     await expect(host.locator('#buffering-label')).toContainText('민지');
     releaseMedia();
-    await expect.poll(() => guest.locator('video').evaluate(video => video.readyState), { timeout: 15_000 }).toBeGreaterThanOrEqual(3);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.readyState), { timeout: 15_000 }).toBeGreaterThanOrEqual(3);
     await expect(host.locator('.color-canvas')).toHaveAttribute('data-ready', 'true', { timeout: 15_000 });
     await expect(guest.locator('.color-canvas')).toHaveAttribute('data-ready', 'true', { timeout: 15_000 });
     await expect.poll(() => guest.locator('.color-canvas').evaluate(canvas => {
-      const video = document.querySelector('video');
+      const video = document.querySelector('#video');
       return canvas.width <= Math.ceil(video.getBoundingClientRect().width * devicePixelRatio) && canvas.width < video.videoWidth;
     })).toBe(true);
     await expect(guest.locator('#screen #allow-sound')).toBeVisible();
     await guest.screenshot({ path: 'test-results/watch-sound.png', fullPage: true });
     await guest.locator('#allow-sound').click();
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused), { timeout: 15_000 }).toBe(false);
-    await expect.poll(() => host.locator('video').evaluate(video => video.currentTime)).toBeGreaterThan(2);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused), { timeout: 15_000 }).toBe(false);
+    await expect.poll(() => host.locator('#video').evaluate(video => video.currentTime)).toBeGreaterThan(2);
     // Starting skew converges through the sync loop rather than being exact from frame one.
     await expect.poll(async () => {
-      const [a, b] = await Promise.all([host, guest].map(page => page.locator('video').evaluate(video => video.currentTime)));
+      const [a, b] = await Promise.all([host, guest].map(page => page.locator('#video').evaluate(video => video.currentTime)));
       return Math.abs(a - b);
     }, { timeout: 15_000 }).toBeLessThan(.35);
     await guest.evaluate(() => { window.testParticipant = document.querySelector('#participants li'); });
@@ -401,8 +401,8 @@ test('track and settings choices stay viewer-local while only the transport move
   // it keeps real headroom on a loaded runner instead of sitting at 85%.
   test.setTimeout(180_000);
   try {
-    await clickControl(guest, '.plyr__controls [data-plyr=play]', () => guest.locator('video').evaluate(video => video.paused));
-    await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
+    await clickControl(guest, '.plyr__controls [data-plyr=play]', () => guest.locator('#video').evaluate(video => video.paused));
+    await expect.poll(() => host.locator('#video').evaluate(video => video.paused)).toBe(true);
     // Hold the first subtitle segment in flight: a fragment that finishes
     // parsing while its track is parked gets its cues dropped and is never
     // refetched, so the round trip below must still bring the cues back.
@@ -420,7 +420,7 @@ test('track and settings choices stay viewer-local while only the transport move
     await expect.poll(() => showingTracks(guest)).toBe(1);
     // Simulate a WebKit-style duplicate: a second subtitle track forced to
     // showing is demoted again, and the selected track keeps its cues.
-    await guest.locator('video').evaluate(video => {
+    await guest.locator('#video').evaluate(video => {
       const subtitles = Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind));
       subtitles[1].mode = 'showing';
     });
@@ -433,14 +433,14 @@ test('track and settings choices stay viewer-local while only the transport move
     await guest.locator('#subtitles').selectOption('1');
     await expect.poll(async () => (await subtitleModes(guest))[1]).toBe('showing');
     releaseSubtitle();
-    await expect.poll(() => guest.locator('video').evaluate(video => Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind))[0].cues?.length ?? 0)).toBeGreaterThan(0);
+    await expect.poll(() => guest.locator('#video').evaluate(video => Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind))[0].cues?.length ?? 0)).toBeGreaterThan(0);
     await guest.locator('#subtitles').selectOption('0');
     await expect.poll(async () => (await subtitleModes(guest))[0]).toBe('showing');
     // The reported failure was a showing track whose cues never activated.
-    await expect.poll(() => guest.locator('video').evaluate(video => Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind))[0].activeCues?.length ?? 0)).toBeGreaterThan(0);
+    await expect.poll(() => guest.locator('#video').evaluate(video => Array.from(video.textTracks).filter(track => ['subtitles', 'captions'].includes(track.kind))[0].activeCues?.length ?? 0)).toBeGreaterThan(0);
     await expectSubtitleSize(guest);
     // Opening the overlay must never apply an image filter to video or an ancestor.
-    for (const page of [host, guest]) expect(await page.locator('video').evaluate(video => {
+    for (const page of [host, guest]) expect(await page.locator('#video').evaluate(video => {
       for (let node = video; node; node = node.parentElement) {
         const style = getComputedStyle(node);
         if (style.filter !== 'none' || style.opacity !== '1' || style.mixBlendMode !== 'normal') return false;
@@ -463,26 +463,26 @@ test('track and settings choices stay viewer-local while only the transport move
     await expect(guest.locator('#bandwidth-badge')).toBeHidden();
     await expect(host.locator('#audio')).toHaveValue('0');
     await host.locator('[data-plyr=seek]').fill('20'); await host.locator('[data-plyr=seek]').dispatchEvent('input');
-    await expect.poll(() => guest.locator('video').evaluate(video => video.currentTime)).toBeGreaterThan(9);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.currentTime)).toBeGreaterThan(9);
     await host.locator('#screen').focus(); await host.keyboard.press('k');
-    await expect.poll(() => guest.locator('video').evaluate(video => Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.text === 'Un sous-titre lisible.' && cue.line === 84 && !cue.snapToLines))), { timeout: 15_000 }).toBe(true);
+    await expect.poll(() => guest.locator('#video').evaluate(video => Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.text === 'Un sous-titre lisible.' && cue.line === 84 && !cue.snapToLines))), { timeout: 15_000 }).toBe(true);
     await expect(guest.locator('.color-captions')).toHaveText('Un sous-titre lisible.');
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(false);
     await expect(guest.locator('#buffering-overlay')).toBeHidden();
     // The fixture ends at 50 s: rewind so the overlay checks and the sections
     // after them still have room to play.
     await showControls(host);
     await host.evaluate(() => window.player.command('seek', 5));
     await host.locator('#screen').focus();
-    await expect.poll(() => guest.locator('video').evaluate(video => video.currentTime)).toBeLessThan(15);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.currentTime)).toBeLessThan(15);
     // Clicking the picture only swaps the controls and cursor, never playback:
     // a playing room keeps playing through the toggle.
     await showControls(host);
     await host.locator('.plyr__video-wrapper').dispatchEvent('click');
     await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/);
     await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '0');
-    await expect(host.locator('video')).toHaveCSS('cursor', 'none');
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    await expect(host.locator('#video')).toHaveCSS('cursor', 'none');
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(false);
     // A click in place brings them back; the room is still untouched. The bar a
     // freeze pins open while the room buffers can sit between the two clicks, so
     // the direction is read from the state the click found instead of assuming the
@@ -492,22 +492,22 @@ test('track and settings choices stay viewer-local while only the transport move
     await host.locator('.plyr__video-wrapper').dispatchEvent('click');
     await expect.poll(() => hiddenControls(host)).toBe(!wasHidden);
     await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', wasHidden ? '1' : '0');
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(false);
     // Only Plyr's own transport moves the room: the bar's play button pauses.
-    await clickControl(host, '.plyr__controls [data-plyr=play]', () => host.locator('video').evaluate(video => video.paused));
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+    await clickControl(host, '.plyr__controls [data-plyr=play]', () => host.locator('#video').evaluate(video => video.paused));
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(true);
     // Paused, the picture still only toggles: a click drops the pinned controls,
     // the next brings them back, and the room stays paused through both.
     await host.locator('.plyr__video-wrapper').dispatchEvent('click');
     await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/);
     await expect(host.locator('.plyr__control--overlaid')).toBeHidden();
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(true);
     await host.locator('.plyr__video-wrapper').dispatchEvent('click');
     await expect(host.locator('.plyr')).not.toHaveClass(/plyr--hide-controls/);
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(true);
     // The overlaid center button is the other transport and resumes the room.
     await host.locator('.plyr__control--overlaid').click();
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(false);
     // A touch that dies before its click leaves a stale hidden snapshot: the
     // next real mouse click must drop it and still only flip the overlay.
     await showControls(host);
@@ -523,15 +523,15 @@ test('track and settings choices stay viewer-local while only the transport move
     await showControls(host);
     await host.locator('.plyr__video-wrapper').evaluate(el => el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/);
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(false);
     // A mouse move over the video brings the controls and cursor back, and the
     // following click drops them again with playback untouched.
     await showControls(host);
     await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '1');
-    await expect(host.locator('video')).not.toHaveCSS('cursor', 'none');
+    await expect(host.locator('#video')).not.toHaveCSS('cursor', 'none');
     await host.locator('.plyr__video-wrapper').click({ position: { x: 10, y: 10 } });
     await expect(host.locator('.plyr')).toHaveClass(/plyr--hide-controls/);
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(false);
     // A real finger tap starts on the poster, the controls slide up under the
     // finger during the hold, and the click Chrome synthesizes at touchend is
     // hit-tested against the transport they carry: it must still only toggle
@@ -549,10 +549,10 @@ test('track and settings choices stay viewer-local while only the transport move
       await expect(phone.locator('#movie-title')).toHaveText('fixture');
       // The first play can still be gated: a tap on the prompt is the gesture.
       await expect.poll(() => phone.evaluate(() =>
-        !document.querySelector('video')?.paused || document.querySelector('#allow-sound')?.checkVisibility() === true), { timeout: 15_000 }).toBe(true);
+        !document.querySelector('#video')?.paused || document.querySelector('#allow-sound')?.checkVisibility() === true), { timeout: 15_000 }).toBe(true);
       if (await phone.locator('#allow-sound').isVisible()) await phone.locator('#allow-sound').tap();
       await expect.poll(() => latest.get(phone)?.state?.phase, { timeout: 15_000 }).toBe('playing');
-      await expect.poll(() => phone.locator('video').evaluate(video => video.paused), { timeout: 10_000 }).toBe(false);
+      await expect.poll(() => phone.locator('#video').evaluate(video => video.paused), { timeout: 10_000 }).toBe(false);
       await expect(phone.locator('#buffering-overlay')).toBeHidden();
       await controlsAutoHide(phone);
       const cdp = await touchContext.newCDPSession(phone);
@@ -576,20 +576,20 @@ test('track and settings choices stay viewer-local while only the transport move
       // A resume only lands once the phone's own buffer passes the room gate:
       // the phase leaves 'buffering' when every member reports enough ahead.
       await expect.poll(() => latest.get(phone)?.state?.phase, { timeout: 15_000 }).toBe('playing');
-      await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+      await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(false);
       // A tap that starts on the shown transport is a real press and moves the room.
       // On a loaded box the 3 s touch hide can win before the press: the tap then
       // starts on the picture and its click is spent on the overlay like the wake
       // tap above. It leaves the sheet shown, so re-tapping lands the real press;
       // a room already paused skips the tap instead of toggling back.
       await expect(async () => {
-        if (await guest.locator('video').evaluate(video => video.paused)) return;
+        if (await guest.locator('#video').evaluate(video => video.paused)) return;
         await tap(spot);
-        await expect.poll(() => guest.locator('video').evaluate(video => video.paused), { timeout: 2000 }).toBe(true);
+        await expect.poll(() => guest.locator('#video').evaluate(video => video.paused), { timeout: 2000 }).toBe(true);
       }).toPass({ timeout: 15_000 });
       await tap(spot);
       await expect.poll(() => latest.get(phone)?.state?.phase, { timeout: 15_000 }).toBe('playing');
-      await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+      await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(false);
       await touchContext.close();
       // A member leaving pauses the room: wait for it, then resume.
       await expect.poll(() => latest.get(host)?.state?.phase).toBe('paused');
@@ -610,14 +610,14 @@ test('the picture layout holds across viewports and fullscreen', async () => {
     // fixture: rewind again for the viewport pass and the sections after it.
     await showControls(host);
     await host.evaluate(() => window.player.command('seek', 5));
-    await expect.poll(() => guest.locator('video').evaluate(video => video.currentTime)).toBeLessThan(15);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.currentTime)).toBeLessThan(15);
     for (const [width, height, name] of [[390,844,'mobile'],[820,1180,'tablet'],[1440,1000,'desktop']]) {
       await guest.setViewportSize({ width, height });
       expect(await guest.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await showControls(guest);
       await expectSubtitleSize(guest);
       await expect(guest.locator('#voice-mic')).toBeInViewport();
-      if (width === 390) await expect.poll(() => guest.locator('video').evaluate(video =>
+      if (width === 390) await expect.poll(() => guest.locator('#video').evaluate(video =>
         Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.line < 80)))).toBe(true);
       await guest.screenshot({ path: `test-results/watch-${name}.png`, fullPage: true });
     }
@@ -635,8 +635,8 @@ test('the picture layout holds across viewports and fullscreen', async () => {
     const hostState = latest.get(host);
     await expect.poll(() => latest.get(host) !== hostState).toBe(true);
     await expect.poll(() => latest.get(host)?.state.phase).toBe('playing');
-    await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(false);
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    await expect.poll(() => host.locator('#video').evaluate(video => video.paused)).toBe(false);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(false);
     // Controls auto-hide while playing; hover until they are shown before
     // clicking fullscreen. Every step waits on its own observable state, so a
     // mid-pass stall is absorbed by controlsAutoHide rather than restarting
@@ -649,7 +649,7 @@ test('the picture layout holds across viewports and fullscreen', async () => {
     // The renderer paints display pixels and never upscales the source:
     // assert that contract, not an equality tied to the fullscreen size.
     await expect.poll(() => host.locator('.color-canvas').evaluate(canvas => {
-      const video = document.querySelector('video'), rect = video.getBoundingClientRect();
+      const video = document.querySelector('#video'), rect = video.getBoundingClientRect();
       if (canvas.dataset.ready !== 'true' || !video.videoWidth) return false;
       const scale = Math.min(1, rect.width * devicePixelRatio / video.videoWidth, rect.height * devicePixelRatio / video.videoHeight);
       return canvas.width === Math.max(1, Math.round(video.videoWidth * scale)) && canvas.height === Math.max(1, Math.round(video.videoHeight * scale));
@@ -668,7 +668,7 @@ test('the picture layout holds across viewports and fullscreen', async () => {
     await ensurePlaying();
     await showControls(host);
     await expect(host.locator('.plyr__controls')).toHaveCSS('opacity', '1');
-    await expect(host.locator('video')).not.toHaveCSS('cursor', 'none');
+    await expect(host.locator('#video')).not.toHaveCSS('cursor', 'none');
     await host.screenshot({ path: 'test-results/watch-fullscreen.png' }); await host.evaluate(() => document.exitFullscreen());
     await expectSubtitleSize(host);
   } catch (error) {
@@ -934,7 +934,7 @@ test('a voice prise is exclusive to one speaker and orphan permissions stay mute
       window.voiceTest.stream?.getAudioTracks().every(track => !track.enabled) ?? false)).toBe(true);
     // Le texte compris n'atteint jamais l'invité et le film continue.
     await expect(guest.locator('#voice-local')).not.toContainText('On se retrouve');
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(false);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(false);
     // Un événement périmé ne remplace pas un surtitre plus récent.
     await guest.evaluate(() => window.player.onVoice({ type: 'voice', state: 'result', utterance: 'stale', seq: 0, speaker: 'Ghost', text: 'STALE' }));
     await expect(guest.locator('#voice-result')).toContainText('엔딩 크레딧');
@@ -1013,7 +1013,7 @@ test('a voice prise survives member journeys and member failures pause the room'
     await expect(guest.locator('html')).toHaveAttribute('lang', 'ko');
     // La reprise suit une panne de membre : elle n'est pas instantanee sous
     // charge, et le reste du fichier attend la meme chose avec ce budget.
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused), { timeout: 15_000 }).toBe(false);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused), { timeout: 15_000 }).toBe(false);
     // Clavier (#47) : le micro est un vrai bouton, Entrée tient lieu d'appui
     // pour démarrer comme pour clore. Le délai de reprise peut encore courir,
     // la pression est retentée tant que la prise n'est pas accordée.
@@ -1074,9 +1074,9 @@ test('a voice prise survives member journeys and member failures pause the room'
     // freezes as soon as its pause command lands or its report goes stale
     // (reportTimeout), and the host follows. Both directions are the contract.
     await b.setOffline(true);
-    await expect.poll(() => guest.locator('video').evaluate(video => video.paused)).toBe(true);
+    await expect.poll(() => guest.locator('#video').evaluate(video => video.paused)).toBe(true);
     await expect(guest.locator('#buffering-label')).toContainText('연결이 끊겨');
-    await expect.poll(() => host.locator('video').evaluate(video => video.paused), { timeout: 10_000 }).toBe(true);
+    await expect.poll(() => host.locator('#video').evaluate(video => video.paused), { timeout: 10_000 }).toBe(true);
     const contextLost = await host.locator('.color-canvas').evaluate(canvas => {
       const extension = canvas.getContext('webgl2')?.getExtension('WEBGL_lose_context');
       if (!extension) return false;
@@ -1085,7 +1085,7 @@ test('a voice prise survives member journeys and member failures pause the room'
     });
     if (!contextLost) test.skip(true, 'webgl-lose-context-unavailable: cannot exercise renderer failure');
     await expect(host.locator('#buffering-label')).toContainText('rendu des couleurs');
-    await expect.poll(() => host.locator('video').evaluate(video => video.paused)).toBe(true);
+    await expect.poll(() => host.locator('#video').evaluate(video => video.paused)).toBe(true);
     expect(errors).toEqual([]);
   } catch (error) {
     await reportFailure(error);

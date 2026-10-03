@@ -726,3 +726,74 @@ test('webcam is an opt-in capability and its signaling relays between two partic
   const rerouted = await until(live.frames, m => m.type === 'webcam' && m.action === 'signal' && m.signal?.candidate?.candidate === 'rerouted');
   assert.equal(rerouted.from, watcher.id);
 });
+
+test('subtitle cue timing is read and rewritten in place', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'movie-night-test-'));
+  const origin = 'http://localhost:3000';
+  const movieId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+  const trackId = 'cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa';
+  const generation = 'dddddddd-eeee-ffff-aaaa-bbbbbbbbbbbb';
+  const directory = path.join(dataDir, 'movies', movieId, generation);
+  await mkdir(directory, { recursive: true });
+  const filename = `sub_${trackId}.vtt`;
+  await writeFile(path.join(directory, filename), 'WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nUn sous-titre.\n\n00:00:05.000 --> 00:00:07.000\nDeuxième.\n');
+  await writeFile(path.join(directory, `sub_${trackId}_original.vtt`),
+    'WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:126000\n\n00:00:01.000 --> 00:00:03.000\nUn sous-titre.\n');
+  await writeFile(path.join(directory, `sub_${trackId}.m3u8`),
+    `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:60\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:60,\n${filename}\n#EXT-X-ENDLIST\n`);
+  await writeFile(path.join(directory, 'master.m3u8'), '#EXTM3U\n');
+  await writeFile(path.join(dataDir, 'movies', movieId, 'movie.json'), JSON.stringify({
+    id: movieId, title: 'Timed Film', status: 'ready', duration: 60, generation,
+    subtitles: [{ id: trackId, label: 'Français', language: 'fr', filename, external: true }],
+    renditions: [{ id: 'original', manifest: 'master_original.m3u8', streamIndex: 0, timelineOffset: 1.4 }],
+  }));
+  const instance = createApplication({ dataDir, password: 'test-password-long-enough', origin, env: {} });
+  await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${instance.server.address().port}`;
+  t.after(async () => { await instance.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const request = (url, { cookie, method = 'GET', body } = {}) => fetch(base + url, {
+    method, headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body) });
+  const cuesUrl = `/api/movies/${movieId}/subtitles/${trackId}/cues`;
+  assert.equal((await request(cuesUrl)).status, 401);
+  const login = await request('/api/login', { method: 'POST', body: { password: 'test-password-long-enough' } });
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  assert.equal((await request(`/api/movies/${movieId}/subtitles/${'a'.repeat(36)}/cues`, { cookie })).status, 404);
+  assert.equal((await request(`/api/movies/${'b'.repeat(36)}/subtitles/${trackId}/cues`, { cookie })).status, 404);
+  const listed = await (await request(cuesUrl, { cookie })).json();
+  assert.equal(listed.duration, 60);
+  assert.deepEqual(listed.cues, [
+    { start: 1, end: 3, text: 'Un sous-titre.' },
+    { start: 5, end: 7, text: 'Deuxième.' },
+  ]);
+  // Un film non prêt refuse la lecture comme l'écriture.
+  const pendingId = 'eeeeeeee-ffff-aaaa-bbbb-cccccccccccc';
+  instance.store.save({ id: pendingId, title: 'Pending', status: 'uploaded', duration: 60,
+    subtitles: [{ id: trackId, filename }] });
+  assert.equal((await request(`/api/movies/${pendingId}/subtitles/${trackId}/cues`, { cookie })).status, 409);
+  assert.equal((await request(`/api/movies/${pendingId}/subtitles/${trackId}/cues`, { cookie, method: 'PUT',
+    body: { cues: [] } })).status, 409);
+  const shifted = listed.cues.map(cue => ({ ...cue, start: cue.start + 1.25, end: cue.end + 1.25 }));
+  for (const [body, status] of [
+    [undefined, 400],
+    [{ cues: 'nope' }, 400],
+    [{ cues: [{ start: 'x', end: 3, text: 'a' }] }, 400],
+    [{ cues: [{ start: 5, end: 2, text: 'a' }] }, 400],
+    [{ cues: [{ start: -1, end: 2, text: 'a' }] }, 400],
+    [{ cues: [{ start: 500, end: 501, text: 'a' }] }, 400],
+    [{ cues: [{ start: 1, end: 2, text: 'x'.repeat(501) }] }, 400],
+    [{ cues: shifted }, 200],
+  ]) {
+    const response = await request(cuesUrl, { cookie, method: 'PUT', body });
+    assert.equal(response.status, status, JSON.stringify(body ?? null).slice(0, 60));
+  }
+  // Les deux fichiers (base + copie par rendition) ont été réécrits, et la
+  // copie garde son en-tête X-TIMESTAMP-MAP propre.
+  const base_vtt = await readFile(path.join(directory, filename), 'utf8');
+  assert.match(base_vtt, /00:00:02\.250 --> 00:00:04\.250\nUn sous-titre\./);
+  const rendition_vtt = await readFile(path.join(directory, `sub_${trackId}_original.vtt`), 'utf8');
+  assert.match(rendition_vtt, /^WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00\.000,MPEGTS:126000\n/m);
+  assert.match(rendition_vtt, /00:00:02\.250 --> 00:00:04\.250/);
+  const back = await (await request(cuesUrl, { cookie })).json();
+  assert.deepEqual(back.cues, shifted);
+});
