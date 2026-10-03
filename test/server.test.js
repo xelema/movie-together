@@ -173,6 +173,10 @@ test('authenticated upload, original video and audio, private rooms and access c
     headers: { 'Content-Type': 'text/plain' }, body: Buffer.from('1\n00:00:01,000 --> 00:00:03,000\nA subtitle.\n') });
   assert.equal(subtitle.status, 200);
   const withSubtitles = await subtitle.json();
+  // Le fichier importé laisse une copie d'origine figée à côté du .vtt servi.
+  const addedId = withSubtitles.subtitles[0].id;
+  const originVtt = () => readFile(path.join(instance.store.directory(movie.id), prepared.generation, `sub_${addedId}.original.vtt`), 'utf8');
+  assert.match(await originVtt(), /A subtitle\./);
   const vtt = await request(`/media/${movie.id}/${withSubtitles.subtitles[0].filename}`, { cookie });
   // Les fichiers WebVTT revalident comme les segments : no-cache, ETag lié au
   // fichier servi, 304 quand rien n'a bougé.
@@ -218,6 +222,12 @@ test('authenticated upload, original video and audio, private rooms and access c
   assert.equal(prepared.audio.length, 2);
   assert.equal(prepared.subtitles.length, 2);
   assert.ok(prepared.subtitles.every(track => track.external));
+  // La copie d'origine traverse la régénération comme le .vtt édité.
+  assert.match(await originVtt(), /A subtitle\./);
+  // Sa suppression retire la piste, son .vtt et la copie d'origine.
+  assert.equal((await request(`/api/movies/${movie.id}/subtitles/${addedId}`, { cookie, method: 'DELETE' })).status, 200);
+  await assert.rejects(originVtt(), /ENOENT/);
+  await assert.rejects(readFile(path.join(instance.store.directory(movie.id), prepared.generation, `sub_${addedId}.vtt`)), /ENOENT/);
   assert.match(await (await request(`/media/${movie.id}/master.m3u8`, { cookie })).text(), /NAME="French"/);
   assert.equal((await request(`/media/${movie.id}/master.m3u8`)).status, 401);
   const room = await (await request('/api/rooms', { cookie, method: 'POST', body: { movieId: movie.id, code: 'Cinema-Soir' } })).json();
@@ -737,6 +747,9 @@ test('subtitle cue timing is read and rewritten in place', async t => {
   await mkdir(directory, { recursive: true });
   const filename = `sub_${trackId}.vtt`;
   await writeFile(path.join(directory, filename), 'WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nUn sous-titre.\n\n00:00:05.000 --> 00:00:07.000\nDeuxième.\n');
+  // La copie d'origine fige le timing tel qu'importé, avant toute retouche.
+  await writeFile(path.join(directory, `sub_${trackId}.original.vtt`),
+    'WEBVTT\n\n00:00:00.500 --> 00:00:02.500\nUn sous-titre.\n\n00:00:04.500 --> 00:00:06.500\nDeuxième.\n');
   await writeFile(path.join(directory, `sub_${trackId}_original.vtt`),
     'WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:126000\n\n00:00:01.000 --> 00:00:03.000\nUn sous-titre.\n');
   await writeFile(path.join(directory, `sub_${trackId}.m3u8`),
@@ -766,6 +779,23 @@ test('subtitle cue timing is read and rewritten in place', async t => {
     { start: 1, end: 3, text: 'Un sous-titre.' },
     { start: 5, end: 7, text: 'Deuxième.' },
   ]);
+  // La copie d'origine est servie avec les répliques (instants seuls) et le
+  // décalage courant ; une piste sans fichier d'origine (importée avant le
+  // suivi) annonce honnêtement « origine inconnue ».
+  assert.deepEqual(listed.origin, [{ start: 0.5, end: 2.5 }, { start: 4.5, end: 6.5 }]);
+  assert.deepEqual(listed.shift, { origin: true, shiftMs: 500, uniform: true, editedCues: 0, cueCount: 2, durationsChanged: false });
+  const orphanId = 'ffffffff-aaaa-bbbb-cccc-dddddddddddd';
+  await writeFile(path.join(directory, `sub_${orphanId}.vtt`), 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nSans origine.\n');
+  instance.store.save({ id: movieId, title: 'Timed Film', status: 'ready', duration: 60, generation,
+    subtitles: [{ id: trackId, label: 'Français', language: 'fr', filename, external: true },
+      { id: orphanId, label: 'Orpheline', language: 'en', filename: `sub_${orphanId}.vtt`, external: true }],
+    renditions: [{ id: 'original', manifest: 'master_original.m3u8', streamIndex: 0, timelineOffset: 1.4 }] });
+  const orphan = await (await request(`/api/movies/${movieId}/subtitles/${orphanId}/cues`, { cookie })).json();
+  assert.equal(orphan.origin, null);
+  assert.equal(orphan.shift.origin, false);
+  assert.equal(orphan.shift.shiftMs, null);
+  // Sans copie d'origine, la réinitialisation refuse proprement.
+  assert.equal((await request(`/api/movies/${movieId}/subtitles/${orphanId}/cues/reset`, { cookie, method: 'POST', body: {} })).status, 409);
   // Un film non prêt refuse la lecture comme l'écriture.
   const pendingId = 'eeeeeeee-ffff-aaaa-bbbb-cccccccccccc';
   instance.store.save({ id: pendingId, title: 'Pending', status: 'uploaded', duration: 60,
@@ -796,4 +826,15 @@ test('subtitle cue timing is read and rewritten in place', async t => {
   assert.match(rendition_vtt, /00:00:02\.250 --> 00:00:04\.250/);
   const back = await (await request(cuesUrl, { cookie })).json();
   assert.deepEqual(back.cues, shifted);
+  // L'origine ne suit pas les retouches : c'est elle la référence.
+  assert.deepEqual(back.origin, listed.origin);
+  assert.equal(back.shift.shiftMs, listed.shift.shiftMs + 1250);
+  // La réinitialisation réécrit le .vtt de travail depuis la copie d'origine.
+  const reset = await request(`${cuesUrl}/reset`, { cookie, method: 'POST', body: {} });
+  assert.equal(reset.status, 200);
+  const restored = await reset.json();
+  assert.equal(restored.shift.shiftMs, 0);
+  assert.deepEqual(restored.cues.map(({ start, end }) => ({ start, end })), listed.origin);
+  const resetBack = await (await request(cuesUrl, { cookie })).json();
+  assert.deepEqual(resetBack.cues, listed.cues.map(cue => ({ ...cue, start: cue.start - 0.5, end: cue.end - 0.5 })));
 });

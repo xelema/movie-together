@@ -65,6 +65,26 @@ export function cueIndexAt(cues, time) {
   return cues.findIndex(cue => cue.start <= time && time < cue.end);
 }
 
+// Résumé du décalage courant mesuré contre la référence intacte gardée à
+// l'import : décalage uniforme quand toutes les répliques ont bougé d'un
+// bloc, médiane sinon — les retouches ponctuelles ne la font pas dévier.
+// Sans référence (piste importée avant sa conservation) ou avec un nombre
+// de répliques différent, l'origine est honnêtement « inconnue ».
+export function shiftSummary(cues, original) {
+  if (!Array.isArray(original) || original.length !== cues.length)
+    return { origin: false, shiftMs: null, uniform: false, editedCues: 0, cueCount: cues.length, durationsChanged: false };
+  const deltas = cues.map((cue, index) => (cue.start - original[index].start) * 1000);
+  const durationsChanged = cues.some((cue, index) =>
+    Math.abs((cue.end - cue.start) - (original[index].end - original[index].start)) > 0.001);
+  const sorted = [...deltas].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  const median = sorted.length ? (sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2) : 0;
+  const shiftMs = Math.round(median);
+  const uniform = !sorted.length || sorted.at(-1) - sorted[0] <= 1;
+  const editedCues = deltas.filter(delta => Math.abs(delta - shiftMs) > 1).length;
+  return { origin: true, shiftMs, uniform, editedCues, cueCount: cues.length, durationsChanged };
+}
+
 // Garde-fou avant écriture : tri chronologique, pas de temps négatif, et une
 // réplique doit durer au moins un centième de seconde pour rester valide.
 // Une réplique qui déborde la fin du film est bornée ; une réplique entièrement
