@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, writeFile, readdir, stat, statfs, rm, unlink } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, stat, statfs, rm, unlink, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import jschardet from 'jschardet';
@@ -218,7 +218,6 @@ export async function writeMaster(directory, audio, subtitles, renditions) {
   const entries = subtitles.map(track => `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="${quote(track.label)}",LANGUAGE="${language(track.language)}",AUTOSELECT=NO,DEFAULT=NO,FORCED=NO,URI="sub_${track.id}.m3u8"`);
   lines.splice(1, 0, ...entries);
   // Atomic replacement keeps readers from seeing partially written manifests.
-  const { rename } = await import('node:fs/promises');
   await writeFile(path.join(directory, 'master.m3u8.tmp'), `${lines.join('\n')}\n`);
   await rename(path.join(directory, 'master.m3u8.tmp'), path.join(directory, 'master.m3u8'));
   if (renditions?.length) {
@@ -240,6 +239,9 @@ export async function writeMaster(directory, audio, subtitles, renditions) {
       const subs = [];
       for (const track of subtitles) {
         const name = `sub_${track.id}_${rendition.id}`;
+        // Le .vtt précède la playlist et le manifeste qui le référencent : un
+        // client qui recharge pendant la réécriture ne tombe pas sur un 404.
+        await writeRenditionVtt(directory, track, rendition, await readFile(path.join(directory, track.filename), 'utf8'));
         const playlist = (await readFile(path.join(directory, `sub_${track.id}.m3u8`), 'utf8')).replace(track.filename, `${name}.vtt`);
         await writeFile(path.join(directory, `${name}.m3u8`), playlist);
         subs.push(`#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="${quote(track.label)}",LANGUAGE="${language(track.language)}",AUTOSELECT=NO,DEFAULT=NO,FORCED=NO,URI="${name}.m3u8"`);
@@ -247,32 +249,33 @@ export async function writeMaster(directory, audio, subtitles, renditions) {
       await writeFile(path.join(directory, `${rendition.manifest}.tmp`), [...shared, ...subs, info, lines[index]].join('\n') + '\n');
       await rename(path.join(directory, `${rendition.manifest}.tmp`), path.join(directory, rendition.manifest));
     }
-    // Les .vtt de chaque rendition sont (ré)écrits par le même chemin que
-    // l'édition de timing : base normalisée + X-TIMESTAMP-MAP par variante.
-    for (const track of subtitles) {
-      await writeSubtitleCues(directory, track, renditions,
-        parseVtt(await readFile(path.join(directory, track.filename), 'utf8')));
-    }
     // Both entry points reference the same video bytes.
     await writeFile(path.join(directory, 'master.m3u8.tmp'), await readFile(path.join(directory, renditions[0].manifest)));
     await rename(path.join(directory, 'master.m3u8.tmp'), path.join(directory, 'master.m3u8'));
   }
 }
 
-// La copie d'une piste par rendition porte le décalage MPEGTS de sa variante
-// dans X-TIMESTAMP-MAP ; la base reste sans en-tête de mapping. Réécrire en
-// place suffit : l'ETag /media porte taille+mtime et invalide le cache client.
+// Copie d'une piste pour une rendition : la base réécrite porte l'en-tête
+// X-TIMESTAMP-MAP du décalage MPEGTS de sa variante. La copie reste textuelle
+// (pas de relecture des cues) : la préparation ne doit jamais perdre une cue
+// qu'elle n'a pas su relire — une base passée par l'éditeur est déjà normalisée.
+export async function writeRenditionVtt(directory, track, rendition, text) {
+  const mapped = text.replace(/^X-TIMESTAMP-MAP=.*\r?\n/gm, '')
+    .replace(/^WEBVTT[^\r\n]*/, `WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:${Math.round(rendition.timelineOffset * 90000)}`);
+  const file = path.join(directory, `sub_${track.id}_${rendition.id}.vtt`);
+  await writeFile(`${file}.tmp`, mapped);
+  await rename(`${file}.tmp`, file);
+}
+
+// Édition du timing : la base est réécrite depuis les cues, puis chaque copie
+// par rendition. Réécrire en place suffit, l'ETag /media porte taille+mtime et
+// invalide le cache client sans nouvelle préparation.
 export async function writeSubtitleCues(directory, track, renditions, cues) {
-  const { rename } = await import('node:fs/promises');
-  const write = async (file, content) => {
-    await writeFile(`${file}.tmp`, content);
-    await rename(`${file}.tmp`, file);
-  };
-  await write(path.join(directory, track.filename), serializeVtt(cues));
-  for (const rendition of renditions ?? []) {
-    const timestampMap = `LOCAL:00:00:00.000,MPEGTS:${Math.round(rendition.timelineOffset * 90000)}`;
-    await write(path.join(directory, `sub_${track.id}_${rendition.id}.vtt`), serializeVtt(cues, { timestampMap }));
-  }
+  const text = serializeVtt(cues);
+  const base = path.join(directory, track.filename);
+  await writeFile(`${base}.tmp`, text);
+  await rename(`${base}.tmp`, base);
+  for (const rendition of renditions ?? []) await writeRenditionVtt(directory, track, rendition, text);
 }
 
 export async function readSubtitleCues(directory, track) {
