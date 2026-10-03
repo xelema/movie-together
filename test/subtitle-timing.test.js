@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseVtt, serializeVtt, formatTimestamp, shiftCues, cueIndexAt, clampCues } from '../public/subtitle-timing.js';
+import { parseVtt, serializeVtt, formatTimestamp, shiftCues, cueIndexAt, shiftSummary, clampCues } from '../public/subtitle-timing.js';
 
 test('parseVtt reads timestamps, settings and multi-line cue text', () => {
   const cues = parseVtt(`WEBVTT
@@ -60,6 +60,47 @@ test('shiftCues moves whole cues and never produces a negative start', () => {
   assert.equal(partial[0].start, 1);
   assert.equal(partial[1].start, 14);
   assert.equal(partial[2].start, 8);
+});
+
+test('shiftSummary reads a uniform shift against the origin copy', () => {
+  const origin = [{ start: 1, end: 2, text: 'a' }, { start: 4, end: 6, text: 'b' }, { start: 8, end: 9, text: 'c' }];
+  // Timing identique : décalage nul, aucune réplique retouchée.
+  assert.deepEqual(shiftSummary(origin.map(cue => ({ ...cue })), origin),
+    { origin: true, shiftMs: 0, uniform: true, editedCues: 0, cueCount: 3, durationsChanged: false });
+  // Décalage global uniforme, signe conservé, arrondi à la milliseconde.
+  assert.equal(shiftSummary(shiftCues(origin, 1.2504), origin).shiftMs, 1250);
+  assert.equal(shiftSummary(shiftCues(origin, -0.5), origin).shiftMs, -500);
+  // Une durée retouchée n'est pas un décalage mais est signalée.
+  const stretched = origin.map(cue => ({ ...cue }));
+  stretched[0].end += 0.5;
+  const summary = shiftSummary(stretched, origin);
+  assert.equal(summary.uniform, true);
+  assert.equal(summary.durationsChanged, true);
+});
+
+test('shiftSummary takes the median and counts deviating cues', () => {
+  const origin = Array.from({ length: 5 }, (_, index) => ({ start: index * 4, end: index * 4 + 2 }));
+  const cues = shiftCues(origin, 2);
+  // Deux retouches ponctuelles ne font pas dévier la médiane.
+  cues[1].start += 0.4; cues[4].start -= 0.7;
+  const summary = shiftSummary(cues, origin);
+  assert.equal(summary.uniform, false);
+  assert.equal(summary.shiftMs, 2000);
+  assert.equal(summary.editedCues, 2);
+});
+
+test('shiftSummary reports an unknown origin instead of a made-up number', () => {
+  const cues = [{ start: 1, end: 2, text: 'a' }, { start: 4, end: 6, text: 'b' }];
+  for (const origin of [null, undefined, 'x']) {
+    const summary = shiftSummary(cues, origin);
+    assert.equal(summary.origin, false);
+    assert.equal(summary.shiftMs, null);
+  }
+  // Un nombre de répliques différent ne se compare pas par index.
+  const summary = shiftSummary(cues, [cues[0]]);
+  assert.equal(summary.origin, false);
+  assert.equal(summary.shiftMs, null);
+  assert.equal(summary.cueCount, 2);
 });
 
 test('cueIndexAt finds the live cue and nothing between cues', () => {
