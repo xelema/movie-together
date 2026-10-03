@@ -75,6 +75,16 @@ test('admin retimes an added subtitle track and the shift persists', async ({ br
     await expect(firstCue).toContainText('00:00:01.000');
     await expect(page.locator('#timing-origin')).toContainText('Décalage actuel : 0,000 s');
     await expect(page.locator('#timing-reset')).toBeDisabled();
+    // Une retouche isolée ne déplace pas la médiane mais laisse la
+    // réinitialisation disponible : sans elle, aucun retour à l'origine.
+    await page.locator('#timing-cues li').nth(1).click();
+    await page.locator('#timing-edit-start').fill('6.000');
+    await page.locator('#timing-edit-start').press('Tab');
+    await expect(page.locator('#timing-origin')).toContainText('1 répliques ajustées');
+    await expect(page.locator('#timing-reset')).toBeEnabled();
+    await page.locator('#timing-reset').click();
+    await expect(page.locator('#timing-origin')).toContainText('Décalage actuel : 0,000 s');
+    await expect(page.locator('#timing-reset')).toBeDisabled();
     await page.locator('#timing-offset-plus-1s').click();
     await expect(firstCue).toContainText('00:00:02.000');
     await page.locator('#timing-save').click();

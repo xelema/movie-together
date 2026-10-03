@@ -931,7 +931,10 @@ function renderTimingOrigin() {
     : `${label} : ${(shift.shiftMs / 1000).toLocaleString(language(), { minimumFractionDigits: 3, maximumFractionDigits: 3, signDisplay: 'exceptZero' })} s`
       + (shift.uniform ? '' : ` · ${t(`${shift.editedCues} répliques ajustées individuellement`,
         `대사 ${shift.editedCues}개 개별 조정`, `${shift.editedCues} câu chỉnh riêng`)}`);
-  $('timing-reset').disabled = !shift.origin || !shift.shiftMs;
+  // Le bouton n'a rien à rétablir que si le brouillon porte déjà le timing
+  // d'origine (décalage uniforme nul, durées intactes). Une retouche isolée —
+  // médiane nulle mais non uniforme, durée changée — garde un chemin de retour.
+  $('timing-reset').disabled = !timing.origin || (shift.origin && shift.uniform && !shift.shiftMs && !shift.durationsChanged);
 }
 function timingOverlayText() {
   if (!timing) return;
