@@ -23,6 +23,7 @@
     "helmet": "^8.3.0",
     "hls.js": "^1.7.2",
     "jschardet": "^3.1.4",
+    "onnxruntime-node": "^1.30.0",
     "plyr": "^3.8.4",
     "ws": "^8.21.3"
   },
