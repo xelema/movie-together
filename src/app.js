@@ -517,9 +517,11 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     timingAnalyses.set(key, entry);
     res.status(202).json(entry);
     const directory = path.join(store.directory(movie.id), movie.generation);
+    const audioIndex = movie.audio?.[0]?.index ?? 0;
     (async () => {
       try {
-        const mask = await speechMask(path.join(store.directory(movie.id), 'source'), { index: movie.audio?.[0]?.index ?? 0 });
+        const mask = await speechMask(path.join(store.directory(movie.id), 'source'),
+          { index: audioIndex, cache: path.join(directory, `speech_${audioIndex}.json`) });
         const cues = await readSubtitleCues(directory, track);
         const result = findOffset({ cues, speech: mask.intervals, duration: movie.duration });
         Object.assign(entry, { state: 'done', result: { ...result, speechRatio: mask.speechRatio, audioMinutes: +(mask.duration / 60).toFixed(1) } });
