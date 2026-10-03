@@ -129,6 +129,18 @@
       <div class="dialog-actions"><button id="random-code" class="secondary" type="button" data-fr="Aléatoire" data-ko="무작위" data-vi="Ngẫu nhiên"></button><button data-fr="Créer" data-ko="만들기" data-vi="Tạo"></button></div>
     </form></dialog>
 
+    <dialog id="prepare-dialog" aria-labelledby="prepare-heading">
+      <div class="dialog-head"><h2 id="prepare-heading" data-fr="Préparer le film" data-ko="영화 준비" data-vi="Chuẩn bị phim"></h2>
+        <button id="prepare-close" class="ghost" type="button" aria-label="Fermer / 닫기 / Đóng">×</button></div>
+      <ol id="prepare-steps" class="steps"></ol>
+      <div id="prepare-body"></div>
+      <p id="prepare-error" class="media-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="prepare-back" class="secondary" type="button"></button>
+        <button id="prepare-next" type="button"></button>
+      </div>
+    </dialog>
+
     <dialog id="timing-dialog">
       <div class="dialog-head"><h2 data-fr="Timing des sous-titres" data-ko="자막 싱크" data-vi="Timing phụ đề"></h2>
         <button id="timing-close" class="ghost" type="button" aria-label="Fermer / 닫기 / Đóng">×</button></div>
