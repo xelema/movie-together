@@ -8,7 +8,7 @@ const goto = (page, url) => expect(async () => {
 }).toPass({ timeout: 60_000 });
 
 test('admin retimes an added subtitle track and the shift persists', async ({ browser }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(120_000);
   const context = await browser.newContext();
   const page = await context.newPage();
   page.setDefaultTimeout(10_000); page.setDefaultNavigationTimeout(30_000);
@@ -26,8 +26,14 @@ test('admin retimes an added subtitle track and the shift persists', async ({ br
     await page.locator('#upload-file').setInputFiles({ name: 'fixture.mp4', mimeType: 'video/mp4', buffer: await readFile('data/e2e/fixture.mp4') });
     await expect(page.locator('#movies')).toContainText('À préparer');
     await openDetails();
-    await page.locator('#movies input[type=file]').setInputFiles({ name: 'dialogue.srt', mimeType: 'text/plain',
-      buffer: Buffer.from('1\n00:00:01,000 --> 00:00:03,000\nPremier sous-titre.\n\n2\n00:00:05,000 --> 00:00:07,000\nDeuxième réplique.\n') });
+    // Dix répliques minimum pour que le recalage automatique accepte de
+    // mesurer (le moteur refuse en deçà) : le srt en porte douze.
+    const srt = Array.from({ length: 12 }, (_, index) => {
+      const at = index * 4 + 1;
+      const stamp = seconds => `00:00:${String(seconds).padStart(2, '0')},000`;
+      return `${index + 1}\n${stamp(at)} --> ${stamp(at + 2)}\nRéplique ${index + 1}.\n`;
+    }).join('\n');
+    await page.locator('#movies input[type=file]').setInputFiles({ name: 'dialogue.srt', mimeType: 'text/plain', buffer: Buffer.from(srt) });
     await page.getByLabel('Nom affiché').fill('Français');
     await page.getByRole('button', { name: 'Ajouter', exact: true }).click();
     await expect(page.locator('#movies')).toContainText('Français · fr');
@@ -37,12 +43,15 @@ test('admin retimes an added subtitle track and the shift persists', async ({ br
     await openDetails();
     await page.getByRole('button', { name: 'Éditer le timing' }).click();
     await expect(page.locator('#timing-dialog')).toBeVisible();
-    await expect(page.locator('#timing-track .timing-cue')).toHaveCount(2);
-    await expect(page.locator('#timing-cues li')).toHaveCount(2);
-    // Le bouton IA est un placeholder visible : clic = notice, rien d'autre.
+    await expect(page.locator('#timing-track .timing-cue')).toHaveCount(12);
+    await expect(page.locator('#timing-cues li')).toHaveCount(12);
+    // Le film de test n'a que des sinusoïdes : le VAD n'y trouve aucune parole
+    // et l'analyse le dit honnêtement (ffmpeg + modèle, attente large).
     await expect(page.locator('#timing-auto')).toBeEnabled();
     await page.locator('#timing-auto').click();
-    await expect(page.locator('#notice')).toContainText('prochaine version');
+    await expect(page.locator('#timing-auto')).toBeDisabled();
+    await expect(page.locator('#notice')).toContainText('Aucune parole détectée', { timeout: 60_000 });
+    await expect(page.locator('#timing-auto')).toBeEnabled();
     // Lecture/pause pilote bien l'élément vidéo de l'aperçu.
     await page.locator('#timing-play').click();
     await expect.poll(() => page.locator('#timing-video').evaluate(video => !video.paused), { timeout: 15_000 }).toBe(true);
