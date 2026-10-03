@@ -123,12 +123,12 @@ test('une séance ordinaire écrit son journal client et serveur sur le disque',
         // demands a gesture, so a pressed button can never be the condition.
         // Any gesture on the player surface grants it, and the media is paused
         // here, so the click only starts playback.
-        const paused = await page.locator('video').evaluate(video => video.paused).catch(() => false);
+        const paused = await page.locator('#video').evaluate(video => video.paused).catch(() => false);
         if (paused) await page.locator('.plyr__video-wrapper').click({ position: { x: 10, y: 10 } }).catch(() => {});
       }
     }
     return page.evaluate(() => {
-      const element = document.querySelector('video');
+      const element = document.querySelector('#video');
       return window.player?.state?.phase === 'playing' && !element.paused && element.currentTime > 0;
     });
   };
@@ -137,7 +137,7 @@ test('une séance ordinaire écrit son journal client et serveur sur le disque',
   } catch (error) {
     // Un échec doit nommer la barrière rencontrée, pas seulement un booléen.
     const dump = await page.evaluate(() => {
-      const video = document.querySelector('video');
+      const video = document.querySelector('#video');
       return { phase: window.player?.state?.phase, paused: video.paused, readyState: video.readyState, media: video.error?.message,
         time: video.currentTime, blocked: window.player?.activationBlocked, failure: window.player?.failure,
         controls: document.querySelector('.plyr__control--overlaid')?.checkVisibility?.() ?? false,
@@ -150,7 +150,7 @@ test('une séance ordinaire écrit son journal client et serveur sur le disque',
   await page.locator('[data-plyr=seek]').fill('50');
   await page.locator('[data-plyr=seek]').dispatchEvent('change');
   await page.keyboard.press('m');
-  await expect.poll(() => page.locator('video').evaluate(video => video.currentTime), { timeout: 30_000 }).toBeGreaterThan(1);
+  await expect.poll(() => page.locator('#video').evaluate(video => video.currentTime), { timeout: 30_000 }).toBeGreaterThan(1);
 
   const memberId = await page.evaluate(() => window.player?.memberId ?? null);
   await expect.poll(() => posted.length, { timeout: 30_000,
