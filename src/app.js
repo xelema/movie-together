@@ -40,7 +40,7 @@ const trackNames = source => Object.fromEntries(Object.entries(source ?? {})
 // their source index; subtitles prepared before they did are matched back by
 // language, unambiguous only.
 const previousSubtitles = movie => {
-  const pool = (movie.probe?.subtitles ?? []).filter(track => track.compatible);
+  const pool = (movie.probe?.subtitles ?? []).filter(track => track.compatible || track.recognisable);
   return (movie.subtitles ?? []).filter(track => !track.external).map(track => {
     if (track.index !== undefined) return track.index;
     const matches = pool.filter(item => item.language === track.language);

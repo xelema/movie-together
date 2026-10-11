@@ -16,6 +16,10 @@ export const TEXT_SUBTITLE_CODECS = ['subrip', 'webvtt', 'mov_text', 'ass', 'ssa
   'jacosub', 'pjs', 'realtext', 'stl', 'subviewer', 'subviewer1', 'vplayer', 'eia_608'];
 export const IMAGE_SUBTITLE_CODECS = ['dvd_subtitle', 'hdmv_pgs_subtitle', 'dvb_subtitle', 'xsub'];
 
+// Image codecs the preparation can read back into text. PGS is the one films
+// actually carry here; the others would need their own recogniser.
+export const OCR_SUBTITLE_CODECS = ['hdmv_pgs_subtitle'];
+
 // Codec to demuxer, for external tracks recorded before they stored their demuxer name.
 export const SUBTITLE_DEMUXERS = { subrip: 'srt', webvtt: 'webvtt', ass: 'ass', ssa: 'ass', sami: 'sami',
   microdvd: 'microdvd', mpl2: 'mpl2', jacosub: 'jacosub', pjs: 'pjs', realtext: 'realtext', stl: 'stl',
