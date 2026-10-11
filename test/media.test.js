@@ -323,3 +323,29 @@ test('a kept PGS track is read back into a text track at preparation', async t =
   assert.match(caption.text, /hot, sunny day/);
   assert.match(await readFile(path.join(prepared, 'master.m3u8'), 'utf8'), /TYPE=SUBTITLES/);
 });
+
+test('a text track of the same language spares the film the recognition', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'movie-night-pgs-pair-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createStore(root), movie = { id: randomUUID(), title: 'Pair', status: 'uploaded' }; store.save(movie);
+  const directory = store.directory(movie.id), source = path.join(directory, 'source');
+  const dialogue = path.join(directory, 'dialogue.srt');
+  await writeFile(dialogue, '1\n00:00:00,000 --> 00:00:03,000\nBonjour.\n');
+  // The same subtitles twice: once as text, once as bitmaps, both announced as English.
+  await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-copyts',
+    '-f', 'lavfi', '-i', 'color=c=gray:size=320x240:rate=10', '-i', dialogue,
+    '-i', fileURLToPath(new URL('./fixtures/pgs-en.sup', import.meta.url)),
+    '-map', '0:v', '-map', '1', '-map', '2', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+    '-c:s', 'copy', '-metadata:s:s:0', 'language=eng', '-metadata:s:s:1', 'language=eng',
+    '-copyts', '-t', '45', '-f', 'matroska', source]);
+  const probe = await probeFile(source);
+  assert.deepEqual(probe.subtitles.map(track => [track.codec, track.language, track.compatible, track.recognisable]),
+    [['subrip', 'eng', true, false], ['hdmv_pgs_subtitle', 'eng', false, true]]);
+  const stages = [];
+  const result = await prepareMovie(store, movie, [],
+    [probe.subtitles[0].index, probe.subtitles[1].index], { onProgress: progress => stages.push(progress.stage) });
+  assert.equal(result.subtitles.length, 1);
+  assert.equal(result.subtitles[0].recognised, undefined);
+  assert.ok(!stages.includes('ocr'), `expected no recognition, got ${stages.join(', ')}`);
+  assert.match(await readFile(path.join(directory, result.generation, result.subtitles[0].filename), 'utf8'), /Bonjour/);
+});
