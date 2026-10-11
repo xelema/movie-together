@@ -322,7 +322,10 @@ const unavailableReason = (track, kind) =>
     : t('format non pris en charge', '지원되지 않는 형식입니다');
 function trackInfo(track, kind) {
   const parts = [];
-  if (!track.compatible) parts.push(`${t('Indisponible', '사용 불가')} : ${unavailableReason(track, kind)}`);
+  // A bitmap track the preparation can read back is not unavailable: it is read at
+  // preparation time, and that is the fact the administrator needs to see.
+  if (track.recognisable) parts.push(t('reconnu par OCR à la préparation', '준비할 때 OCR로 읽음', 'đọc bằng OCR khi chuẩn bị'));
+  else if (!track.compatible) parts.push(`${t('Indisponible', '사용 불가')} : ${unavailableReason(track, kind)}`);
   const title = sourceTitle(track);
   if (title) parts.push(`${t('Nom d’origine', '원본 이름')} : ${title}`);
   parts.push(track.language ?? 'und', track.codec);
@@ -446,7 +449,9 @@ function stepper(movie) {
     verified ? 'done' : status === 'probing' ? 'active' : ['incompatible', 'failed'].includes(status) ? 'failed' : 'todo',
     !verified ? 'todo' : status === 'processing' ? 'active' : status === 'failed' ? 'failed' : 'todo', 'todo'];
   const percent = movie.progress ? ` ${movie.progress.percent} %` : '';
-  const labels = [t('Envoyé', '업로드됨'), t('Vérifié', '확인됨'), t(`Préparation${percent}`, `준비${percent}`), t('Prêt', '준비 완료')];
+  // Name the step that takes the time: reading a bitmap track is minutes of work.
+  const working = movie.progress?.stage === 'ocr' ? ` (${t('reconnaissance des sous-titres', '자막 인식', 'nhận dạng phụ đề')})` : '';
+  const labels = [t('Envoyé', '업로드됨'), t('Vérifié', '확인됨'), t(`Préparation${working}${percent}`, `준비${working}${percent}`), t('Prêt', '준비 완료')];
   const list = el('ol', undefined, 'steps');
   list.append(...labels.map((text, index) => {
     const item = el('li', text); item.dataset.state = states[index];
@@ -591,7 +596,7 @@ function prepareDraft(movie) {
   for (const [tracks, kind] of [[movie.probe?.audio ?? [], 'audio'], [movie.probe?.subtitles ?? [], 'subtitles']]) {
     const fallbacks = defaultTrackNames(tracks, kind);
     for (const track of tracks) draft[kind].set(track.index,
-      { kept: track.compatible, name: movie.trackNames?.[kind]?.[track.index] ?? fallbacks.get(track.index) });
+      { kept: track.compatible || track.recognisable, name: movie.trackNames?.[kind]?.[track.index] ?? fallbacks.get(track.index) });
   }
   prepareDrafts.set(movie.id, draft);
   return draft;
@@ -631,17 +636,21 @@ function renderPrepare(focus = false) {
       for (const [position, track] of tracks.entries()) {
         let entry = draft[kind].get(track.index);
         if (!entry) draft[kind].set(track.index,
-          entry = { kept: track.compatible, name: movie.trackNames?.[kind]?.[track.index] ?? fallbacks.get(track.index) });
+          entry = { kept: track.compatible || track.recognisable, name: movie.trackNames?.[kind]?.[track.index] ?? fallbacks.get(track.index) });
+        const selectable = track.compatible || track.recognisable;
         const checkbox = el('input'); checkbox.type = 'checkbox';
-        checkbox.checked = entry.kept; checkbox.disabled = !track.compatible;
+        checkbox.checked = entry.kept; checkbox.disabled = !selectable;
         checkbox.setAttribute('aria-label', t('Garder cette piste', '이 트랙 사용'));
         checkbox.addEventListener('change', () => { entry.kept = checkbox.checked; });
-        const nameField = el('input'); nameField.maxLength = 60; nameField.disabled = !track.compatible;
+        const nameField = el('input'); nameField.maxLength = 60; nameField.disabled = !selectable;
         nameField.value = entry.name;
         nameField.setAttribute('aria-label', `${t(fr, ko, vi)} ${position + 1}`);
         nameField.addEventListener('input', () => { entry.name = nameField.value; });
         const row = el('div', undefined, 'track-row');
         row.append(checkbox, nameField, el('small', trackInfo(track, kind), 'track-hint'));
+        // The cost is announced before the run, not discovered during it.
+        if (track.recognisable) row.append(el('small',
+          t('La reconnaissance des pistes image prend quelques minutes.', '이미지 자막 인식에는 몇 분이 걸립니다.', 'việc nhận dạng phụ đề hình ảnh mất vài phút.'), 'track-hint'));
         body.append(row);
       }
     }
@@ -679,7 +688,12 @@ function renderPrepare(focus = false) {
       body.append(section);
     };
     group(t('Langue du film', '음성 언어', 'Ngôn ngữ phim'), keptTracks(movie, draft, 'audio').map(item => item.entry.name));
-    group(t('Sous-titres du film', '영화 자막', 'Phụ đề của phim'), keptTracks(movie, draft, 'subtitles').map(item => item.entry.name));
+    group(t('Sous-titres du film', '영화 자막', 'Phụ đề của phim'), keptTracks(movie, draft, 'subtitles')
+      .map(item => {
+        // The administrator sees which track will be read rather than demuxed.
+        const track = (movie.probe?.subtitles ?? []).find(candidate => candidate.index === item.index);
+        return track?.recognisable ? `${item.entry.name} · ${t('reconnu automatiquement', '자동 인식', 'nhận dạng tự động')}` : item.entry.name;
+      }));
     group(t('Sous-titres ajoutés', '추가된 자막', 'Phụ đề đã thêm'), (movie.externalTracks ?? []).map(track => `${track.label} · ${track.language}`));
     body.append(el('p', t('Vérifiez votre sélection avant de lancer la préparation.', '준비를 시작하기 전에 선택을 확인하세요.', 'Kiểm tra lại lựa chọn trước khi bắt đầu chuẩn bị.'), 'hint'));
   }
