@@ -99,6 +99,11 @@ const korean = {
 // Mêmes clés que le dictionnaire coréen, plus les libellés d'interface servis
 // par t() : toute chaîne française non traduite retombe sur le français.
 export const vietnamese = {
+  'reconnu par OCR à la préparation': 'đọc bằng OCR khi chuẩn bị',
+  'La reconnaissance des pistes image prend quelques minutes.': 'việc nhận dạng phụ đề hình ảnh mất vài phút.',
+  'reconnaissance des sous-titres': 'nhận dạng phụ đề',
+  'reconnu automatiquement': 'nhận dạng tự động',
+  'sous-titres image, reconnus par OCR à la préparation': 'phụ đề hình ảnh được đọc bằng OCR khi chuẩn bị',
   'Format couleur non pris en charge.': 'Định dạng màu không được hỗ trợ.',
   'Le rendu des couleurs nécessite l’accélération graphique.': 'Kết xuất màu cần tăng tốc phần cứng.',
   'Le rendu des couleurs a été interrompu. Rechargez la page.': 'Kết xuất màu đã bị gián đoạn. Hãy tải lại trang.',
