@@ -11,6 +11,7 @@
     "test:e2e": "node --env-file-if-exists=.env node_modules/@playwright/test/cli.js test",
     "test:colors": "node --env-file-if-exists=.env scripts/check-colors.js",
     "compare:mpv": "node --env-file-if-exists=.env scripts/mpv-compare.js",
+    "measure:pgs": "node scripts/measure-pgs-ocr.js",
     "logs": "node scripts/watch-rooms.js",
     "deploy": "bash deploy/deploy.sh"
   },
