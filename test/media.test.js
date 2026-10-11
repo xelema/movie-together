@@ -346,6 +346,9 @@ test('a text track of the same language spares the film the recognition', async 
     [probe.subtitles[0].index, probe.subtitles[1].index], { onProgress: progress => stages.push(progress.stage) });
   assert.equal(result.subtitles.length, 1);
   assert.equal(result.subtitles[0].recognised, undefined);
+  // The kept text track is the one served, with its own language and label.
+  assert.equal(result.subtitles[0].language, 'eng');
+  assert.equal(result.subtitles[0].index, probe.subtitles[0].index);
   assert.ok(!stages.includes('ocr'), `expected no recognition, got ${stages.join(', ')}`);
   assert.match(await readFile(path.join(directory, result.generation, result.subtitles[0].filename), 'utf8'), /Bonjour/);
 });
