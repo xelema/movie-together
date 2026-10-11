@@ -5,8 +5,9 @@ import { randomUUID } from 'node:crypto';
 import jschardet from 'jschardet';
 import { colorParameters, colorNeedsRenderer } from '../public/color-renderer.js';
 import { defaultTrackNames } from '../public/track-names.js';
-import { TEXT_SUBTITLE_CODECS, SUBTITLE_DEMUXERS } from '../public/subtitle-formats.js';
+import { TEXT_SUBTITLE_CODECS, OCR_SUBTITLE_CODECS, SUBTITLE_DEMUXERS } from '../public/subtitle-formats.js';
 import { parseVtt, serializeVtt } from '../public/subtitle-timing.js';
+import { ocrSubtitleTrack } from './pgs-ocr.js';
 import { scanSegment, repairFile } from './hls-pts.js';
 
 export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, includeStderr = false } = {}) {
@@ -92,7 +93,10 @@ export function inspectProbe(probe) {
   const subtitles = streams.filter(stream => stream.codec_type === 'subtitle').map(stream => ({
     index: stream.index, codec: stream.codec_name, language: stream.tags?.language ?? 'und',
     label: stream.tags?.title ?? stream.tags?.language ?? `Subtitles ${stream.index}`,
-    compatible: TEXT_SUBTITLE_CODECS.includes(stream.codec_name), ...flags(stream),
+    compatible: TEXT_SUBTITLE_CODECS.includes(stream.codec_name),
+    // A bitmap track carries no text, but the preparation can read it back: the
+    // two are separate facts, and only the second one decides selection.
+    recognisable: OCR_SUBTITLE_CODECS.includes(stream.codec_name), ...flags(stream),
   }));
   const duration = Number(probe.format?.duration);
   const videoCompatible = ['h264', 'hevc', 'av1', 'vp9'].includes(video?.codec_name) && video.width > 0 && video.height > 0;
@@ -348,7 +352,7 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
     if (!Array.isArray(indices) || indices.length > 24 || new Set(indices).size !== indices.length) throw new Error('Sélection invalide.');
     const fallbacks = defaultTrackNames(tracks, kind);
     return indices.map(index => {
-      const track = tracks.find(item => item.index === index && item.compatible);
+      const track = tracks.find(item => item.index === index && (item.compatible || item.recognisable));
       if (!track) throw new Error('Piste incompatible.');
       const chosen = movie.trackNames?.[kind]?.[index];
       return { ...track, label: quote(chosen || fallbacks.get(index)) };
@@ -427,6 +431,21 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   }
   const subtitles = [];
   for (const track of embeddedSubs) {
+    // A bitmap track has no text to demux: it is read back by OCR, and the cues it
+    // yields become a subtitle track like any other, timing included.
+    if (track.recognisable) {
+      const ordinal = movie.probe.subtitles.findIndex(item => item.index === track.index);
+      const recognised = path.join(directory, `sub_${track.index}_ocr.vtt`);
+      const { cues } = await ocrSubtitleTrack(source, ordinal, { duration: movie.probe.duration,
+        temporaryDirectory: directory,
+        onProgress: (done, total) => options.onProgress?.({ stage: 'ocr', percent: 95 + Math.round(done / total * 4) }) });
+      await writeFile(recognised, serializeVtt(cues));
+      // No source index here: the input is the recognised file, not the film.
+      subtitles.push({ ...await addSubtitle(directory, recognised, { label: track.label, language: track.language,
+        duration: movie.probe.duration, format: 'webvtt' }), index: track.index, recognised: true });
+      await unlink(recognised).catch(() => {});
+      continue;
+    }
     // The source index is kept so a later preparation can repeat this selection.
     subtitles.push({ ...await addSubtitle(directory, source, { ...track, duration: movie.probe.duration }), index: track.index });
   }
@@ -435,7 +454,7 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
     subtitles.push({ ...await addSubtitle(directory, path.join(store.directory(movie.id), track.filename),
       { ...track, format: track.format ?? SUBTITLE_DEMUXERS[track.codec], duration: movie.probe.duration }), external: true });
   }
-  options.onProgress?.({ stage: 'subtitles', percent: 96 });
+  options.onProgress?.({ stage: 'subtitles', percent: 99 });
   // Keep administrator-added subtitle files when rebuilding versions.
   for (const track of movie.subtitles ?? []) if (track.external && movie.generation) {
     await writeFile(path.join(directory, track.filename), await readFile(path.join(store.directory(movie.id), movie.generation, track.filename)));
