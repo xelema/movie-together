@@ -69,6 +69,30 @@ Référence : [paramètres d'import WebGL](https://registry.khronos.org/webgl/sp
 WebGL utilise ici le décodeur de l'élément vidéo sans dépendre de la disponibilité
 de `VideoDecoder` pour HEVC.
 
+## Géométrie des sous-titres natifs
+
+WebVTT place une réplique sur la dernière ligne de l'image — sous la barre de
+contrôle, rognée par le bas du cadre — tant que rien ne la déplace :
+`positionSubtitles` la remonte à 84 % de la hauteur peinte avec
+`snapToLines = false`, `line` et `lineAlign = 'end'`. Cette écriture n'était
+faite que pour les cues **actives**, sur `cuechange`, et Firefox peint une
+réplique qui vient d'être activée avant que le gestionnaire d'événement ne pose
+la géométrie : le sous-titre apparaissait donc une ou deux images plus bas (et
+d'autant plus visible qu'il passe derrière la barre de contrôle). Chrome peint
+dans l'autre ordre, le défaut n'y est pas visible.
+
+Mesure dans une salle réelle sur cette machine (film de test de 60 s, 28
+répliques, sous-titres français) : avant correctif, les 28 répliques recevaient
+leur géométrie **après** leur propre début (avance mesurée −0,02 s) et 5 images
+échantillonnées montraient une réplique affichée à la position par défaut ;
+après correctif, 0 dans les deux cas, chaque cue portant la géométrie dès son
+entrée dans la piste (2 à 8 s d'avance sur son début sur ce film).
+
+La géométrie voyage donc avec la cue : `adoptSubtitleTrack` enveloppe `addCue`
+de chaque piste de texte (hls.js ajoute les cues par fragment, bien avant leur
+activation) et la passe complète de `positionSubtitles` réaligne toute la liste
+quand `line` bouge (barre de contrôle, redimensionnement, plein écran, rotation).
+
 ## Vérification et portée
 
 `npm run test:colors` fabrique uniquement des mires de test courtes, les prépare

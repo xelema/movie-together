@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { subtitleFontSize, shownSubtitleTrack, reviveSubtitleCues } from '../public/sync-core.js';
 import { SyncPlayer } from '../public/sync-player.js';
 
-const track = (mode, { kind = 'subtitles', cues = 0 } = {}) =>
-  ({ kind, mode, activeCues: Array.from({ length: cues }, () => ({})) });
+const track = (mode, { kind = 'subtitles', cues = 0 } = {}) => {
+  const list = Array.from({ length: cues }, () => ({ snapToLines: true, line: 'auto', lineAlign: 'start' }));
+  return { kind, mode, cues: list, activeCues: list.slice() };
+};
 
 test('subtitle font size follows the rendered picture height', () => {
   // Reference: the old 2.4vw rule on a 1280x720 16:9 picture, raised 25%.
@@ -40,11 +42,12 @@ test('an unavailable selection falls back to live cues then first showing', () =
   assert.equal(shownSubtitleTrack([track('hidden'), track('disabled')], 0), null);
 });
 
-// positionSubtitles is exercised on a bare fake: no DOM needed.
+// positionSubtitles is exercised on a bare fake: no DOM needed. It rides the real
+// prototype so the class's own helpers (adoption, stamping) are the ones under test.
 const fakePlayer = (tracks, subtitleChoice, video = {}) => {
   const styles = {};
   const stage = { style: { setProperty: (name, value) => { styles[name] = value; } } };
-  return {
+  return Object.assign(Object.create(SyncPlayer.prototype), {
     subtitleChoice,
     styles,
     video: {
@@ -55,7 +58,7 @@ const fakePlayer = (tracks, subtitleChoice, video = {}) => {
       webkitDisplayingFullscreen: false,
       ...video,
     },
-  };
+  });
 };
 const positionSubtitles = player => SyncPlayer.prototype.positionSubtitles.call(player);
 
@@ -84,10 +87,51 @@ test('webkit native fullscreen sizes subtitles from the screen', () => {
     positionSubtitles(player);
     // Landscape 640x300 paints a 300 px tall picture, floored at 18 px.
     assert.equal(player.styles['--subtitle-size'], '18px');
-    assert.equal(player.video.textTracks[0].activeCues[0].line, 84);
+    assert.equal(player.video.textTracks[0].cues[0].line, 84);
   } finally {
     if (saved === undefined) delete globalThis.screen; else globalThis.screen = saved;
   }
+});
+
+// Un cue fraîchement activé est peint par WebVTT sur la dernière ligne de l'image,
+// sous la barre de contrôle, tant que sa géométrie n'est pas écrite : Firefox le
+// peint avant que `cuechange` ne la pose (Chrome non). La géométrie part donc avec
+// la cue, à son entrée dans la piste, jamais après coup.
+test('a cue is stamped before the track registers it', () => {
+  const registered = [];
+  const kept = { kind: 'subtitles', mode: 'showing', cues: [], activeCues: [],
+    addCue(cue) { registered.push({ snapToLines: cue.snapToLines, line: cue.line, lineAlign: cue.lineAlign }); this.cues.push(cue); },
+    removeCue() {} };
+  positionSubtitles(fakePlayer([kept], 0));
+  kept.addCue({ startTime: 0, endTime: 1 });
+  assert.deepEqual(registered, [{ snapToLines: false, line: 84, lineAlign: 'end' }]);
+});
+
+test('cues already in a track are stamped even while they are not active', () => {
+  const kept = { kind: 'subtitles', mode: 'showing', activeCues: [],
+    cues: [{ snapToLines: true, line: 'auto', lineAlign: 'start' }, { snapToLines: true, line: 'auto', lineAlign: 'start' }],
+    addCue() {}, removeCue() {} };
+  positionSubtitles(fakePlayer([kept], 0));
+  assert.deepEqual(kept.cues, [{ snapToLines: false, line: 84, lineAlign: 'end' }, { snapToLines: false, line: 84, lineAlign: 'end' }]);
+});
+
+test('every text track is adopted so a later selection is already styled', () => {
+  const tracks = [track('hidden', { cues: 1 }), track('disabled', { cues: 1 })];
+  const player = fakePlayer(tracks, -1);
+  positionSubtitles(player);
+  for (const item of tracks) assert.deepEqual(item.cues[0], { snapToLines: false, line: 84, lineAlign: 'end' });
+});
+
+test('the cue line follows the control bar without touching the picture size', () => {
+  const kept = track('showing', { cues: 2 });
+  const controls = { getBoundingClientRect: () => ({ height: 500 }) };
+  const container = { classList: { contains: () => false }, querySelector: () => controls };
+  const player = fakePlayer([kept], 0, { closest: selector => selector === '.plyr' ? container : null });
+  positionSubtitles(player);
+  // 100 - (500 + 12) / 1080 * 100 : la barre de contrôle mange la place.
+  assert.ok(Math.abs(kept.cues[0].line - (100 - 512 / 1080 * 100)) < 1e-9);
+  assert.equal(kept.cues[0].snapToLines, false);
+  assert.equal(kept.cues[1].lineAlign, 'end');
 });
 
 test('webkit video fullscreen events refresh subtitle layout', () => {
