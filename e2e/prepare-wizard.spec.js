@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, rm, mkdtemp, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -119,4 +119,43 @@ test('a PGS track is announced, kept, and read back into text', async ({ browser
     expect(movie.subtitles).toHaveLength(1);
     expect(movie.subtitles[0].recognised).toBe(true);
   } finally { await context.close(); await rm(film, { force: true }); }
+});
+
+// Les deux cas côte à côte : une piste texte de la même langue couvre le film, la
+// piste image n'est donc pas retenue par défaut — et l'administrateur peut la cocher.
+test('a text track of the same language leaves the bitmap track unkept', async ({ browser }) => {
+  test.setTimeout(180_000);
+  const context = await browser.newContext(), page = await context.newPage();
+  page.setDefaultTimeout(15_000); page.setDefaultNavigationTimeout(30_000);
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'pgs-pair-'));
+  const film = path.join(directory, 'pair.mkv'), dialogue = path.join(directory, 'dialogue.srt');
+  try {
+    await writeFile(dialogue, '1\n00:00:26,000 --> 00:00:31,500\nUn sous-titre lisible.\n');
+    await new Promise((resolve, reject) => execFile(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-v', 'error', '-copyts',
+      '-f', 'lavfi', '-i', 'color=c=gray:size=320x240:rate=10', '-i', dialogue,
+      '-i', fileURLToPath(new URL('../test/fixtures/pgs-en.sup', import.meta.url)),
+      '-map', '0:v', '-map', '1', '-map', '2', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+      '-c:s', 'copy', '-metadata:s:s:0', 'language=eng', '-metadata:s:s:1', 'language=eng',
+      '-copyts', '-t', '45', '-f', 'matroska', film],
+    (error, stdout, stderr) => error ? reject(new Error(stderr?.trim() || error.message)) : resolve()));
+    await goto(page, '/admin');
+    await page.locator('#login-form input').fill('browser-test-password');
+    await page.locator('#login-form button').click();
+    await expect(page.locator('#library')).toBeVisible();
+    const headers = { Origin: 'http://localhost:3100' };
+    for (const room of await (await page.request.get('/api/rooms')).json()) await page.request.delete(`/api/rooms/${room.id}`, { headers });
+    for (const movie of await (await page.request.get('/api/movies')).json()) await page.request.delete(`/api/movies/${movie.id}`, { headers });
+    await page.locator('#refresh').click();
+    await page.locator('#upload-file').setInputFiles({ name: 'pair.mkv', mimeType: 'video/x-matroska', buffer: await readFile(film) });
+    await expect(page.locator('#movies')).toContainText('À préparer');
+    await page.getByRole('button', { name: 'Préparer le film' }).click();
+    const wizard = page.locator('#prepare-dialog');
+    await expect(wizard).toBeVisible();
+    await wizard.getByRole('button', { name: 'Continuer' }).click();
+    const boxes = wizard.locator('.track-row input[type=checkbox]');
+    await expect(boxes).toHaveCount(2);
+    await expect(boxes.nth(0)).toBeChecked();      // la piste texte
+    await expect(boxes.nth(1)).not.toBeChecked();  // la piste image, couverte
+    await expect(boxes.nth(1)).toBeEnabled();      // mais toujours disponible
+  } finally { await context.close(); await rm(directory, { recursive: true, force: true }); }
 });

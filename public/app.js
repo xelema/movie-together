@@ -315,6 +315,11 @@ function selectOptions(select, choices) {
   if (choices.some(([value]) => String(value) === previous)) select.value = previous;
 }
 const IMAGE_SUBTITLES = new Set(IMAGE_SUBTITLE_CODECS);
+// A text track of the same language already covers the film: a bitmap track beside it
+// is not worth the minutes of recognition, so it is not kept by default. The
+// administrator can still tick it back on.
+const keepByDefault = (tracks, track) => !!track.compatible ||
+  (!!track.recognisable && !tracks.some(other => other.compatible && other.language === track.language));
 const unavailableReason = (track, kind) =>
   kind === 'subtitles' && IMAGE_SUBTITLES.has(track.codec)
     ? t('sous-titres image, pas de conversion en texte possible', '이미지 자막은 텍스트로 변환할 수 없습니다')
@@ -596,7 +601,7 @@ function prepareDraft(movie) {
   for (const [tracks, kind] of [[movie.probe?.audio ?? [], 'audio'], [movie.probe?.subtitles ?? [], 'subtitles']]) {
     const fallbacks = defaultTrackNames(tracks, kind);
     for (const track of tracks) draft[kind].set(track.index,
-      { kept: track.compatible || track.recognisable, name: movie.trackNames?.[kind]?.[track.index] ?? fallbacks.get(track.index) });
+      { kept: keepByDefault(tracks, track), name: movie.trackNames?.[kind]?.[track.index] ?? fallbacks.get(track.index) });
   }
   prepareDrafts.set(movie.id, draft);
   return draft;
@@ -636,7 +641,7 @@ function renderPrepare(focus = false) {
       for (const [position, track] of tracks.entries()) {
         let entry = draft[kind].get(track.index);
         if (!entry) draft[kind].set(track.index,
-          entry = { kept: track.compatible || track.recognisable, name: movie.trackNames?.[kind]?.[track.index] ?? fallbacks.get(track.index) });
+          entry = { kept: keepByDefault(tracks, track), name: movie.trackNames?.[kind]?.[track.index] ?? fallbacks.get(track.index) });
         const selectable = track.compatible || track.recognisable;
         const checkbox = el('input'); checkbox.type = 'checkbox';
         checkbox.checked = entry.kept; checkbox.disabled = !selectable;

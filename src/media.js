@@ -360,7 +360,11 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   };
   const external = movie.externalTracks ?? [];
   const audio = select(movie.probe.audio, audioIndices, 'audio');
-  const embeddedSubs = select(movie.probe.subtitles, subtitleIndices, 'subtitles');
+  const chosenSubs = select(movie.probe.subtitles, subtitleIndices, 'subtitles');
+  // A text track of the same language, kept too, already carries these subtitles:
+  // reading the bitmap beside it would cost minutes and yield a second, weaker track.
+  const textLanguages = new Set(chosenSubs.filter(track => track.compatible).map(track => track.language));
+  const embeddedSubs = chosenSubs.filter(track => !(track.recognisable && textLanguages.has(track.language)));
   if (movie.probe.audio.length && !audio.length) throw new Error('Choisir au moins une piste audio.');
   const video = movie.probe.video;
   const transport = transportMetadata(video);
