@@ -37,6 +37,10 @@ export class SyncPlayer {
   constructor({ video, roomId, name = '', forceShader = false, onStatus, onState, onTracks, onActivation, onVoice, onWebcam }) {
     Object.assign(this, { video, roomId, forceShader, onStatus, onState, onTracks, onActivation, onVoice, onWebcam });
     this.offset = 0; this.audioChoice = 0; this.subtitleChoice = -1;
+    // WebVTT's floor for the cue line: the value positionSubtitles keeps while the
+    // controls are hidden, so a cue stamped before the first measurement still lands
+    // above the control bar instead of on the frame's last line.
+    this.subtitleLine = 84;
     this.name = name;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
     this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.pendingPauses = 0;
@@ -143,6 +147,29 @@ export class SyncPlayer {
     if (this.subtitleFrame) return;
     this.subtitleFrame = requestAnimationFrame(() => { this.subtitleFrame = 0; if (!this.disposed) this.positionSubtitles(); });
   }
+  // WebVTT renders a cue on the frame's last line, i.e. partly behind the controls
+  // and clipped by the video box, until the geometry below moves it. It is only
+  // written for the ACTIVE cues, on `cuechange`, so a cue the browser activates and
+  // paints in the same frame shows in the default position for a frame or two —
+  // seen on Firefox, invisible on Chrome, whose paint order differs. Every cue
+  // therefore carries the geometry from the moment it enters the track: an adopted
+  // track stamps what it receives (hls.js adds cues per subtitle fragment, well
+  // before they activate) and the whole list follows the line when it moves.
+  stampSubtitleCue(cue) {
+    if (cue.snapToLines !== false) cue.snapToLines = false;
+    // Le défaut de la classe couvre la mesure pas encore faite (tests, DOM minimal).
+    const line = this.subtitleLine ?? 84;
+    if (cue.line !== line) cue.line = line;
+    if (cue.lineAlign !== 'end') cue.lineAlign = 'end';
+  }
+  adoptSubtitleTrack(track) {
+    this.adoptedTracks ??= new WeakSet();
+    if (!track || this.adoptedTracks.has(track)) return;
+    this.adoptedTracks.add(track);
+    const addCue = track.addCue?.bind(track);
+    if (addCue) track.addCue = cue => { this.stampSubtitleCue(cue); return addCue(cue); };
+    for (const cue of track.cues ?? []) this.stampSubtitleCue(cue);
+  }
   positionSubtitles() {
     const container = this.video.closest('.plyr'), controls = container?.querySelector('.plyr__controls');
     // iOS native fullscreen paints through a system layer where the element box
@@ -157,13 +184,20 @@ export class SyncPlayer {
     const pictureHeight = Math.min(rect.height, rect.width / aspect);
     if (pictureHeight > 0) this.video.closest('.video-stage')?.style.setProperty('--subtitle-size', `${subtitleFontSize(pictureHeight)}px`);
     const line = visible && height ? Math.max(35, Math.min(84, 100 - ((controls?.getBoundingClientRect().height || 64) + 12) / height * 100)) : 84;
+    this.subtitleLine = line;
     const keep = this.subtitleChoice < 0 ? null : shownSubtitleTrack(Array.from(this.video.textTracks), this.subtitleChoice);
     for (const track of this.video.textTracks) {
-      if (track !== keep && track.mode === 'showing' && ['subtitles', 'captions'].includes(track.kind)) track.mode = 'hidden';
-      if (track === keep) reviveSubtitleCues(track, this.video.currentTime);
-      for (const cue of track.activeCues ?? []) {
-        cue.snapToLines = false; cue.line = line; cue.lineAlign = 'end';
-      }
+      const text = ['subtitles', 'captions'].includes(track.kind);
+      // Chaque piste de texte est adoptée : une piste choisie plus tard a déjà ses
+      // cues porteurs de la géométrie, sans repasser par une écriture tardive.
+      if (text) this.adoptSubtitleTrack(track);
+      if (track !== keep && track.mode === 'showing' && text) track.mode = 'hidden';
+      if (track !== keep) continue;
+      reviveSubtitleCues(track, this.video.currentTime);
+      // The line moved with the controls, a resize or fullscreen: the whole list
+      // follows, active cues included. Le pas reste en lecture seule tant que la
+      // géométrie tient (le diff par cue évite toute écriture inutile).
+      for (const cue of track.cues ?? []) this.stampSubtitleCue(cue);
     }
     this.colorRenderer?.updateCaptions();
   }
