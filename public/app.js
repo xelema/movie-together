@@ -8,6 +8,7 @@ import { subtitleFontSize } from './sync-core.js';
 import { attachVoice } from './voice.js';
 import { attachWebcam } from './webcam.js';
 import { attachFullscreen } from './fullscreen.js';
+import { attachAudioBoost } from './audio-boost.js';
 
 const $ = id => document.getElementById(id);
 const LANGUAGE_OPTIONS = { fr: 'Français', ko: '한국어', vi: 'Tiếng Việt' };
@@ -64,6 +65,10 @@ playbackUI.on('volumechange', () => {
   else if (lastVol !== undefined && vol !== lastVol) act('volume', Math.round(vol * 100) / 100);
   lastMuted = muted; lastVol = vol;
 });
+// Le volume de l'élément plafonne à 100 % : l'étage de gain de audio-boost.js
+// porte le maximum à 1,5×. Il naît au premier geste et suit l'élément pour
+// toute la vie de la page — son état est exposé aux e2e, comme window.player.
+const audioBoost = window.audioBoost = attachAudioBoost($('video'));
 $('video').addEventListener('enterpictureinpicture', () => act('pip', true));
 $('video').addEventListener('leavepictureinpicture', () => act('pip', false));
 // Admin-only live bandwidth badge. hls.js exposes a live estimate; native HLS does not.
