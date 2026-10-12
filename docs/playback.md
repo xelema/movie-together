@@ -229,6 +229,27 @@ des en-têtes. Le temps dépend du débit disque et de la taille ; aucun décoda
 vidéo intégral n'est ajouté. Une conversion audio peut encore prendre du temps.
 Voir [les tests sur appareils](validation.md).
 
+## Gain de lecture
+
+Le volume d'un `<video>` plafonne à 100 % : passé la pleine échelle, un film déjà
+normalisé n'a plus de marge, et c'est le plafond du lecteur qui limite l'écoute.
+`public/audio-boost.js` intercale donc un gain Web Audio sur l'élément, monté au
+premier geste (un `AudioContext` né hors appui démarre suspendu, et iOS ne le
+relance jamais seul). Le curseur du lecteur garde son échelle 0..1 et son maximum
+vaut 1,5× la bande son d'origine — mesuré 1,5× en régime ordinaire, soit +3,5 dB.
+Un limiteur 1 dB sous la saturation retient ce qui dépasse : la crête qui entre à
+1,4 sort sous 1. Le limiteur du Web Audio n'est pas transparent sous son seuil —
+sa courbe normalisée ajoute 1,067×, mesuré sur les trois moteurs — donc l'étage de
+gain porte 1,5×/1,067, et c'est le rapport net que mesure l'e2e.
+
+Le gain est refusé là où le moteur confisque le volume de l'élément. Une fois le
+film routé, WebKit n'applique plus `volume` ni `muted` dans le graphe : sur macOS
+et iOS, curseur et bouton muet n'auraient plus d'effet, et son lecteur HLS natif ne
+se route déjà pas de façon fiable. Safari et iOS gardent donc le son de l'élément,
+à son plafond. `e2e/audio-boost.spec.js` tient la mesure des deux côtés : le
+rapport de gain sur une crête pleine échelle et sur le régime ordinaire, la sonde
+de volume par moteur, et le refus du gain sur WebKit.
+
 ## Fluidité et budget mobile
 
 Optimisations du 12 septembre 2026, applicables aussi aux ordinateurs :
