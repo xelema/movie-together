@@ -74,8 +74,6 @@ tar -czf "$TARBALL" \
   --exclude='./.env' \
   --exclude='./.env.*' \
   --exclude='*.log' \
-  --exclude='./comparaison_couleur_gauche_firefox_droite_chrome.png' \
-  --exclude='./conversation-export.txt' \
   .
 
 deploy_one() {

@@ -84,7 +84,7 @@ rien à nettoyer côté DNS à la fermeture d'une PR.
 ### Mise en place (une fois)
 
 1. Créer le secret `DUCKDNS_TOKEN` (token du compte duckdns.org, page d'accueil) :
-   `gh secret set DUCKDNS_TOKEN -R xelema/movie-together`.
+   `gh secret set DUCKDNS_TOKEN -R <proprietaire>/movie-together`.
 2. Facultatif : `PREVIEW_ADMIN_PASSWORD` (16 caractères minimum) pour fixer le mot de
    passe de connexion des previews. Sans ce secret, un mot de passe aléatoire est généré
    par PR et publié dans le commentaire de la PR.

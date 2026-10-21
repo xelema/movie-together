@@ -38,8 +38,8 @@ const gateCheck = (film, t, diff, failures) => {
 };
 const [W, H] = args.size.split('x').map(Number);
 const FILMS = {
-  hdr: process.env.MPV_HDR || 'C:/Users/xelem/Videos/ia-spiderman/trailer_demo_HDR.mkv',
-  sdr: process.env.MPV_SDR || 'C:/Users/xelem/Videos/ia-spiderman/trailer_demo_SDR_BT709_h264.mkv',
+  hdr: process.env.MPV_HDR || 'data/sample/hdr10.mkv',
+  sdr: process.env.MPV_SDR || 'data/sample/sdr-bt709.mkv',
 };
 // mpv.com relance mpv.exe en processus détaché : viser mpv.exe garde le kill à portée.
 const MPV = process.env.MPV_PATH ||

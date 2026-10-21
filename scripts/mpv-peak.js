@@ -7,7 +7,7 @@ import net from 'node:net';
 import path from 'node:path';
 
 const t = Number(process.argv[2] ?? 23.625);
-const file = process.argv[3] ?? 'C:/Users/xelem/Videos/ia-spiderman/trailer_demo_HDR.mkv';
+const file = process.argv[3] ?? 'data/sample/hdr10.mkv';
 const MPV = process.env.MPV_PATH ||
   (process.platform === 'win32' && existsSync(path.join(process.env.APPDATA, 'mpv/mpv.exe'))
     ? path.join(process.env.APPDATA, 'mpv/mpv.exe') : 'mpv');
