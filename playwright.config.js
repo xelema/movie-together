@@ -8,7 +8,8 @@ if (process.platform === 'linux') {
 
 export default defineConfig({
   // Playwright empties outputDir on start: keep it away from the colour report and the screenshots.
-  // The self-hosted runner shares a 2 vCPU box with prod: one retry absorbs timing flakes.
+  // One retry absorbs the timing flakes of a loaded runner; CI compares three browsers
+  // on the same box, so a single retry is enough to tell a flake from a regression.
   testDir: './e2e', outputDir: './test-results/e2e', timeout: 90_000, workers: 1, fullyParallel: false,
   retries: process.env.CI ? 1 : 0,
   projects: [{ name: 'chromium', use: { browserName: 'chromium' } },

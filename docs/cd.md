@@ -1,10 +1,13 @@
 # Livraison continue
 
-Deux workflows GitHub Actions, tous les deux exécutés par le runner self-hosted
-installé sur la VM de production :
+Trois workflows GitHub Actions : **Checks** tourne sur un runner hébergé par
+GitHub (gratuit et illimité sur un dépôt public), **Deploy** et **Preview** sur le
+runner self-hosted installé sur la VM de production, parce qu'ils y pilotent
+Docker, les ports et Caddy en `sudo`.
 
 - `.github/workflows/ci.yml` (**Checks**) : tests unitaires, e2e Playwright et
   construction de l'image, sur chaque push de `main` et chaque pull request.
+  Un fork y fait tourner son code sur un runner jetable, jamais sur la VM.
 - `.github/workflows/deploy.yml` (**Deploy**) : déploiement en production dès que
   **Checks** passe sur `main`.
 - `.github/workflows/preview.yml` (**Preview**) : URL temporaire par pull request.
@@ -149,9 +152,11 @@ sudo bash deploy/preview/down.sh <numero>                         # supprimer un
 ## Limites connues
 
 - La recréation du conteneur `app` coupe les séances en cours.
-- Le runner self-hosted est unique : les jobs s'exécutent en série, donc le job de
-  preview d'une PR attend la fin de **Checks** avant de démarrer (compter le temps des
-  tests e2e en plus du sien).
+- Le runner self-hosted est unique : **Deploy** et **Preview** s'exécutent en série,
+  donc le job de preview d'une PR attend un déploiement en cours. **Checks** ne
+  consomme plus ce runner : il tourne en parallèle, sur un runner hébergé.
+- Les previews ne sont construites que pour les branches du dépôt : une PR ouverte
+  depuis un fork n'obtient pas d'URL, son code ne s'exécute pas sur la VM.
 - Une preview ne peut pas tester une modification de la configuration Caddy de
   production ni du service `proxy` : elle n'exécute que le service `app`.
 - Le port 8443 doit rester ouvert en entrée ; s'il est fermé, les previews sont

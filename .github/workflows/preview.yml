@@ -38,11 +38,16 @@ jobs:
     # quotidien) satisfaisait la condition : `github.event.action` et
     # `github.event.pull_request` valent alors null, donc `null != 'closed'` et
     # `!null` sont vrais et le job partait sans numero de PR (up.sh -> exit 2).
+    # La garde sur le depot d'origine est indispensable depuis que le depot est
+    # public : ce job tourne sur la VM de production avec `sudo -n`, et une PR de
+    # fork y executerait son propre compose.yaml et ses scripts. Les secrets ne
+    # sont pas transmis aux forks, mais leur code s'executerait quand meme.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
-      !github.event.pull_request.draft)
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: self-hosted
     timeout-minutes: 25
     steps:
@@ -206,7 +211,12 @@ jobs:
           fi
 
   teardown:
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    # Meme garde que `deploy` : down.sh vient du checkout, donc d'une PR de fork
+    # sur la fermeture si l'on ne verifie pas le depot d'origine.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted
     timeout-minutes: 10
     steps:
