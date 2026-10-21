@@ -26,10 +26,13 @@ permissions:
   actions: read
 jobs:
   test:
-    runs-on: self-hosted
-    # La suite e2e dure ~13 min sur une box au repos et partage ses 2 vCPU avec
-    # la prod : 20 min se faisaient dépasser au premier ralentissement, et un job
-    # annulé sur le commit de merge saute le déploiement (il exige un Checks vert).
+    # Runner heberge par GitHub : gratuit et illimite sur un depot public, et ses
+    # 4 vCPU ne se disputent plus la machine de production. Le garder sur le
+    # runner self-hosted ferait tourner du code de fork sur la VM de prod.
+    runs-on: ubuntu-24.04
+    # La suite e2e dure ~13 min sur 2 vCPU partages ; 40 min couvrent un
+    # ralentissement du runner, et un job annule sur le commit de merge saute le
+    # deploiement (il exige un Checks vert).
     timeout-minutes: 40
     env:
       # Un merge dont l'arbre est deja celui que la CI de PR a verifie peut sauter
@@ -107,7 +110,8 @@ jobs:
             aarch64) asset=ffmpeg-n8.1.2-50-g1a748fe2cd-linuxarm64-gpl-8.1; sha=ae5da4f51b9052390f414005f8ab26c1eed1268f327cce7cb79aa076b29bd66e ;;
             *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
           esac
-          # /tmp is shared and survives across runs on a self-hosted runner.
+          # Un repertoire temporaire par run : rien ne survit d'une execution a
+          # l'autre, le binaire est donc installe a chaque passage.
           tmp=$(mktemp -d)
           curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-31-13-27/$asset.tar.xz" -o "$tmp/ffmpeg.tar.xz"
           echo "$sha  $tmp/ffmpeg.tar.xz" | sha256sum -c -
