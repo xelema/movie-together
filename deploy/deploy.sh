@@ -74,8 +74,6 @@ tar -czf "$TARBALL" \
   --exclude='./.env' \
   --exclude='./.env.*' \
   --exclude='*.log' \
-  --exclude='./comparison.png' \
-  --exclude='./private-notes.txt' \
   .
 
 deploy_one() {

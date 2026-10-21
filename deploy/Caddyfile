@@ -13,7 +13,7 @@
 }
 
 # korean-coach partage ce proxy : le service `korean-coach` est joint au
-# reseau movie-together_default (voir korean-coach, compose.yaml).
+# reseau movie-together_default (voir son propre compose.yaml).
 korean-coach.duckdns.org {
     reverse_proxy korean-coach:51121
 }

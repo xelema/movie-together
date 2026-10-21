@@ -9,3 +9,4 @@ dist/
 *.log
 test-results/
 playwright-report/
+.devin/
