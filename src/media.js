@@ -8,7 +8,7 @@ import { defaultTrackNames } from '../public/track-names.js';
 import { TEXT_SUBTITLE_CODECS, OCR_SUBTITLE_CODECS, SUBTITLE_DEMUXERS } from '../public/subtitle-formats.js';
 import { parseVtt, serializeVtt } from '../public/subtitle-timing.js';
 import { ocrSubtitleTrack } from './pgs-ocr.js';
-import { scanSegment, repairFile } from './hls-pts.js';
+import { scanSegment, repairFile, repairSeams } from './hls-pts.js';
 
 export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, includeStderr = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -420,6 +420,19 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
     }
   }
   if (repairedSegments) console.log(`[media] ${movie.id} : ${repairedSegments}/${scannedSegments} segments avec PTS dupliquées réparés`);
+  // A fragment whose last picture ends past the next fragment's keyframe makes MSE
+  // erase that keyframe — and the whole neighbour — whenever hls.js appends the
+  // earlier fragment second (seek backwards). Trim each seam, audio included.
+  const variants = new Map();
+  for (const file of (await readdir(directory)).sort()) {
+    const variant = file.match(/^segment_(\d+)_\d+\.m4s$/)?.[1];
+    if (variant === undefined) continue;
+    if (!variants.has(variant)) variants.set(variant, []);
+    variants.get(variant).push(path.join(directory, file));
+  }
+  let trimmedSeams = 0;
+  for (const files of variants.values()) trimmedSeams += (await repairSeams(files)).filter(seam => seam.patches.length).length;
+  if (trimmedSeams) console.log(`[media] ${movie.id} : ${trimmedSeams} jointures de fragments recadrées`);
   for (const rendition of renditions) {
     const playlist = path.join(directory, `stream_${rendition.streamIndex}.m3u8`);
     const probe = JSON.parse(await run(process.env.FFPROBE_PATH || 'ffprobe', ['-v', 'error', '-i', playlist,
