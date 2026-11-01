@@ -1,6 +1,6 @@
 import { ColorRenderer, colorNeedsRenderer, nativeHdrPipeline } from './color-renderer.js';
 import { codecPlayable, createBackend, supportsMime } from './backends.js';
-import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, readyBlockers, canBegin, subtitleFontSize, shownSubtitleTrack, reviveSubtitleCues } from './sync-core.js';
+import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, playableSpan, readyBlockers, canBegin, subtitleFontSize, shownSubtitleTrack, reviveSubtitleCues } from './sync-core.js';
 
 export class Clock {
   constructor() { this.samples = []; }
@@ -15,22 +15,12 @@ export class Clock {
   get ready() { return this.samples.length >= 3 && this.best.rtt < 1200; }
 }
 
+export const timeRanges = buffered => Array.from({ length: buffered?.length ?? 0 }, (_, i) => [buffered.start(i), buffered.end(i)]);
+
+// How far the element can play from where it stands, gaps of a few pictures
+// included (see playableSpan): the playhead itself may sit inside one.
 export function bufferEnd(video) {
-  let end = video.currentTime;
-  for (let i = 0; i < video.buffered.length; i++) {
-    const start = video.buffered.start(i);
-    const rangeEnd = video.buffered.end(i);
-    if (start <= end + 0.05 && rangeEnd >= end) {
-      end = rangeEnd;
-      // Bridge micro-gaps (<= 0.25s) caused by GOP boundary rounding or audio/video muxing
-      while (i + 1 < video.buffered.length && video.buffered.start(i + 1) - end <= 0.25) {
-        i++;
-        end = video.buffered.end(i);
-      }
-      return end;
-    }
-  }
-  return end;
+  return playableSpan(timeRanges(video.buffered), video.currentTime)?.end ?? video.currentTime;
 }
 
 export class SyncPlayer {
@@ -433,7 +423,7 @@ export class SyncPlayer {
       silent: performance.now() - this.lastMessage > this.silenceMs,
       decoded: this.decoded, seeking: this.video.seeking, paused: this.video.paused,
       currentTime: this.video.currentTime,
-      bufferedStart: this.video.buffered.length ? this.video.buffered.start(0) : 0,
+      bufferedStart: playableSpan(timeRanges(this.video.buffered), this.target() + this.offset)?.start ?? 0,
       target: this.target() + this.offset, serverNow: this.serverTime(),
       activated: this.activated, scheduled: this.scheduled, rate: this.video.playbackRate,
     });
@@ -479,7 +469,10 @@ export class SyncPlayer {
     // An event-forced report with every gate green means the element itself stalled.
     if (force === false && !blockers.length) blockers = ['stalled'];
     const bufferedUntil = Math.max(position, bufferEnd(this.video) - this.offset);
-    const bufferedStart = this.video.buffered.length ? Math.max(0, this.video.buffered.start(0) - this.offset) : null;
+    // Where the span the playhead stands in begins: the room accepts a member parked
+    // a few frames past its position when that is the first picture it can show.
+    const head = playableSpan(timeRanges(this.video.buffered), this.video.currentTime)?.start;
+    const bufferedStart = head === undefined ? null : Math.max(0, head - this.offset);
     const sequence = this.sequence++;
     this.send({ type: 'report', epoch: this.state.epoch, sequence, position,
       bufferedUntil,

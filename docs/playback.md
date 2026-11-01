@@ -347,3 +347,28 @@ revalidation à chaque requête), donc toute réparation rétroactive invalide
 automatiquement les clients — à la prochaine revalidation ils reçoivent un
 200 et le segment corrigé. Republier avec une nouvelle génération
 (re-préparation) reste le moyen de forcer un re-téléchargement complet.
+
+## Tampon et réserve de la salle
+
+La salle ne démarre que si chaque membre a `minBuffer` secondes (8 par défaut)
+tamponnées devant la position commune. Deux situations peuvent rendre cette
+réserve impossible à atteindre, alors que le lecteur, lui, s'estime servi.
+Membre et salle s'attendent alors jusqu'au rechargement de la page.
+
+**Plafond de hls.js sous la réserve.** À chaque `QuotaExceededError`, hls.js
+réduit `maxMaxBufferLength` pour le reste de la session (`reduceMaxBufferLength`).
+Le 29 octobre, sur une TV LG de 2 Go dont le budget MSE tient deux fragments
+AV1 de 35 Mo, trois refus l'ont fait passer de 25 à 12,6 puis 6,3 s : hls.js
+cessait de charger à 7,8 s quand la salle en attendait 8. `HlsJsBackend` pose un
+plancher à `minBuffer + 1` s (`floorForwardBuffer`, `public/backends.js`).
+Au-dessus, la réduction s'applique toujours. Le plancher ne réclame que le
+fragment en cours et le suivant, ce qui tient dans un tel budget.
+
+**Tête de lecture dans un trou de quelques images.** Si des images manquent
+à une jointure, un élément en lecture s'arrête à l'intérieur du trou. En pause, ni
+le navigateur ni hls.js ne le franchissent. `playableSpan` (`public/sync-core.js`)
+considère qu'une plage commençant moins de `HEAD_GAP` (0,25 s) après la tête de
+lecture se joue d'un seul tenant. `bufferEnd` y mesure la réserve. Le membre en
+pause se cale au début de cette plage, et il rapporte ce début comme
+`bufferedStart`, que la salle accepte déjà comme position alignée (même
+tolérance qu'en tête de film).

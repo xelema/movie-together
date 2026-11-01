@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Clock, bufferEnd, SyncPlayer } from '../public/sync-player.js';
-import { decide, memberReady, readyBlockers, canBegin } from '../public/sync-core.js';
+import { decide, memberReady, readyBlockers, canBegin, playableSpan } from '../public/sync-core.js';
+import { Room } from '../src/sync/room.js';
 
 test('clock estimates offset using the shortest round trip and expires old samples', () => {
   const clock = new Clock();
@@ -145,6 +146,42 @@ test('bufferEnd bridges micro-gaps between consecutive fragments', () => {
     buffered: { length: 2, start: i => [0, 23.732][i], end: i => [23.522, 33.742][i] }
   };
   assert.equal(bufferEnd(video), 33.742);
+});
+
+// Florian, 29 October (Sinister, Firefox): a seek backwards re-appended a fragment
+// and MSE erased four pictures of the next one. Firefox played up to the seam and
+// stopped inside the hole, 23 ms past the end of the first range.
+const seam = [[2816.06, 2833.956], [2834.122, 2888.06]];
+const rangesOf = list => ({ length: list.length, start: i => list[i][0], end: i => list[i][1] });
+
+test('a playhead stopped inside a seam gap still sees the buffer behind it', () => {
+  assert.deepEqual(playableSpan(seam, 2833.979), { start: 2834.122, end: 2888.06 });
+  assert.equal(bufferEnd({ currentTime: 2833.979, buffered: rangesOf(seam) }), 2888.06);
+  // Before the seam the span runs through it; a real hole is still the end.
+  assert.deepEqual(playableSpan(seam, 2820), { start: 2816.06, end: 2888.06 });
+  assert.equal(playableSpan([[0, 4], [20, 60]], 10), null);
+});
+
+test('a paused member stuck in a seam gap hops to the next picture and the room accepts it', () => {
+  const offset = 0.083, room = 2833.896;
+  const paused = {
+    activating: false, state: { phase: 'buffering', startsAt: null, position: room, duration: 6585 },
+    clockReady: true, hidden: false, online: true, silent: false,
+    decoded: true, seeking: false, paused: true, currentTime: room + offset,
+    bufferedStart: playableSpan(seam, room + offset).start, target: room + offset, serverNow: 3000, activated: true, scheduled: null,
+  };
+  const { seekTo } = decide(paused);
+  assert.ok(seekTo > 2834.122 && seekTo < 2834.123);
+  // Parked there it reports the span start as its head, which the room counts as aligned.
+  const landed = { ...paused, currentTime: seekTo };
+  assert.equal(decide(landed).seekTo, undefined);
+  const clock = { now: 0 };
+  const r = new Room({ now: () => clock.now, minBuffer: 8, lowBuffer: 5 });
+  r.join('a'); r.load(6585);
+  r.position = room;
+  const position = seekTo - offset;
+  assert.ok(r.aligned({ position, bufferedStart: playableSpan(seam, seekTo).start - offset }, room));
+  assert.ok(!r.aligned({ position, bufferedStart: 2816.06 - offset }, room));
 });
 
 test('hidden tab does not pause playback or block readiness', () => {
