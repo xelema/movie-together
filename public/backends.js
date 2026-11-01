@@ -76,6 +76,21 @@ export function pinSubtitleModes(controller) {
   }
 }
 
+// hls.js answers each QuotaExceededError by cutting config.maxMaxBufferLength for
+// the rest of the session (reduceMaxBufferLength): 25 -> 12.6 -> 6.3 s after three
+// refusals on a 2 GB TV whose MSE budget holds two 35 MB AV1 fragments. Under the
+// room's start reserve it stops fetching while the room waits for that reserve,
+// and both wait for good. The cut keeps its say above the floor, where it does
+// relieve the quota: a floor just over the reserve asks for no more than the
+// current fragment and the next one.
+export const RESERVE_MARGIN = 1;
+export function floorForwardBuffer(config, floor) {
+  let value = config.maxMaxBufferLength;
+  Object.defineProperty(config, 'maxMaxBufferLength', { configurable: true, enumerable: true,
+    get: () => value, set: next => { value = Math.max(Number(next) || 0, floor()); } });
+  config.maxMaxBufferLength = value;
+}
+
 export class HlsJsBackend {
   // Bounded recovery happens inside the adapter; the media element's own error
   // event must not short-circuit it.
@@ -83,7 +98,7 @@ export class HlsJsBackend {
 
   constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 8, bitrate } = {},
     { onTracksChanged, onBuffered, onStalled, onFatal, onEvent } = {}) {
-    this.video = video; this.timelineOffset = timelineOffset; this.bitrate = bitrate;
+    this.video = video; this.timelineOffset = timelineOffset; this.bitrate = bitrate; this.minBuffer = minBuffer;
     this.mediaRecoveries = 0; this.networkRecoveries = 0;
     this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
       maxBufferSize: bufferBytes(bufferSeconds, bitrate), backBufferLength: 60,
@@ -94,6 +109,8 @@ export class HlsJsBackend {
       progressive: false,
       fragLoadingTimeOut: 30_000, fragLoadingMaxRetry: 4, fragLoadingRetryDelay: 1000,
       fragLoadingMaxRetryDelay: 8000, manifestLoadingTimeOut: 15_000, levelLoadingTimeOut: 15_000 });
+
+    floorForwardBuffer(this.hls.config, () => this.minBuffer + RESERVE_MARGIN);
 
     const trackController = this.hls.subtitleTrackController;
     if (trackController) trackController.toggleTrackModes = () => pinSubtitleModes(trackController);
@@ -130,6 +147,7 @@ export class HlsJsBackend {
 
   // The room's thresholds can change at runtime; hls.js reads its config live.
   setBufferGoal(minBuffer, bufferSeconds) {
+    this.minBuffer = minBuffer;
     Object.assign(this.hls.config, { maxBufferLength: bufferSeconds,
       maxMaxBufferLength: bufferSeconds * 2, maxBufferSize: bufferBytes(bufferSeconds, this.bitrate) });
   }

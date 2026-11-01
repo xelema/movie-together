@@ -13,6 +13,24 @@ export const selfCaused = (now, internalUntil) => now <= internalUntil;
 // start as aligned (see src/sync/room.js).
 export const HEAD_GAP = 0.25;
 
+// The buffered span playback can run through from `time`: the range holding it,
+// or one starting at most HEAD_GAP after it, extended across seams no wider.
+// A playhead can sit inside such a gap — a few pictures missing at a fragment
+// seam, or the film's first decodable frame — and the element will not move by
+// itself while paused: the span's start is where it must go, and its end is the
+// buffer it really has. `ranges` is a list of [start, end], in order.
+export function playableSpan(ranges, time) {
+  for (let i = 0; i < ranges.length; i++) {
+    const start = ranges[i][0];
+    let end = ranges[i][1];
+    if (end < time) continue;
+    if (start > time + HEAD_GAP) return null;
+    while (i + 1 < ranges.length && ranges[i + 1][0] - end <= HEAD_GAP) end = ranges[++i][1];
+    return { start, end };
+  }
+  return null;
+}
+
 // Where the room's film is now, in room time.
 export function roomTarget(state, serverNow) {
   if (!state) return 0;
@@ -34,9 +52,10 @@ export function decide({ activating, state, clockReady, hidden, online, silent,
   if (!state || !clockReady || !online || silent) return { pause: true };
   if (state.phase !== 'playing' || serverNow < state.startsAt) {
     const action = { pause: true };
-    // B-frame reordering can leave a few frames of gap after lossless remuxing.
-    // Seeking behind the head cannot succeed, so the head itself is the target;
-    // the seek below then stays quiet instead of re-firing every tick.
+    // B-frame reordering can leave a few frames of gap after lossless remuxing, and
+    // a fragment seam can lose a few pictures: `bufferedStart` is where the playable
+    // span around the target begins. Seeking into the gap cannot succeed, so that
+    // start is the target; the seek below then stays quiet instead of re-firing.
     const seekTarget = bufferedStart > target && bufferedStart - target <= HEAD_GAP ? bufferedStart + 0.00001 : target;
     // A seek issued before the first decoded frame never completes on WebKit and
     // would wedge the player in seeking, blocking the whole room.

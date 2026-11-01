@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { codecPlayable, pinSubtitleModes, releaseSubtitlePlaceholders, SUBTITLE_PLACEHOLDER, HlsJsBackend, nativeHls, supportsMime } from '../public/backends.js';
+import { codecPlayable, pinSubtitleModes, releaseSubtitlePlaceholders, SUBTITLE_PLACEHOLDER, HlsJsBackend, nativeHls, supportsMime, floorForwardBuffer } from '../public/backends.js';
 
 // The adapter watches the media element for the subtitle <track> nodes hls.js
 // appends itself; node has no MutationObserver, and these stubs no DOM to watch.
@@ -190,5 +190,48 @@ test('codec probes ask MSE unless native HLS will decode', () => {
   } finally {
     savedWindow === undefined ? delete globalThis.window : globalThis.window = savedWindow;
     Object.defineProperty(globalThis, 'navigator', savedNavigator);
+  }
+});
+// hls.js's reduceMaxBufferLength, as it ran on fab's TV (29 October, AV1 fragments
+// of 10.01 s): bufferLen 26.65, 22.65 then 10.97 at each QuotaExceededError.
+const reduceMaxBufferLength = (config, threshold, fragDuration) => {
+  const minLength = Math.max(Math.min(threshold - fragDuration, config.maxBufferLength), fragDuration / 2);
+  const reducedLength = Math.max(threshold - fragDuration * 3, config.maxMaxBufferLength / 2, minLength);
+  if (reducedLength >= minLength) config.maxMaxBufferLength = reducedLength;
+};
+
+test('three quota refusals cannot cut the forward buffer under the room reserve', () => {
+  const bare = { maxBufferLength: 25, maxMaxBufferLength: 50 };
+  for (const len of [26.65, 22.65, 10.97]) reduceMaxBufferLength(bare, len, 10.01);
+  // What hls.js aimed for on the TV: 6.3 s, under the 8 s the room waited for.
+  assert.ok(bare.maxMaxBufferLength < 8);
+
+  const config = { maxBufferLength: 25, maxMaxBufferLength: 50 };
+  floorForwardBuffer(config, () => 9);
+  const cuts = [];
+  for (const len of [26.65, 22.65, 10.97]) { reduceMaxBufferLength(config, len, 10.01); cuts.push(config.maxMaxBufferLength); }
+  // Above the floor the cut still applies; it stops at the floor.
+  assert.deepEqual(cuts.map(value => Math.round(value * 100) / 100), [25, 12.64, 9]);
+  config.maxMaxBufferLength = 60;
+  assert.equal(config.maxMaxBufferLength, 60);
+});
+
+test('the adapter floors hls.js just over the reserve, and follows a new reserve', () => {
+  const restore = stubMutationObserver();
+  const saved = globalThis.window, savedURL = globalThis.URL, savedBlob = globalThis.Blob;
+  let created;
+  globalThis.window = { Hls: class { constructor(config) { this.config = config; created = this; }
+    loadSource() {} attachMedia() {} on() {} destroy() {} static Events = {} } };
+  try {
+    const backend = new HlsJsBackend({ querySelectorAll: () => [] }, '/m.m3u8', { bufferSeconds: 25, minBuffer: 8 }, {});
+    assert.equal(created.config.maxMaxBufferLength, 50);
+    created.config.maxMaxBufferLength = 6.32;
+    assert.equal(created.config.maxMaxBufferLength, 9);
+    backend.setBufferGoal(12, 30);
+    assert.equal(created.config.maxMaxBufferLength, 60);
+    created.config.maxMaxBufferLength = 3;
+    assert.equal(created.config.maxMaxBufferLength, 13);
+  } finally {
+    restore(); globalThis.window = saved; globalThis.URL = savedURL; globalThis.Blob = savedBlob;
   }
 });

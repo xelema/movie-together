@@ -7,7 +7,8 @@ export const cleanText = value => String(value).replace(/[\u0000-\u001f\u007f-\u
 
 // Whether a member is in step with the room's own position, or parked on a head
 // it cannot get behind: a remuxed film's first decodable frame can sit a few
-// frames after zero, and no seek puts a viewer before it. Without that exception
+// frames after zero, a fragment seam can lose a few pictures, and no seek puts a
+// viewer inside such a gap (the member reports where its playable span begins). Without that exception
 // the start gate waits for an alignment the file cannot produce and the séance
 // stays in buffering forever. The gap is capped at a few frames, so a member that
 // is genuinely elsewhere is still reported as misaligned.
