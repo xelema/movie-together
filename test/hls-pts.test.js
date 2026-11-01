@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import os from 'node:os';
-import { scanSegment, repairSegment, scanFile } from '../src/hls-pts.js';
+import { scanSegment, repairSegment, scanFile, fragmentStart, presentationTimes, trimSeam, repairSeams } from '../src/hls-pts.js';
 
 const exec = promisify(execFile);
 const CLI = path.join(import.meta.dirname, '../scripts/repair-hls-pts.mjs');
@@ -91,4 +91,58 @@ test('cli : --check signale, --fix répare en place, le journal permet le retour
   const entries = (await readFile(journal, 'utf8')).trim().split('\n').map(JSON.parse);
   for (const { offset, before } of entries.reverse()) repaired.writeUInt32BE(before >>> 0, offset);
   assert.ok(repaired.equals(dup));
+});
+
+// Jointure : décodage I(0) P(40) B(80), présentation I[0,40) B[80,120) P[120,160).
+// Le P finit à 160 alors que le fragment suivant commence à 144 (16 ticks, la
+// milliseconde à 16 kHz) : c'est sa keyframe que MSE effacerait.
+const head = segment([{ dur: 40, size: 8, cto: 0 }, { dur: 40, size: 8, cto: 80 }, { dur: 40, size: 8, cto: 0 }]);
+const next = segment([{ dur: 40, size: 8, cto: 0 }], 144);
+
+test('trimSeam : la fin de présentation rejoint le fragment suivant, aucune PTS ne bouge', () => {
+  assert.equal(fragmentStart(next), 144);
+  const { buf, patches, overlap, remaining } = trimSeam(head, fragmentStart(next));
+  assert.equal(overlap, 16);
+  assert.equal(remaining, 0);
+  // La durée du P passe de 40 à 24 ; le B suivant avance de 16 en DTS et son cto grandit d'autant.
+  assert.deepEqual(patches.map(({ before, after }) => [before, after]), [[40, 24], [0, 16]]);
+  assert.deepEqual(presentationTimes(buf), presentationTimes(head));
+  assert.deepEqual(presentationTimes(head), [0, 120, 80]);
+  const diff = [];
+  for (let i = 0; i < head.length; i++) if (head[i] !== buf[i]) diff.push(i);
+  assert.ok(diff.every(i => patches.some(({ offset }) => i >= offset && i < offset + 4)));
+  const again = trimSeam(buf, 144);
+  assert.equal(again.overlap, 0);
+  assert.equal(again.patches.length, 0);
+});
+
+test('trimSeam : sans durée explicite ni cto, la jointure reste signalée', () => {
+  const bare = Buffer.from(head);
+  // trun sans cto : la DTS des échantillons suivants ne peut pas bouger sans déplacer leur PTS.
+  const flagsAt = bare.indexOf(Buffer.from('trun', 'latin1')) + 4;
+  bare.writeUInt32BE(0x000305, flagsAt);
+  assert.equal(trimSeam(bare, 30).patches.length, 0);
+  assert.ok(trimSeam(bare, 30).remaining > 0);
+});
+
+test('cli : les jointures débordantes sont signalées, recadrées en place et réversibles', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hls-seam-cli-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const first = path.join(dir, 'segment_0_000000.m4s');
+  await writeFile(first, head);
+  await writeFile(path.join(dir, 'segment_0_000001.m4s'), next);
+  const journal = path.join(dir, 'rep.jsonl');
+
+  await assert.rejects(exec(process.execPath, [CLI, '--check', dir]), error => error.code === 1 && /1 jointure\(s\) débordante/.test(error.stdout));
+  assert.ok((await readFile(first)).equals(head));
+  const fixed = await exec(process.execPath, [CLI, '--fix', '--journal', journal, dir]);
+  assert.match(fixed.stdout, /2 champ\(s\) de jointure réécrit/);
+  const checked = await exec(process.execPath, [CLI, '--check', dir]);
+  assert.match(checked.stdout, /0 jointure\(s\) débordante/);
+  assert.deepEqual(await repairSeams([first, path.join(dir, 'segment_0_000001.m4s')]), []);
+
+  const repaired = await readFile(first);
+  const entries = (await readFile(journal, 'utf8')).trim().split('\n').map(JSON.parse);
+  for (const { offset, before } of entries.reverse()) repaired.writeUInt32BE(before >>> 0, offset);
+  assert.ok(repaired.equals(head));
 });

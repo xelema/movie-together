@@ -341,6 +341,40 @@ Pour vérifier ou réparer une bibliothèque déjà préparée :
     node scripts/repair-hls-pts.mjs --check data/movies   # lecture seule, exit 1 si doublon
     node scripts/repair-hls-pts.mjs --fix --journal rep.jsonl data/movies
 
+### Jointures entre fragments
+
+ffmpeg écrit la durée d'un échantillon comme l'écart de DTS avec le suivant.
+Sur une source horodatée à la milliseconde (MKV), l'écart de PTS diffère d'un
+tick de source : à 16 kHz, des images de 656, 672 et 688 ticks. La dernière
+image présentée d'un fragment finit alors 1 ms (16 ticks) **après** la
+keyframe du fragment suivant. Joués dans l'ordre, rien ne se voit. Mais quand
+hls.js ajoute un fragment devant un voisin déjà tamponné (seek en arrière,
+fragment rechargé), MSE retire les images que le nouvel append recouvre
+(« coded frame removal ») : la keyframe du voisin disparaît, et avec elle
+toutes les images qui en dépendent.
+
+Mesuré sur les segments de La La Land (H264, prod), en ajoutant N puis N+1,
+puis N-1, puis à nouveau N :
+
+- Firefox efface le fragment N entier à l'ajout de N-1, puis N+1 au
+  rechargement de N ;
+- Chrome garde N, mais efface N+1 au rechargement de N ;
+- WebKit ne perd rien.
+
+La lecture bute ensuite sur le trou. Le 29 octobre, sur Sinister (H264),
+un seek en arrière sous Firefox a laissé un trou de 0,166 s sous la tête de
+lecture et la séance est restée bloquée jusqu'au rechargement.
+
+Après la réparation des doublons, `prepareMovie` recadre donc chaque jointure
+(`repairSeams`, `src/hls-pts.js`) : la durée de l'échantillon qui déborde est
+ramenée sur le début du fragment suivant, et le `cto` des échantillons décodés
+après lui grandit d'autant. Leur DTS recule de quelques ticks, aucune PTS ne
+bouge. Seuls des champs de 4 octets du `trun` sont réécrits, en place.
+Les mêmes segments réparés ne perdent plus rien dans les trois moteurs.
+
+Le script `repair-hls-pts.mjs` traite les jointures avec les doublons (`--check` les
+compte, `--fix` les recadre et les journalise pour le retour arrière).
+
 Une réparation réécrit les octets en place : la génération ne change pas.
 L'ETag servi par `/media` porte taille et mtime du fichier (`no-cache` +
 revalidation à chaque requête), donc toute réparation rétroactive invalide
