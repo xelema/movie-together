@@ -157,3 +157,25 @@ test('a refused start still asks for a gesture', async t => {
   assert.equal(player.activationBlocked, true);
   assert.equal(activations.at(-1), false);
 });
+
+test('an automatic activation that stalls asks for a click instead of loading forever', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const { video, create, activations } = fakeDom(t);
+  const { player } = create();
+  let rejectPending = null;
+  video.play = function () { this.paused = false; return new Promise((resolve, reject) => { rejectPending = reject; }); };
+  video.pause = function () {
+    this.paused = true;
+    rejectPending?.(Object.assign(new Error('interrupted'), { name: 'AbortError' }));
+    rejectPending = null;
+  };
+  player.movie = { id: 'm' }; player.loadToken = 1;
+  player.state = { epoch: 1, phase: 'buffering', position: 0, startsAt: null, duration: 100 };
+  const pending = player.activate();
+  t.mock.timers.tick(3000);
+  await pending;
+  assert.equal(player.activated, false);
+  assert.equal(player.activating, false);
+  assert.equal(player.activationBlocked, true);
+  assert.equal(activations.at(-1), false);
+});

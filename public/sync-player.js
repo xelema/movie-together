@@ -404,9 +404,15 @@ export class SyncPlayer {
     const token = this.loadToken;
     // A play() that never settles would hold activating for the whole timeout,
     // and its promise rejects as AbortError when we pause it: a stall, not a refusal.
+    // Still, nothing retries it (canplay activates once): without the prompt the
+    // viewer sat on « Chargement du film… » and held the séance on `activation`,
+    // so the stall asks for the same click a refusal does.
     let interrupted = false;
     const timeout = setTimeout(() => {
-      if (token === this.loadToken) { interrupted = true; this.activating = false; this.pauseLocal(); }
+      if (token !== this.loadToken || this.disposed) return;
+      interrupted = true; this.activating = false; this.pauseLocal();
+      if (this.activated) return;
+      this.activationBlocked = true; this.emitFlags('stalled'); this.onActivation(false);
     }, 3_000);
     this.internalUntil = performance.now() + 1500;
     try {
