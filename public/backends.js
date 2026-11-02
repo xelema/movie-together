@@ -121,7 +121,10 @@ export class HlsJsBackend {
     this.trackNodes = new MutationObserver(() => releaseSubtitlePlaceholders(video.querySelectorAll('track'), this.subtitleVtt));
     this.trackNodes.observe(video, { childList: true });
     this.hls.loadSource(url); this.hls.attachMedia(video);
-    this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => onBuffered?.());
+    // The recovery budget bounds a burst of fatal errors, not the life of the
+    // film: a buffered fragment proves the stream is healthy again, so a second
+    // outage an hour later gets the same recovery as the first one.
+    this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => { this.mediaRecoveries = 0; this.networkRecoveries = 0; onBuffered?.(); });
     for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) {
       this.hls.on(window.Hls.Events[name], () => onTracksChanged?.());
     }

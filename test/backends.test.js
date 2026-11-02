@@ -235,3 +235,41 @@ test('the adapter floors hls.js just over the reserve, and follows a new reserve
     restore(); globalThis.window = saved; globalThis.URL = savedURL; globalThis.Blob = savedBlob;
   }
 });
+
+// A first outage spends the fatal-error recovery; once fragments buffer again
+// the budget is back, so a second outage later in the film recovers the same
+// way instead of failing the viewer for the rest of the séance.
+test('a healthy stretch restores the fatal-error recovery budget', () => {
+  const restore = stubMutationObserver();
+  const saved = globalThis.window;
+  const handlers = {}, calls = [];
+  const hls = { config: {}, loadSource() {}, attachMedia() {}, destroy() {},
+    on(name, handler) { (handlers[name] ??= []).push(handler); },
+    startLoad: at => calls.push(['startLoad', at]), recoverMediaError: () => calls.push(['recoverMediaError']) };
+  globalThis.window = { Hls: class { constructor() { return hls; } } };
+  window.Hls.Events = { FRAG_BUFFERED: 'fb', MANIFEST_PARSED: 'mp', AUDIO_TRACKS_UPDATED: 'au', SUBTITLE_TRACKS_UPDATED: 'su', ERROR: 'err' };
+  window.Hls.ErrorTypes = { MEDIA_ERROR: 'media', NETWORK_ERROR: 'network' };
+  const emit = (name, data) => { for (const handler of handlers[name] ?? []) handler(name, data); };
+  const fatal = [];
+  try {
+    const video = { currentTime: 12, querySelectorAll: () => [] };
+    const backend = new HlsJsBackend(video, 'u', {}, { onFatal: message => fatal.push(message) });
+    emit('err', { fatal: true, type: 'network', details: 'fragLoadError' });
+    emit('fb', {});
+    video.currentTime = 3600;
+    emit('err', { fatal: true, type: 'network', details: 'fragLoadError' });
+    emit('err', { fatal: true, type: 'media', details: 'bufferStalledError' });
+    emit('fb', {});
+    emit('err', { fatal: true, type: 'media', details: 'bufferStalledError' });
+    assert.deepEqual(calls, [['startLoad', 12], ['startLoad', 3600], ['recoverMediaError'], ['recoverMediaError']]);
+    assert.deepEqual(fatal, []);
+    // Without a buffered fragment in between, the budget still bounds a burst.
+    emit('err', { fatal: true, type: 'media', details: 'bufferStalledError' });
+    emit('err', { fatal: true, type: 'network', details: 'fragLoadError' });
+    emit('err', { fatal: true, type: 'network', details: 'fragLoadError' });
+    assert.equal(fatal.length, 2);
+    backend.destroy();
+  } finally {
+    restore(); saved === undefined ? delete globalThis.window : globalThis.window = saved;
+  }
+});
