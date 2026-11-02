@@ -12,6 +12,8 @@ const BATCH = 400;          // taille maximale d'un POST
 const BATCH_BYTES = 256 * 1024; // budget d'octets d'un POST
 const QUEUE_MAX = 2000;     // purge FIFO hors quota côté serveur
 const LONGTASK_MAX = 200;   // puis on ne garde que le compteur
+const RETRY_MIN = 1000;     // premier délai après un lot refusé
+const RETRY_MAX = 60_000;   // plafond du recul exponentiel
 
 // Les globaux sont lus au moment de l'appel, jamais capturés à l'import :
 // la page comme un banc d'essai peuvent les fournir après coup.
@@ -139,6 +141,9 @@ export function attachTelemetry(player, video, roomId, options = {}) {
   const context = { ...(options.context ?? {}) };
   const queue = [];
   let dropped = 0, sending = false, disposed = false, sessionEnded = false;
+  // Recul après un lot refusé : délai courant, minuteur de relance, arrêt
+  // définitif quand la séance a disparu (404/410) ou est terminée.
+  let retryMs = 0, retryTimer, halted = false;
   let lastPos, lastHidden, lastWakeLock, longtasks = 0, longtaskTotal = 0, tickCount = 0;
   // Profil « film » des MediaCapabilities : tant qu'il manque faute de rendition
   // connue, tick() le redemande — borné pour ne jamais boucler.
@@ -164,7 +169,7 @@ export function attachTelemetry(player, video, roomId, options = {}) {
   // Insertion unique : enveloppe horodatée, champs non définis retirés par la
   // sérialisation, quota FIFO et comptage des lignes non sérialisables.
   const push = (type, fields) => {
-    if (!enabled || disposed) return;
+    if (!enabled || disposed || halted) return;
     try {
       const event = { ...(fields && typeof fields === 'object' ? fields : {}),
         t: Date.now(), p: Math.round(now() * 10) / 10, sid, type: String(type).slice(0, 40) };
@@ -197,7 +202,7 @@ export function attachTelemetry(player, video, roomId, options = {}) {
   // tentative au prochain flush.
   const beacon = () => {
     const memberId = g(() => player.memberId);
-    if (!queue.length || !memberId || !nav()?.sendBeacon) return;
+    if (halted || !queue.length || !memberId || !nav()?.sendBeacon) return;
     while (queue.length) {
       const events = take();
       let ok = false;
@@ -206,24 +211,45 @@ export function attachTelemetry(player, video, roomId, options = {}) {
     }
   };
 
+  // Arrêt définitif : plus d'envoi, plus d'accumulation. La file est rendue
+  // à la mémoire, rien ne la videra plus.
+  const halt = () => {
+    halted = true; queue.length = 0;
+    clearTimeout(retryTimer); retryTimer = undefined;
+  };
+
+  // Un lot refusé est remis en file et repart au vidage suivant, mais jamais
+  // aussitôt : la relance attend un recul exponentiel (1 s → 60 s) pendant
+  // lequel les vidages périodiques passent leur tour. Seul un lot accepté
+  // enchaîne immédiatement le suivant pour vider la file.
   const flush = () => {
-    if (sending || disposed) return;
+    if (sending || disposed || halted || retryTimer !== undefined) return;
     const memberId = g(() => player.memberId);
     if (!queue.length || !memberId || typeof fetch !== 'function') return;
     sending = true;
     const events = take();
     const body = g(() => JSON.stringify({ memberId, events })) ?? '{}';
-    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+    let accepted = false;
+    Promise.resolve()
+      .then(() => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }))
       .then(response => {
-        if (response && response.ok === false) throw new Error(`http ${response.status}`);
+        if (response && response.ok === false) throw Object.assign(new Error(`http ${response.status}`), { status: response.status });
+        accepted = true; retryMs = 0;
         if (dropped) { const n = dropped; dropped = 0; push('queue', { dropped: n, size: queue.length }); }
       })
-      .catch(() => {
+      .catch(error => {
+        // Séance disparue (404/410) ou terminée : réessayer ne peut que
+        // marteler le serveur, la séance ne reviendra pas.
+        if (error?.status === 404 || error?.status === 410 || sessionEnded || g(() => player.disposed)) { halt(); return; }
         queue.unshift(...events);
         const over = queue.length - QUEUE_MAX;
         if (over > 0) { queue.splice(0, over); dropped += over; }
+        if (disposed) return;
+        retryMs = Math.min(RETRY_MAX, retryMs ? retryMs * 2 : RETRY_MIN);
+        retryTimer = setTimeout(() => { retryTimer = undefined; flush(); }, retryMs);
+        retryTimer?.unref?.();
       })
-      .finally(() => { sending = false; if (queue.length) flush(); });
+      .finally(() => { sending = false; if (accepted && queue.length) flush(); });
   };
 
   // Déclaration des événements du contrat.
@@ -535,7 +561,7 @@ export function attachTelemetry(player, video, roomId, options = {}) {
     sessionEnd('dispose');
     disposed = true;
     for (const id of timers) clearInterval(id);
-    clearTimeout(envTimer);
+    clearTimeout(envTimer); clearTimeout(retryTimer); retryTimer = undefined;
     for (const remove of removers) remove();
     for (const obs of observers) { try { obs.disconnect(); } catch {} }
     try { unobserve?.(); } catch {}

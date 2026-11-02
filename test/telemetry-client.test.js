@@ -328,3 +328,75 @@ test('l\'opt-out localStorage empêche tout envoi mais rend le handle', async t 
   assert.ok(allEvents(posts).some(event => event.type === 'probe'));
   telemetry.dispose();
 });
+
+// Un serveur qui répond 404 en boucle : la séance a été fermée. Avant, le lot
+// refusé était remis en file et flush() se relançait dans son .finally — une
+// boucle chaude d'une cinquantaine de POST par seconde, sans fin.
+const failingFetch = (posts, status) => async (url, init) => {
+  posts.push({ url, body: JSON.parse(init.body) });
+  return { ok: false, status: typeof status === 'function' ? status(posts.length) : status };
+};
+
+test('un 404 (séance disparue) arrête définitivement l’envoi', async t => {
+  const { posts } = stubBrowser(t);
+  globalThis.fetch = failingFetch(posts, 404);
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const { telemetry } = attach(t);
+  await settle();
+  t.mock.timers.tick(5000);
+  await settle();
+  assert.equal(posts.length, 1, 'un seul POST, pas de relance immédiate');
+  for (let i = 0; i < 24; i++) { t.mock.timers.tick(5000); await settle(); }
+  assert.equal(posts.length, 1, 'aucun POST après un 404');
+  telemetry.dispose();
+});
+
+test('un lot refusé est réessayé avec un recul exponentiel borné, sans perte', async t => {
+  const { posts } = stubBrowser(t);
+  let failing = true;
+  globalThis.fetch = async (url, init) => {
+    posts.push({ url, body: JSON.parse(init.body) });
+    return failing ? { ok: false, status: 503 } : { ok: true, status: 204 };
+  };
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const { telemetry } = attach(t);
+  await settle();
+  telemetry.event('probe', { i: 1 });
+  t.mock.timers.tick(5000);
+  await settle();
+  assert.equal(posts.length, 1, 'pas de relance dans la foulée de l’échec');
+  // Instants des relances suivantes : 1 s, puis 2, 4, 8… jusqu'au plafond de 60 s.
+  const at = [];
+  for (let ms = 0; ms < 400_000; ms += 500) {
+    const before = posts.length;
+    t.mock.timers.tick(500);
+    await settle();
+    if (posts.length > before) at.push(ms + 500);
+  }
+  const gaps = at.map((ms, i) => ms - (i ? at[i - 1] : 0));
+  assert.deepEqual(gaps.slice(0, 7), [1000, 2000, 4000, 8000, 16000, 32000, 60000]);
+  assert.ok(gaps.slice(6).every(gap => gap === 60000), `plafond de 60 s : ${gaps}`);
+  // Le serveur revient : le lot gardé en file part, puis le recul repart de zéro.
+  failing = false;
+  const delivered = posts.length;
+  t.mock.timers.tick(60_000);
+  await settle();
+  assert.ok(posts.length > delivered);
+  assert.ok(allEvents(posts.slice(delivered)).some(event => event.type === 'probe' && event.i === 1));
+  telemetry.dispose();
+});
+
+test('un échec après la fin de séance ne relance rien', async t => {
+  const { posts } = stubBrowser(t);
+  globalThis.fetch = failingFetch(posts, 503);
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const { telemetry, player } = attach(t);
+  await settle();
+  player.disposed = true;
+  t.mock.timers.tick(5000);
+  await settle();
+  for (let i = 0; i < 24; i++) { t.mock.timers.tick(5000); await settle(); }
+  assert.equal(posts.length, 1);
+  telemetry.dispose();
+});
+

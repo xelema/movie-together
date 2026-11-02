@@ -86,6 +86,13 @@ Bornes, tenues des deux côtés :
 
 Un lot refusé est remis en file et repart au flush suivant ; une ligne qui
 dépasserait 3800 caractères est comptée puis sautée, jamais fatale pour le lot.
+Après un refus, le flush suivant attend un recul exponentiel borné (1 s, 2 s,
+4 s… plafonné à 60 s, remis à zéro au premier lot accepté) : les vidages
+périodiques passent leur tour pendant ce délai, et seul un lot accepté enchaîne
+aussitôt le suivant. Un `404` ou un `410` (séance fermée, participant inconnu)
+et tout refus survenu après la fin de séance (`session-end`, lecteur démonté)
+arrêtent définitivement l'envoi : la file est abandonnée et plus rien n'y entre,
+la séance ne reviendra pas.
 Le corps de cette route est le seul de l'API au-dessus de 32 Ko : le lot doit
 tenir dans la borne serveur, sinon le POST est refusé en `413` et la séance
 entière reste sans journal.
