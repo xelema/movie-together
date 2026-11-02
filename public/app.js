@@ -475,9 +475,16 @@ async function refresh() {
   }));
 }
 async function copyLink(link) {
-  // Clipboard needs a secure context; on plain HTTP show the link instead.
-  if (!navigator.clipboard) { notice(`${t('Lien', '링크')} : ${link}`, true); return; }
-  await navigator.clipboard.writeText(link); notice(t('Lien copié.', '링크를 복사했습니다.'));
+  // Clipboard needs a secure context; on plain HTTP show the link instead. A
+  // refused write (unfocused document, denied permission) shows it as well,
+  // so the old clipboard content is never sent in its place.
+  if (!navigator.clipboard) { notice(`${t('Lien', '링크', 'Liên kết')} : ${link}`, true); return; }
+  try { await navigator.clipboard.writeText(link); }
+  catch {
+    notice(`${t('Copie impossible. Lien', '복사할 수 없습니다. 링크', 'Không sao chép được. Liên kết')} : ${link}`, true);
+    return;
+  }
+  notice(t('Lien copié.', '링크를 복사했습니다.'));
 }
 // Uploaded, checked, prepared, ready: where the film stands in its lifecycle at a glance.
 function stepper(movie) {
@@ -896,7 +903,7 @@ $('admin-tabs').addEventListener('keydown', event => {
   showTab(next.dataset.tab); next.focus();
 });
 $('allow-sound').addEventListener('click', handle(() => player?.activate()));
-$('copy-invite').addEventListener('click', handle(() => { act('invite'); copyLink(`${location.origin}/#invite=${encodeURIComponent($('room-code').textContent)}`); }));
+$('copy-invite').addEventListener('click', handle(() => { act('invite'); return copyLink(`${location.origin}/#invite=${encodeURIComponent($('room-code').textContent)}`); }));
 $('upload-file').addEventListener('change', handle(async () => {
   renderDisk();
   if ($('upload-file').files[0] && !$('disk-space').classList.contains('insufficient')) await upload($('upload-file').files[0]);
