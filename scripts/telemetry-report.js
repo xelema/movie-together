@@ -31,6 +31,43 @@ const of = (events, type) => events.filter(event => event.type === type);
 
 // ---------------------------------------------------------------- participant
 
+const tickTime = tick => tick.t ?? tick.at;
+const reading = tick => tick.phase === 'playing' && tick.paused !== true;
+
+// Cadence décodée tick par tick : delta de totalVideoFrames sur le temps réel
+// écoulé, entre deux ticks consécutifs en lecture (un saut d'horloge, une
+// remise à zéro du compteur ou un tick isolé ne comptent pas).
+function decodedRates(ticks) {
+  const rates = [];
+  for (let i = 1; i < ticks.length; i++) {
+    const before = ticks[i - 1], tick = ticks[i];
+    if (!reading(before) || !reading(tick)) continue;
+    const frames = tick.frames - before.frames, seconds = (tickTime(tick) - tickTime(before)) / 1000;
+    if (Number.isFinite(frames) && frames >= 0 && seconds > 0.5 && seconds < 5) rates.push(frames / seconds);
+  }
+  return rates;
+}
+
+// D'où viennent les images manquantes : sautées à l'écran (`skip`), présentées
+// sans callback rVFC (`miss`), rafraîchissement réel de l'écran (`raf`) et
+// présence de l'overlay Gecko (`ovl`).
+function presentationSummary(ticks) {
+  const playing = ticks.filter(reading);
+  const skips = playing.map(tick => tick.skip).filter(Number.isFinite);
+  const misses = playing.map(tick => tick.miss).filter(Number.isFinite);
+  const rafs = sorted(ticks.map(tick => tick.raf));
+  const overlay = ticks.filter(tick => typeof tick.ovl === 'boolean');
+  const parts = [];
+  if (skips.length) {
+    const skipped = total(skips);
+    parts.push(`${skipped} images sautées à l'écran sur ${skips.length} s de lecture (${fmt(skipped / skips.length)} /s · ${skips.filter(n => n > 0).length} ticks touchés)`);
+  }
+  if (misses.length) parts.push(`${total(misses)} présentées sans callback rVFC`);
+  if (rafs.length) parts.push(`rafraîchissement ${fmt(median(rafs))} Hz (rAF, ${rafs.length} échantillons, ${fmt(rafs[0])}–${fmt(rafs.at(-1))})`);
+  if (overlay.length) parts.push(`overlay gecko affiché ${overlay.filter(tick => tick.ovl).length}/${overlay.length} ticks`);
+  return parts.length ? `présentation : ${parts.join(' · ')}` : undefined;
+}
+
 function clientReport(file, events) {
   const ticks = of(events, 'tick');
   const caps = of(events, 'caps').at(-1);
@@ -73,7 +110,16 @@ function clientReport(file, events) {
 
   const fps = ticks.map(tick => tick.fps);
   const lastTick = ticks.at(-1);
-  if (fps.some(Number.isFinite)) console.log(`images : ${fmt(median(fps))} i/s réelles (médiane) · min ${fmt(Math.min(...sorted(fps)))} · ${lastTick?.dropped ?? '?'} perdues sur ${lastTick?.frames ?? '?'}${Number.isFinite(lastTick?.frames) && lastTick.frames ? ` (${(100 * lastTick.dropped / lastTick.frames).toFixed(1)} %)` : ''}`);
+  const lost = `${lastTick?.dropped ?? '?'} perdues sur ${lastTick?.frames ?? '?'}${Number.isFinite(lastTick?.frames) && lastTick.frames ? ` (${(100 * lastTick.dropped / lastTick.frames).toFixed(1)} %)` : ''}`;
+  if (fps.some(Number.isFinite)) console.log(`images : ${fmt(median(fps))} i/s réelles (médiane) · min ${fmt(Math.min(...sorted(fps)))} · ${lost}`);
+  else {
+    // rVFC muet (TV à plan vidéo matériel) : le fps n'est pas publié, la
+    // cadence se lit sur le delta de totalVideoFrames entre ticks de lecture.
+    const decoded = decodedRates(ticks);
+    if (decoded.length) console.log(`images : rVFC muet — ${fmt(median(decoded))} i/s décodées (médiane du delta totalVideoFrames en lecture) · min ${fmt(Math.min(...decoded))} · ${lost}`);
+  }
+  const presentation = presentationSummary(ticks);
+  if (presentation) console.log(presentation);
 
   // Un trou dans les plages décodées alors que la réserve fond est la signature
   // d'un ajout refusé, pas d'un manque de débit.

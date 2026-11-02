@@ -198,6 +198,9 @@ video{display:block;width:100%;max-height:72vh;object-fit:contain}
     z-index:1;
   }
 }
+/* Under the color shader the opaque WebGL canvas covers the native video: nothing
+   left to protect from MPO, and the backdrop pass would cost a full-frame composite. */
+.video-stage[data-shader] #gecko-overlay-fix{display:none}
 .plyr{width:100%}
 .color-canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;pointer-events:none}
 .color-captions{position:absolute;left:4%;right:4%;bottom:16%;pointer-events:none;text-align:center;white-space:pre-line;

@@ -86,6 +86,13 @@ Bornes, tenues des deux côtés :
 
 Un lot refusé est remis en file et repart au flush suivant ; une ligne qui
 dépasserait 3800 caractères est comptée puis sautée, jamais fatale pour le lot.
+Après un refus, le flush suivant attend un recul exponentiel borné (1 s, 2 s,
+4 s… plafonné à 60 s, remis à zéro au premier lot accepté) : les vidages
+périodiques passent leur tour pendant ce délai, et seul un lot accepté enchaîne
+aussitôt le suivant. Un `404` ou un `410` (séance fermée, participant inconnu)
+et tout refus survenu après la fin de séance (`session-end`, lecteur démonté)
+arrêtent définitivement l'envoi : la file est abandonnée et plus rien n'y entre,
+la séance ne reviendra pas.
 Le corps de cette route est le seul de l'API au-dessus de 32 Ko : le lot doit
 tenir dans la borne serveur, sinon le POST est refusé en `413` et la séance
 entière reste sans journal.
@@ -141,7 +148,26 @@ entière reste sans journal.
   - images : `frames` et `dropped` (`getVideoPlaybackQuality().totalVideoFrames`
     / `droppedVideoFrames`), `corrupted`, `fps` (images réellement présentées
     par seconde de temps réel, mesurées par `requestVideoFrameCallback`),
-    `pdelay` (durée de traitement médiane, ms).
+    `pdelay` (durée de traitement médiane, ms). `fps` est absent tant qu'aucun
+    callback rVFC n'a tiré depuis l'attache (TV à plan vidéo matériel où rVFC
+    ne se déclenche jamais) : la cadence se lit alors sur le delta de `frames`.
+  - présentation (d'où viennent les images manquantes quand `dropped` reste
+    à 0) — comptés sur l'intervalle du tick, entre callbacks rVFC consécutifs,
+    hors seek, changement d'époque et onglet caché :
+    - `skip` : images sautées à l'écran — écart de `metadata.mediaTime` de
+      plus de 1,5 période d'image estimée (premier quartile des écarts
+      récents) que `metadata.presentedFrames` ne couvre pas. Absent tant
+      qu'aucun callback rVFC n'a tiré.
+    - `miss` : images présentées dont le callback rVFC n'a pas été appelé
+      (`presentedFrames` saute de plus d'une unité) ; l'écran est juste, seul
+      `fps` sous-estime. Absent si le moteur ne fournit pas `presentedFrames`.
+    - `raf` : rafraîchissement réel de l'écran (Hz), cadence
+      `requestAnimationFrame` mesurée sur une seconde une fois par minute
+      (onglet visible seulement) ; publié sur le seul tick qui suit
+      l'échantillon.
+    - `ovl` : `true` si l'overlay anti-MPO `#gecko-overlay-fix` est
+      effectivement affiché (`getComputedStyle(…).display !== 'none'` :
+      Firefox seulement, masqué sous le rendu couleur WebGL).
   - horloge : `rtt`, `off`, `cok`, `samples`.
   - état du lecteur : `act`, `blk`, `rec`, `fail`, `back`, `bw`
     (`hls.bandwidthEstimate`), `ws` (`readyState`), `hid`, `on`, `focused`,
@@ -279,7 +305,10 @@ Une ligne par transition, jamais par battement (`tickMs` = 200 ms) :
 - `node scripts/telemetry-report.js <fichier.ndjson|dossier>` — synthèse d'une
   session : capacités du poste, phases, attentes, tampon, débits, dérive
   d'horloge, erreurs hls.js, journal des vidages et des ajouts, WebRTC, rendu
-  couleur.
+  couleur. La ligne `présentation` totalise `skip` et `miss` en lecture, la
+  médiane de `raf` et la part des ticks où l'overlay Gecko est affiché ; sans
+  `fps` (rVFC muet), la ligne `images` donne la cadence décodée tirée du delta
+  de `frames`.
 - `sudo docker exec movie-together-app-1 ls /data/telemetry` puis, depuis
   l'hôte, `/var/lib/docker/volumes/movie-together_movie-data/_data/telemetry`.
 - `npm run logs` (`scripts/watch-rooms.js`) annote en clair les lignes

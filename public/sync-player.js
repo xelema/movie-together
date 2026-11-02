@@ -311,7 +311,7 @@ export class SyncPlayer {
     const activated = sameMovie && this.activated;
     if (!sameMovie) { this.audioChoice = 0; this.subtitleChoice = -1; }
     clearTimeout(this.startTimer); this.scheduled = null;
-    this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.backend?.destroy(); this.backend = null;
+    this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.markShader(); this.backend?.destroy(); this.backend = null;
     this.loadToken = (this.loadToken || 0) + 1; this.activating = false; this.recovering = false;
     this.movie = movie; this.failure = null; this.activated = activated; this.autoActivationTried = false; this.activationBlocked = false; this.emitFlags(); this.onActivation(activated);
     // video.load() drops media events still queued on the element, so pauses
@@ -356,12 +356,25 @@ export class SyncPlayer {
     });
   }
   setShader(on) {
-    if (on === Boolean(this.colorRenderer)) return;
-    this.colorRenderer?.dispose(); this.colorRenderer = null;
-    if (!on) return;
-    try { this.colorRenderer = new ColorRenderer(this.video, this.rendition.color, message => this.failPlayback(message),
-      (type, fields) => this.emit(type, fields)); }
-    catch (error) { this.failPlayback(error.message); }
+    if (on !== Boolean(this.colorRenderer)) {
+      this.colorRenderer?.dispose(); this.colorRenderer = null;
+      if (on) {
+        try { this.colorRenderer = new ColorRenderer(this.video, this.rendition.color, message => this.failPlayback(message),
+          (type, fields) => this.emit(type, fields)); }
+        catch (error) { this.failPlayback(error.message); }
+      }
+    }
+    this.markShader();
+  }
+  // The stage says whether the opaque WebGL canvas covers the native video:
+  // the Firefox anti-MPO overlay (#gecko-overlay-fix) only protects the native
+  // SDR plane, so under the shader it is hidden by CSS instead of adding a
+  // full-frame backdrop-filter pass on every vsync.
+  markShader() {
+    const stage = this.video?.closest?.('.video-stage');
+    if (!stage) return;
+    if (this.colorRenderer) stage.setAttribute('data-shader', '');
+    else stage.removeAttribute('data-shader');
   }
   tracks() {
     this.onTracks(this.backend?.audioTracks() ?? [], this.backend?.subtitleTracks() ?? []);
@@ -493,7 +506,7 @@ export class SyncPlayer {
     this.disposed = true; if (this.subtitleFrame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.subtitleFrame);
     clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings); clearInterval(this.clocker);
     clearTimeout(this.startTimer); clearTimeout(this.retry); this.subtitleObserver?.disconnect(); this.listeners.forEach(remove => remove());
-    this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
+    this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.markShader(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
     this.releaseWakeLock();
   }
 }

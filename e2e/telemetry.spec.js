@@ -146,6 +146,16 @@ test('une séance ordinaire écrit son journal client et serveur sur le disque',
     throw new Error(`la séance ne joue pas : ${JSON.stringify(dump)} — ${error.message}`);
   }
 
+  // Le film de test est HDR et l'écran headless SDR : le rendu couleur WebGL
+  // couvre la vidéo native, la scène le dit et l'overlay anti-MPO est masqué.
+  const overlay = await page.evaluate(() => ({
+    shader: !!window.player?.colorRenderer,
+    marked: document.querySelector('.video-stage')?.hasAttribute('data-shader'),
+    display: getComputedStyle(document.querySelector('#gecko-overlay-fix')).display,
+  }));
+  expect(overlay.marked).toBe(overlay.shader);
+  if (overlay.shader) expect(overlay.display).toBe('none');
+
   // Le curseur de transport est un pourcentage : 50 % d'un film de 50 s vise 25 s.
   await page.locator('[data-plyr=seek]').fill('50');
   await page.locator('[data-plyr=seek]').dispatchEvent('change');
@@ -209,6 +219,10 @@ test('une séance ordinaire écrit son journal client et serveur sur le disque',
   expect(ticks.some(tick => tick.pos > 0)).toBe(true);
   expect(ticks.some(tick => tick.phase === 'playing' || tick.phase === 'buffering')).toBe(true);
   expect(ticks.some(tick => Number.isFinite(tick.frames))).toBe(true);
+  // Présentation : l'overlay est lu sur la page réelle, skip suit rVFC.
+  expect(ticks.every(tick => tick.ovl === undefined || typeof tick.ovl === 'boolean')).toBe(true);
+  expect(ticks.some(tick => typeof tick.ovl === 'boolean')).toBe(true);
+  if (browserName === 'chromium') expect(ticks.some(tick => Number.isFinite(tick.skip))).toBe(true);
 
   // Les intentions utilisateur sont horodatées avec la position et la phase.
   const actions = participant.lines.filter(line => line.type === 'action').map(line => line.act);
