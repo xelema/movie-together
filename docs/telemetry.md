@@ -87,6 +87,7 @@ Bornes, tenues des deux côtés :
 | --- | --- | --- |
 | événements par lot | 400 | client |
 | octets par lot | 256 Kio | client |
+| octets par lot de sortie (`sendBeacon`) | 60 Kio, sous la limite de 64 Kio des navigateurs | client |
 | caractères par événement | 3800 | client |
 | corps accepté par la route | 4 Mio, non compressé | serveur |
 | débit par session | 60 lots et 8 Mio par minute, sinon `429` | serveur |
