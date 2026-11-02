@@ -9,6 +9,7 @@ import { attachVoice } from './voice.js';
 import { attachWebcam } from './webcam.js';
 import { attachFullscreen } from './fullscreen.js';
 import { attachAudioBoost } from './audio-boost.js';
+import { jsonResult, readJson, responseError } from './http.js';
 
 const $ = id => document.getElementById(id);
 const LANGUAGE_OPTIONS = { fr: 'Français', ko: '한국어', vi: 'Tiếng Việt' };
@@ -58,6 +59,17 @@ $('close-settings').addEventListener('click', event => showSettings(false, event
 document.addEventListener('pointerdown', event => { if (!$('player-settings').contains(event.target) && !settingsButton.contains(event.target)) showSettings(false); });
 $('screen').addEventListener('keydown', event => { if (event.key === 'Escape' && !$('player-settings').hidden) { event.preventDefault(); event.stopPropagation(); showSettings(false, true); } });
 playbackUI.on('enterfullscreen exitfullscreen', () => { act('fullscreen', fullscreenControl.active()); showSettings(false); });
+// Le nom accessible d'un bouton à bascule dit les mots du libellé visible, que
+// Plyr choisit sur son état pressé : il suit donc cet état, quelle que soit la
+// cause de la bascule (bouton, raccourci, sortie faite par le navigateur).
+const toggleControls = () => [playbackUI.elements.buttons.mute, playbackUI.elements.buttons.fullscreen].filter(Boolean);
+function toggleLabel(control) {
+  const pressed = control.classList.contains('plyr__control--pressed');
+  const text = control.querySelector(pressed ? '.label--pressed' : '.label--not-pressed')?.textContent;
+  if (text && control.getAttribute('aria-label') !== text) control.setAttribute('aria-label', text);
+}
+for (const control of toggleControls()) new MutationObserver(() => toggleLabel(control))
+  .observe(control, { attributes: true, attributeFilter: ['class', 'aria-pressed'] });
 let lastMuted, lastVol;
 playbackUI.on('volumechange', () => {
   const muted = playbackUI.muted, vol = playbackUI.volume;
@@ -218,7 +230,7 @@ function translate() {
     button.querySelector('.label--not-pressed').textContent = normal;
     button.querySelector('.label--pressed').textContent = pressed;
   }
-  playbackUI.elements.buttons.fullscreen?.setAttribute('aria-label', playbackUI.fullscreen.active ? words.exitFullscreen : words.enterFullscreen);
+  for (const control of toggleControls()) toggleLabel(control);
   settingsButton.setAttribute('aria-label', t('Réglages', '설정'));
   $('player-settings').setAttribute('aria-label', t('Réglages', '설정')); $('close-settings').setAttribute('aria-label', t('Fermer', '닫기'));
   $('notice-close').setAttribute('aria-label', t('Fermer', '닫기'));
@@ -271,13 +283,30 @@ function updatePlayback(controller) {
   }
 }
 // Errors and links to read stay until closed, confirmations fade on their own.
+// A modal dialog veils the page and makes it inert: an error raised while one
+// is open is written in the dialog's own alert, above the veil, where it can be
+// read and dismissed from the keyboard.
 let noticeTimer = null;
+const dialogAlert = () => [...document.querySelectorAll('dialog[open]')].at(-1)?.querySelector('.dialog-error') ?? null;
+function showAlert(node, message) { node.textContent = message; node.hidden = !message; }
 function notice(message = '', sticky = false) {
   const error = message instanceof Error;
+  const alert = error && dialogAlert();
+  if (alert) { showAlert(alert, label(message.message)); return; }
   $('notice').textContent = label(error ? message.message : message);
   $('toast').dataset.tone = error ? 'danger' : '';
   clearTimeout(noticeTimer);
   if (message && !error && !sticky) noticeTimer = setTimeout(notice, 5000);
+}
+for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('close', () => {
+  for (const alert of dialog.querySelectorAll('.dialog-error')) showAlert(alert, '');
+});
+// A refused form names its error next to the field as well as in the toast:
+// the field is marked invalid and described by the message. An empty message
+// is cleared rather than hidden, so the description never reads a stale error.
+function fieldError(input, node, error) {
+  showAlert(node, error ? error.message : '');
+  if (error) input.setAttribute('aria-invalid', 'true'); else input.removeAttribute('aria-invalid');
 }
 $('notice-close').addEventListener('click', () => notice());
 // Sections are shown by clearing [hidden]; replay the entrance animation whenever that happens.
@@ -296,9 +325,7 @@ async function api(url, { body, method = 'GET', ...options } = {}) {
   try {
     const response = await fetch(url, { method, ...options, headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...options.headers }, body: body === undefined ? undefined : JSON.stringify(body) });
     status = response.status;
-    const result = await response.json();
-    if (!response.ok) throw new Error(label(result.error || t('Une erreur est survenue.', '오류가 발생했습니다.')));
-    return result;
+    return await jsonResult(response, { label, t });
   } catch (error) {
     // Jamais le corps de la réponse : chemin, méthode, statut, durée, message.
     telemetry?.event('api', { path: String(url).slice(0, 200), method, status,
@@ -448,9 +475,16 @@ async function refresh() {
   }));
 }
 async function copyLink(link) {
-  // Clipboard needs a secure context; on plain HTTP show the link instead.
-  if (!navigator.clipboard) { notice(`${t('Lien', '링크')} : ${link}`, true); return; }
-  await navigator.clipboard.writeText(link); notice(t('Lien copié.', '링크를 복사했습니다.'));
+  // Clipboard needs a secure context; on plain HTTP show the link instead. A
+  // refused write (unfocused document, denied permission) shows it as well,
+  // so the old clipboard content is never sent in its place.
+  if (!navigator.clipboard) { notice(`${t('Lien', '링크', 'Liên kết')} : ${link}`, true); return; }
+  try { await navigator.clipboard.writeText(link); }
+  catch {
+    notice(`${t('Copie impossible. Lien', '복사할 수 없습니다. 링크', 'Không sao chép được. Liên kết')} : ${link}`, true);
+    return;
+  }
+  notice(t('Lien copié.', '링크를 복사했습니다.'));
 }
 // Uploaded, checked, prepared, ready: where the film stands in its lifecycle at a glance.
 function stepper(movie) {
@@ -493,12 +527,7 @@ function movieCard(movie) {
       movie.subtitles?.length ? t(`${movie.subtitles.length} sous-titres`, `자막 ${movie.subtitles.length}개`, `${movie.subtitles.length} phụ đề`) : '']
       .filter(Boolean).join(' · ');
     if (meta) card.append(el('p', meta, 'hint'));
-    const create = async () => {
-      randomCode(); $('create-voice').checked = $('create-webcam').checked = false;
-      const code = await askDialog('create-dialog', 'create-code'); if (!code) return;
-      const room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code, voice: $('create-voice').checked, webcam: $('create-webcam').checked } });
-      await enterRoom(room.id, undefined, { code: room.code, title: movie.title, enter: 'create' });
-    };
+    const create = () => openCreate(movie);
     card.append(button(t('Créer une séance', '시청방 만들기'), create));
     card.classList.add('clickable');
     card.addEventListener('click', event => { if (!event.target.closest('details, button, input, select, a, label')) handle(create)(); });
@@ -569,8 +598,7 @@ function manageDetails(movie, minimal = false) {
       const trackLabel = subName.value.trim() || subLang.selectedOptions[0].textContent;
       if (movie.status === 'ready') {
         const response = await fetch(`/api/movies/${movie.id}/subtitles?label=${encodeURIComponent(trackLabel)}&language=${subLang.value}&name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: file });
-        const result = await response.json();
-        if (!response.ok) throw new Error(label(result.error || t('Une erreur est survenue.', '오류가 발생했습니다.')));
+        await jsonResult(response, { label, t });
         notice(t('Sous-titres ajoutés.', '자막이 추가되었습니다.'));
       } else await upload(file, { kind: 'subtitle', movieId: movie.id, label: trackLabel, language: subLang.value });
       await refresh();
@@ -623,7 +651,9 @@ function renderPrepare(focus = false) {
   const movie = movies.find(item => item.id === prepareId);
   if (!movie || !prepareDialog.open) return;
   const draft = prepareDraft(movie);
-  $('prepare-error').hidden = true;
+  // A server refresh re-renders the step without erasing an error the
+  // administrator has not read yet; a step change does.
+  if (focus) showAlert($('prepare-error'), '');
   $('prepare-steps').replaceChildren(...PREPARE_STEPS.map(([fr, ko, vi], index) => {
     const item = el('li', t(fr, ko, vi));
     item.dataset.state = index < draft.step ? 'done' : index === draft.step ? 'active' : 'todo';
@@ -680,6 +710,7 @@ function renderPrepare(focus = false) {
     const subName = el('input'); subName.maxLength = 100; subName.placeholder = 'Ex. Korean'; subName.setAttribute('aria-label', t('Nom affiché', '표시 이름'));
     const addRow = el('div', undefined, 'add-row');
     addRow.append(subLang, subName, button(t('Ajouter', '추가'), async () => {
+      showAlert($('prepare-error'), '');
       const file = subFile.files[0];
       const maxSubMb = settingsValues.maxSubtitleMb ?? 2;
       if (!file || !SUBTITLE_EXT.test(file.name) || file.size > maxSubMb * 1024 ** 2) throw new Error(t(`Choisir un fichier de sous-titres de moins de ${maxSubMb} Mo (SRT, VTT, SMI, ASS, SUB…).`, `자막 파일을 선택하세요 (SRT, VTT, SMI, ASS, SUB 등, 최대 ${maxSubMb}MB).`, `Chọn tệp phụ đề nhỏ hơn ${maxSubMb}MB (SRT, VTT, SMI, ASS, SUB…).`));
@@ -723,9 +754,7 @@ $('prepare-next').addEventListener('click', handle(async () => {
   if (!movie || !draft) return;
   const missingAudio = (movie.probe?.audio ?? []).length > 0 && !keptTracks(movie, draft, 'audio').length;
   if (missingAudio && draft.step === 0) {
-    const error = $('prepare-error');
-    error.textContent = t('Choisir au moins une piste audio.', '음성 트랙을 하나 이상 선택하세요.');
-    error.hidden = false;
+    showAlert($('prepare-error'), t('Choisir au moins une piste audio.', '음성 트랙을 하나 이상 선택하세요.'));
     return;
   }
   if (draft.step < PREPARE_STEPS.length - 1) { draft.step++; renderPrepare(true); return; }
@@ -829,10 +858,24 @@ async function enterRoom(id, name, context = {}) {
   if (session.admin) { movies = await api('/api/movies'); selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title])); }
 }
 $('language').addEventListener('change', handle(async () => { localStorage.setItem('language', $('language').value); translate(); notice(); if (!player && !uploadBusy) await refresh(); }));
-$('login-form').addEventListener('submit', handle(async event => { await api('/api/login', { method: 'POST', body: { password: new FormData(event.target).get('password') } }); event.target.reset(); notice(); await refresh(); }));
+// The refusal is said next to the field, not only in the toast at the corner:
+// the field is marked invalid, described by the message and focused again.
+const formRequest = async (input, alert, request) => {
+  fieldError(input, alert, null);
+  try { return await request(); } catch (error) { fieldError(input, alert, error); input.focus(); throw error; }
+};
+for (const [input, alert] of [[$('login-form').elements.password, $('login-error')], [$('join-form').elements.code, $('join-error')]])
+  input.addEventListener('input', () => fieldError(input, alert, null));
+$('login-form').addEventListener('submit', handle(async event => {
+  await formRequest(event.target.elements.password, $('login-error'),
+    () => api('/api/login', { method: 'POST', body: { password: new FormData(event.target).get('password') } }));
+  event.target.reset(); notice(); await refresh();
+}));
 $('join-form').addEventListener('submit', handle(async event => {
   const data = new FormData(event.target);
-  const room = await api('/api/join', { method: 'POST', body: { code: data.get('code') } }); notice();
+  const room = await formRequest(event.target.elements.code, $('join-error'),
+    () => api('/api/join', { method: 'POST', body: { code: data.get('code') } }));
+  notice();
   await enterRoom(room.id, undefined, { code: String(data.get('code')).trim(), enter: /[#&?]invite=/.test(location.hash) ? 'invite' : 'join' });
 }));
 // A pasted invitation link would be cut by maxlength before any input event, so it is caught at paste time.
@@ -860,7 +903,7 @@ $('admin-tabs').addEventListener('keydown', event => {
   showTab(next.dataset.tab); next.focus();
 });
 $('allow-sound').addEventListener('click', handle(() => player?.activate()));
-$('copy-invite').addEventListener('click', handle(() => { act('invite'); copyLink(`${location.origin}/#invite=${encodeURIComponent($('room-code').textContent)}`); }));
+$('copy-invite').addEventListener('click', handle(() => { act('invite'); return copyLink(`${location.origin}/#invite=${encodeURIComponent($('room-code').textContent)}`); }));
 $('upload-file').addEventListener('change', handle(async () => {
   renderDisk();
   if ($('upload-file').files[0] && !$('disk-space').classList.contains('insufficient')) await upload($('upload-file').files[0]);
@@ -1275,6 +1318,36 @@ timingDialog.addEventListener('close', () => {
   $('timing-overlay').textContent = '';
 });
 
+function randomCode() { $('create-code').value = Array.from(crypto.getRandomValues(new Uint8Array(4)), n => n.toString(16).padStart(2, '0')).join(''); fieldError($('create-code'), $('create-error'), null); }
+$('random-code').addEventListener('click', randomCode);
+// The creation dialog stays open until the server accepts the séance: a
+// refusal is shown under the code, with the typed code and the ticked options
+// still in place. Closing it never creates anything.
+let createMovie = null;
+const CODE_REFUSALS = ['Code : 4 à 32 lettres, chiffres ou tirets.', 'Ce code est déjà utilisé.'];
+function openCreate(movie) {
+  createMovie = movie;
+  randomCode(); $('create-voice').checked = $('create-webcam').checked = false;
+  $('create-dialog').showModal();
+}
+$('create-code').addEventListener('input', () => fieldError($('create-code'), $('create-error'), null));
+$('create-dialog').addEventListener('close', () => { createMovie = null; });
+$('create-dialog').querySelector('form').addEventListener('submit', handle(async () => {
+  const movie = createMovie, submit = $('create-submit');
+  if (!movie || submit.disabled) return;
+  fieldError($('create-code'), $('create-error'), null);
+  submit.disabled = true;
+  let room;
+  try {
+    room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code: $('create-code').value.trim(),
+      voice: $('create-voice').checked, webcam: $('create-webcam').checked } });
+  } catch (error) {
+    if (CODE_REFUSALS.includes(error.source)) { fieldError($('create-code'), $('create-error'), error); $('create-code').focus(); return; }
+    throw error;
+  } finally { submit.disabled = false; }
+  $('create-dialog').close();
+  await enterRoom(room.id, undefined, { code: room.code, title: movie.title, enter: 'create' });
+}));
 window.addEventListener('beforeunload', event => { if (uploadBusy) { event.preventDefault(); event.returnValue = ''; } });
 setInterval(() => { if (!player && !uploadBusy && movies.some(movie => ['processing', 'probing'].includes(movie.status))) refresh().catch(error => notice(error)); }, 3000);
 translate();
@@ -1294,8 +1367,6 @@ function askDialog(id, input) {
     dialog.showModal();
   });
 }
-function randomCode() { $('create-code').value = Array.from(crypto.getRandomValues(new Uint8Array(4)), n => n.toString(16).padStart(2, '0')).join(''); }
-$('random-code').addEventListener('click', randomCode);
 async function upload(file, extra = {}) {
   if (uploadBusy) return;
   if (!file) throw new Error(t('Choisir un fichier.', '파일을 선택하세요.'));
@@ -1316,9 +1387,9 @@ async function upload(file, extra = {}) {
         const response = await fetch(`/api/uploads/${info.id}`, { method: 'PUT', headers: {
           'Content-Type': 'application/octet-stream', 'Upload-Offset': String(offset),
         }, body: file.slice(offset, offset + (info.chunkSize ?? 8 * 1024 ** 2)) });
-        const result = await response.json();
+        const result = await readJson(response) ?? {};
         if (response.status === 409 && Number.isFinite(result.offset)) offset = result.offset;
-        else if (!response.ok) throw new Error(result.error);
+        else if (!response.ok || !Number.isFinite(result.offset)) throw responseError(response.status, result, { label, t });
         else offset = result.offset;
         retries = 0; $('upload-progress').value = offset / file.size * 100;
         // Average since this session started: steadier than the last chunk, and a resumed upload does not count what was already there.
@@ -1335,7 +1406,15 @@ async function upload(file, extra = {}) {
       }
     }
     $('upload-status').textContent = label('Analyse du fichier…');
-    await api(`/api/uploads/${info.id}/complete`, { method: 'POST', body: {} });
+    try { await api(`/api/uploads/${info.id}/complete`, { method: 'POST', body: {} }); }
+    catch (error) {
+      // A file the server refuses for what it is (400) can never be resumed:
+      // drop the stored copy instead of leaving a 100 % upload that asks to be
+      // chosen again. Busy or incomplete answers (409) and outages keep it.
+      if (error.status === 400) await api(`/api/uploads/${info.id}`, { method: 'DELETE' }).catch(() => {});
+      $('upload-status').textContent = ''; $('upload-progress').value = 0;
+      throw error;
+    }
     $('upload-status').textContent = t('Fichier ajouté. Préparez le film pour l’utiliser.', '파일이 추가되었습니다. 영화를 준비하면 사용할 수 있습니다.'); $('upload-progress').value = 0;
     await refresh();
   } finally { uploadBusy = false; $('upload-file').disabled = false; $('upload-file').value = ''; }

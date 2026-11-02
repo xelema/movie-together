@@ -235,3 +235,49 @@ test('the adapter floors hls.js just over the reserve, and follows a new reserve
     restore(); globalThis.window = saved; globalThis.URL = savedURL; globalThis.Blob = savedBlob;
   }
 });
+
+// A first outage spends the fatal-error recovery; once the stream has played
+// healthily for a while the budget is back, so a second outage later in the
+// film recovers the same way instead of failing the viewer for the rest of the
+// séance. A fragment buffered right after a recovery does not refill it: a
+// deterministic decode error must still end in a failure, not a loop.
+test('a healthy stretch restores the fatal-error recovery budget', () => {
+  const restore = stubMutationObserver();
+  const saved = globalThis.window;
+  const handlers = {}, calls = [];
+  const hls = { config: {}, loadSource() {}, attachMedia() {}, destroy() {},
+    on(name, handler) { (handlers[name] ??= []).push(handler); },
+    startLoad: at => calls.push(['startLoad', at]), recoverMediaError: () => calls.push(['recoverMediaError']) };
+  globalThis.window = { Hls: class { constructor() { return hls; } } };
+  window.Hls.Events = { FRAG_BUFFERED: 'fb', MANIFEST_PARSED: 'mp', AUDIO_TRACKS_UPDATED: 'au', SUBTITLE_TRACKS_UPDATED: 'su', ERROR: 'err' };
+  window.Hls.ErrorTypes = { MEDIA_ERROR: 'media', NETWORK_ERROR: 'network' };
+  const emit = (name, data) => { for (const handler of handlers[name] ?? []) handler(name, data); };
+  const fatal = [];
+  let now = 0;
+  try {
+    const video = { currentTime: 12, querySelectorAll: () => [] };
+    const backend = new HlsJsBackend(video, 'u', {}, { onFatal: message => fatal.push(message) });
+    backend.clock = () => now;
+    emit('err', { fatal: true, type: 'network', details: 'fragLoadError' });
+    now = 120_000; emit('fb', {});
+    video.currentTime = 3600;
+    emit('err', { fatal: true, type: 'network', details: 'fragLoadError' });
+    emit('err', { fatal: true, type: 'media', details: 'bufferStalledError' });
+    assert.deepEqual(calls, [['startLoad', 12], ['startLoad', 3600], ['recoverMediaError']]);
+    assert.deepEqual(fatal, []);
+    // Fragments buffered just after the recovery do not refill the budget: the
+    // same decode error coming back fails instead of recovering forever.
+    now = 125_000; emit('fb', {});
+    emit('err', { fatal: true, type: 'media', details: 'bufferStalledError' });
+    assert.equal(fatal.length, 1);
+    assert.equal(calls.length, 3);
+    // A long healthy stretch later, the next outage recovers again.
+    now = 400_000; emit('fb', {});
+    emit('err', { fatal: true, type: 'media', details: 'bufferStalledError' });
+    assert.deepEqual(calls.at(-1), ['recoverMediaError']);
+    assert.equal(fatal.length, 1);
+    backend.destroy();
+  } finally {
+    restore(); saved === undefined ? delete globalThis.window : globalThis.window = saved;
+  }
+});

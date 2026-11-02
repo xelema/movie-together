@@ -50,8 +50,15 @@ label>span{display:block;margin-bottom:8px}
 input:not([type=checkbox]):not([type=range]),select{width:100%;display:block;border:1px solid var(--line);border-radius:8px;background:var(--raise);color:var(--text);
   padding:0 14px;min-height:46px;font-size:15px;transition:border-color .2s var(--ease),background .2s var(--ease)}
 input:hover:not([type=checkbox]),select:hover{border-color:#2e3038}
-input:focus,select:focus{border-color:var(--line-strong);outline:none;background:#12141a}
-input::placeholder{color:#5a5a63}
+/* The field rule above outranks a bare input:focus: the focus state repeats its
+   selector. The ring is the focus indicator (white on the page, well over 3:1);
+   the lighter border keeps the field marked when the ring is clipped. */
+input:not([type=checkbox]):not([type=range]):focus,select:focus{border-color:var(--text-3);outline:none;background:#12141a}
+input:not([type=checkbox]):not([type=range]):focus-visible,select:focus-visible{outline:2px solid var(--white);outline-offset:2px}
+.language-picker select:focus-visible{outline:none}
+input::placeholder{color:var(--text-3)}
+input:not([type=checkbox]):not([type=range])[aria-invalid=true]{border-color:var(--danger)}
+.field-error{margin:8px 0 0;font-size:13px;color:var(--danger);text-align:inherit;overflow-wrap:anywhere}
 input[type=checkbox]{accent-color:var(--white);width:16px;height:16px;vertical-align:middle;margin-right:8px}
 input[type=file]:not([type=checkbox]):not([type=range]){font-size:13px;max-width:100%;padding:8px 12px;min-height:46px;display:flex;align-items:center}
 input::file-selector-button{border:0;border-radius:6px;padding:7px 12px;background:#22242b;color:var(--text);margin:0 12px 0 0;font-size:13px;cursor:pointer;flex:0 0 auto}
@@ -76,6 +83,7 @@ input::file-selector-button:hover{background:#2b2d35}
 #entry button{width:100%;margin-top:18px}
 #join-form input{font-family:var(--mono);font-size:19px;letter-spacing:.2em;text-align:center;min-height:56px}
 #login-form input{text-align:center}
+#entry .field-error{margin:10px auto 0;max-width:none;color:var(--danger)}
 
 .heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}
 .heading h1,.heading h2{margin:0}
@@ -171,6 +179,12 @@ html[lang=ko] #screen .track-controls strong,html[lang=ko] #participants span:no
 .watch-top{display:flex;align-items:center;gap:12px;min-height:40px;margin-bottom:24px}
 .watch-top .eyebrow{flex-shrink:0}
 #room-code{font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Participants read the code aloud to each other: on a phone it takes the
+   first line whole and the two buttons drop to the next one. */
+@media(max-width:480px){
+  .watch-top{flex-wrap:wrap;row-gap:8px}
+  #room-code{flex:1 0 60%;overflow:visible;white-space:normal;overflow-wrap:anywhere}
+}
 #leave{margin-left:auto}
 #copy-invite{flex-shrink:0;min-height:34px;padding:5px 12px;font-size:13px}
 #room-code:empty+#copy-invite{display:none}
@@ -398,6 +412,17 @@ dialog button{width:100%}
   #participants li{padding:4px 10px 4px 4px;gap:7px}
   .avatar{width:24px;height:24px;font-size:11px}
   #participants strong{font-size:12px}
+}
+/* A phone on its side has ~390 px of height: during a séance the page header
+   goes, the séance bar shrinks, and the picture is bounded so the player and
+   its control bar fit the visible height without scrolling. */
+@media(orientation:landscape) and (max-height:500px){
+  body:has(#watch:not([hidden])) header{display:none}
+  body:has(#watch:not([hidden])) main{padding-top:4px}
+  .watch-top{min-height:0;margin-bottom:4px;gap:10px}
+  #watch .watch-top button{min-height:32px;padding:3px 12px;font-size:13px}
+  #screen{max-height:100vh;max-height:100svh}
+  video{max-height:calc(100vh - 44px);max-height:calc(100svh - 44px)}
 }
 @media(max-width:360px){
   header{gap:8px;padding:0 12px}

@@ -84,6 +84,8 @@ export function pinSubtitleModes(controller) {
 // relieve the quota: a floor just over the reserve asks for no more than the
 // current fragment and the next one.
 export const RESERVE_MARGIN = 1;
+// Healthy playback needed after a fatal-error recovery before the budget refills.
+const HEALTHY_AFTER_RECOVERY_MS = 60_000;
 export function floorForwardBuffer(config, floor) {
   let value = config.maxMaxBufferLength;
   Object.defineProperty(config, 'maxMaxBufferLength', { configurable: true, enumerable: true,
@@ -95,11 +97,12 @@ export class HlsJsBackend {
   // Bounded recovery happens inside the adapter; the media element's own error
   // event must not short-circuit it.
   recoversErrors = true;
+  clock = () => performance.now();
 
   constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 8, bitrate } = {},
     { onTracksChanged, onBuffered, onStalled, onFatal, onEvent } = {}) {
     this.video = video; this.timelineOffset = timelineOffset; this.bitrate = bitrate; this.minBuffer = minBuffer;
-    this.mediaRecoveries = 0; this.networkRecoveries = 0;
+    this.mediaRecoveries = 0; this.networkRecoveries = 0; this.recoveredAt = -Infinity;
     this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
       maxBufferSize: bufferBytes(bufferSeconds, bitrate), backBufferLength: 60,
       startFragPrefetch: true, enableWorker: true,
@@ -121,7 +124,15 @@ export class HlsJsBackend {
     this.trackNodes = new MutationObserver(() => releaseSubtitlePlaceholders(video.querySelectorAll('track'), this.subtitleVtt));
     this.trackNodes.observe(video, { childList: true });
     this.hls.loadSource(url); this.hls.attachMedia(video);
-    this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => onBuffered?.());
+    // The recovery budget bounds a burst of fatal errors, not the life of the
+    // film: a fragment buffered well after the last recovery proves the stream
+    // healthy again, so a second outage an hour later gets the same recovery as
+    // the first one. A fragment buffered right after a recovery proves nothing:
+    // a deterministic decode error would replay the same recovery forever.
+    this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => {
+      if (this.clock() - this.recoveredAt >= HEALTHY_AFTER_RECOVERY_MS) { this.mediaRecoveries = 0; this.networkRecoveries = 0; }
+      onBuffered?.();
+    });
     for (const name of ['MANIFEST_PARSED', 'AUDIO_TRACKS_UPDATED', 'SUBTITLE_TRACKS_UPDATED']) {
       this.hls.on(window.Hls.Events[name], () => onTracksChanged?.());
     }
@@ -139,8 +150,8 @@ export class HlsJsBackend {
       if (!data.fatal) return;
       onStalled?.();
       // Hls.js already retries transient requests. Bound recovery after a fatal error.
-      if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && this.mediaRecoveries++ < 1) this.hls.recoverMediaError();
-      else if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && this.networkRecoveries++ < 1) this.hls.startLoad(video.currentTime);
+      if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && this.mediaRecoveries++ < 1) { this.recoveredAt = this.clock(); this.hls.recoverMediaError(); }
+      else if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && this.networkRecoveries++ < 1) { this.recoveredAt = this.clock(); this.hls.startLoad(video.currentTime); }
       else onFatal?.('Chargement interrompu. Rechargez la page pour réessayer.');
     });
   }

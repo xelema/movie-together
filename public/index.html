@@ -22,13 +22,15 @@
       <form id="join-form">
         <h1 data-fr="Entrez le code de la séance" data-ko="시청방 코드를 입력하세요" data-vi="Nhập mã buổi xem"></h1>
         <p data-fr="Le code vous est donné par la personne qui organise la séance." data-ko="시청방을 만든 사람에게 코드를 받으세요." data-vi="Người tổ chức buổi xem sẽ gửi mã cho bạn."></p>
-        <label><span class="eyebrow" data-fr="Code" data-ko="코드" data-vi="Mã"></span><input name="code" required autocomplete="off" maxlength="32" spellcheck="false" placeholder="cinema-123"></label>
+        <label><span class="eyebrow" data-fr="Code" data-ko="코드" data-vi="Mã"></span><input name="code" required autocomplete="off" maxlength="32" spellcheck="false" placeholder="cinema-123" aria-describedby="join-error"></label>
+        <p id="join-error" class="field-error" role="alert" hidden></p>
         <button data-fr="Continuer" data-ko="계속" data-vi="Tiếp tục"></button>
       </form>
       <form id="login-form" hidden>
         <h1 data-fr="Administration" data-ko="관리" data-vi="Quản trị"></h1>
         <p data-fr="Réservé à la personne qui gère la bibliothèque." data-ko="영화 목록을 관리하는 사람만 사용합니다." data-vi="Chỉ dành cho người quản lý thư viện."></p>
-        <label><span class="eyebrow" data-fr="Mot de passe" data-ko="비밀번호" data-vi="Mật khẩu"></span><input name="password" type="password" required autocomplete="current-password"></label>
+        <label><span class="eyebrow" data-fr="Mot de passe" data-ko="비밀번호" data-vi="Mật khẩu"></span><input name="password" type="password" required autocomplete="current-password" aria-describedby="login-error"></label>
+        <p id="login-error" class="field-error" role="alert" hidden></p>
         <button data-fr="Se connecter" data-ko="로그인" data-vi="Đăng nhập"></button>
       </form>
     </section>
@@ -122,11 +124,12 @@
 
     <dialog id="create-dialog"><form method="dialog">
       <h2 data-fr="Créer une séance" data-ko="시청방 만들기" data-vi="Tạo buổi xem"></h2>
-      <label><span class="eyebrow" data-fr="Code à partager" data-ko="공유할 코드" data-vi="Mã để chia sẻ"></span><input id="create-code" required minlength="4" maxlength="32" pattern="[A-Za-z0-9-]{4,32}" autocomplete="off" spellcheck="false"></label>
-      <p data-fr="4 à 32 lettres, chiffres ou tirets." data-ko="영문, 숫자, 하이픈 4~32자." data-vi="4 đến 32 chữ cái, số hoặc dấu gạch."></p>
+      <label><span class="eyebrow" data-fr="Code à partager" data-ko="공유할 코드" data-vi="Mã để chia sẻ"></span><input id="create-code" required minlength="4" maxlength="32" pattern="[A-Za-z0-9\-]{4,32}" autocomplete="off" spellcheck="false" aria-describedby="create-hint create-error"></label>
+      <p id="create-hint" data-fr="4 à 32 lettres, chiffres ou tirets." data-ko="영문, 숫자, 하이픈 4~32자." data-vi="4 đến 32 chữ cái, số hoặc dấu gạch."></p>
+      <p id="create-error" class="field-error dialog-error" role="alert" hidden></p>
       <label class="check"><input id="create-voice" type="checkbox"><span id="create-voice-label" data-fr="Traduction vocale (français ↔ coréen)" data-ko="음성 번역 (프랑스어 ↔ 한국어)" data-vi="Dịch giọng nói (tiếng Pháp ↔ tiếng Việt)"></span></label>
       <label class="check"><input id="create-webcam" type="checkbox"><span data-fr="Caméra (face-à-face à 2)" data-ko="웹캠 (2인용)" data-vi="Camera (2 người đối mặt)"></span></label>
-      <div class="dialog-actions"><button id="random-code" class="secondary" type="button" data-fr="Aléatoire" data-ko="무작위" data-vi="Ngẫu nhiên"></button><button data-fr="Créer" data-ko="만들기" data-vi="Tạo"></button></div>
+      <div class="dialog-actions"><button id="random-code" class="secondary" type="button" data-fr="Aléatoire" data-ko="무작위" data-vi="Ngẫu nhiên"></button><button id="create-submit" data-fr="Créer" data-ko="만들기" data-vi="Tạo"></button></div>
     </form></dialog>
 
     <dialog id="prepare-dialog" aria-labelledby="prepare-heading">
@@ -134,7 +137,7 @@
         <button id="prepare-close" class="ghost" type="button" aria-label="Fermer / 닫기 / Đóng">×</button></div>
       <ol id="prepare-steps" class="steps"></ol>
       <div id="prepare-body"></div>
-      <p id="prepare-error" class="media-error" role="alert" hidden></p>
+      <p id="prepare-error" class="media-error dialog-error" role="alert" hidden></p>
       <div class="dialog-actions">
         <button id="prepare-back" class="secondary" type="button"></button>
         <button id="prepare-next" type="button"></button>
@@ -180,6 +183,7 @@
         <button id="timing-offset-plus-1s" type="button" class="secondary">+1 s</button>
         <label class="check"><input id="timing-propagate" type="checkbox"><span data-fr="À partir de la réplique sélectionnée" data-ko="선택한 대사부터" data-vi="Từ câu đã chọn"></span></label>
       </div>
+      <p id="timing-error" class="media-error dialog-error" role="alert" hidden></p>
       <p class="hint" data-fr="Les séances déjà ouvertes sur ce film devront être rechargées pour voir le nouveau timing." data-ko="이미 열린 시청방은 새로고침해야 새 자막 싱크가 보입니다." data-vi="Các buổi xem đang mở phải tải lại để thấy timing mới."></p>
       <div class="dialog-actions">
         <button id="timing-auto" type="button" class="secondary" data-fr="Timing automatique (IA)" data-ko="자동 싱크 (AI)" data-vi="Timing tự động (AI)"></button>
