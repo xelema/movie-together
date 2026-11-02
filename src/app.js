@@ -12,7 +12,7 @@ import { reprobeMovie, prepareMovie, addSubtitle, writeMaster, decodeSubtitleTex
 import { SUBTITLE_FORMATS, SUBTITLE_EXT, IMAGE_SUBTITLE_CODECS } from '../public/subtitle-formats.js';
 import { clampCues, parseVtt, shiftSummary } from '../public/subtitle-timing.js';
 import { speechMask } from './speech-mask.js';
-import { findOffset } from './subtitle-sync.js';
+import { findOffsetInWorker } from './subtitle-sync.js';
 import { createRoomHub } from './sync/hub.js';
 import { createJournal } from './telemetry.js';
 import { createJobs } from './jobs.js';
@@ -592,7 +592,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         const mask = await speechMask(path.join(store.directory(movie.id), 'source'),
           { index: audioIndex, cache: path.join(directory, `speech_${audioIndex}.json`) });
         const cues = await readSubtitleCues(directory, track);
-        const result = findOffset({ cues, speech: mask.intervals, duration: movie.duration });
+        const result = await findOffsetInWorker({ cues, speech: mask.intervals, duration: movie.duration });
         Object.assign(entry, { state: 'done', result: { ...result, speechRatio: mask.speechRatio, audioMinutes: +(mask.duration / 60).toFixed(1) } });
       } catch (error) {
         Object.assign(entry, { state: 'error', error: error.message });

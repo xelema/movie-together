@@ -56,3 +56,27 @@ test('findOffset agreement collapses when only half the film is shifted', () => 
   assert.ok(result.agreement !== null && result.agreement < 0.75, `agreement=${result.agreement}`);
   assert.notEqual(result.confidence, 'high');
 });
+
+test('the off-thread measure keeps the event loop free on a two-hour film', { timeout: 60_000 }, async () => {
+  const { findOffsetInWorker } = await import('../src/subtitle-sync.js');
+  // ~1200 cues over two hours, speech 1.3 s after each cue: the synchronous
+  // sweep holds the CPU for one to two seconds on this host.
+  const duration = 7200, cues = [], speech = [];
+  for (let at = 5; at < duration - 10; at += 4.7 + (at % 3)) {
+    cues.push({ start: at, end: at + 2.5, text: 'x' });
+    speech.push({ start: at + 1.3, end: at + 3.6 });
+  }
+  let lag = 0, last = performance.now(), result;
+  const probe = setInterval(() => { const now = performance.now(); lag = Math.max(lag, now - last - 20); last = now; }, 20);
+  try {
+    result = typeof findOffsetInWorker === 'function'
+      ? await findOffsetInWorker({ cues, speech, duration })
+      : findOffset({ cues, speech, duration });
+    // Let the probe run once more: a blocked loop only shows when it resumes.
+    await new Promise(resolve => setTimeout(resolve, 60));
+  } finally { clearInterval(probe); }
+  // Rooms tick every 200 ms and clients pause after 1.5 s of silence.
+  assert.ok(lag < 400, `event loop blocked ${Math.round(lag)} ms`);
+  // The thread answers exactly what the synchronous measure answers.
+  assert.deepEqual(result, findOffset({ cues, speech, duration }));
+});
