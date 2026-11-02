@@ -36,7 +36,10 @@ l'est jamais. Il fait autorité : le client (`public/telemetry.js`), le serveur
   `<base>.<n>.ndjson` (n = 1, 2, …) et l'écriture reprend dans un fichier neuf.
 - Rétention : au démarrage et toutes les heures, les fichiers plus vieux que
   `telemetryDays` (mtime) sont supprimés, puis les plus anciens jusqu'à ce que
-  le dossier repasse sous `telemetryMb`. Seul un journal alimenté depuis moins
+  le dossier repasse sous `telemetryMb`. Le plafond `telemetryMb` tient aussi
+  à l'écriture : quand un vidage le franchirait, une rétention de rattrapage
+  passe (au plus une par minute), puis les lignes qui ne tiennent toujours pas
+  sont abandonnées et comptées dans l'événement `queue` suivant du fichier. Seul un journal alimenté depuis moins
   d'une heure est épargné, qu'il date du démarrage ou non. La suppression est
   journalisée en une ligne `[telemetry] …` sur la sortie du serveur.
 
@@ -83,6 +86,7 @@ Bornes, tenues des deux côtés :
 | octets par lot | 256 Kio | client |
 | caractères par événement | 3800 | client |
 | corps accepté par la route | 4 Mio, non compressé | serveur |
+| débit par session | 60 lots et 8 Mio par minute, sinon `429` | serveur |
 | file d'attente du client | 2000, purge FIFO | client |
 
 Un lot refusé est remis en file et repart au flush suivant ; une ligne qui

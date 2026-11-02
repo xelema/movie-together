@@ -1,8 +1,11 @@
 // Journal NDJSON de la télémétrie : un fichier par base de nom sous
 // <root>/telemetry, alimenté en mémoire puis vidé par lot au plus une fois par
 // seconde (et dès qu'un tampon dépasse ~256 Kio), rotation par taille et
-// rétention par âge puis par volume. Aucune erreur ne remonte à l'appelant :
-// un fichier en échec est signalé une fois puis ignoré pendant une minute.
+// rétention par âge puis par volume. Le plafond de volume tient aussi à
+// l'écriture : une ligne qui le franchirait est abandonnée (et comptée) après
+// une rétention de rattrapage, au plus une par minute. Aucune erreur ne remonte
+// à l'appelant : un fichier en échec est signalé une fois puis ignoré pendant
+// une minute.
 import { appendFile, mkdir, readdir, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -20,6 +23,9 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
   const value = option => typeof option === 'function' ? option() : option;
   const files = new Map();
   let pending = 0, warnedName = false;
+  // Octets du dossier : relus au premier vidage puis à chaque rétention, tenus
+  // à jour entre les deux par les ajouts.
+  let usage = null, cappedAt = -Infinity, warnedCap = false;
 
   const fileFor = name => {
     let file = files.get(name);
@@ -59,6 +65,19 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
       if (file.written === null) {
         file.written = await stat(target).then(info => info.size, () => 0);
       }
+      const size = Buffer.byteLength(chunk), cap = value(mb) * MIO;
+      if (usage === null) usage = (await stats()).bytes;
+      if (usage + size > cap && now() - cappedAt >= RETRY_MS) { cappedAt = now(); await prune(); }
+      if (usage + size > cap) {
+        // Dossier plein : les lignes sont perdues, pas remises en file, et la
+        // prochaine ligne écrite dans ce fichier en porte le compte.
+        file.dropped += lines.length;
+        if (!warnedCap) {
+          console.warn(`[telemetry] plafond de ${value(mb)} Mio atteint : lignes abandonnées`);
+          warnedCap = true;
+        }
+        return;
+      }
       if (file.written >= value(fileMb) * MIO) {
         // Rotation : <base>.ndjson devient <base>.<n>.ndjson au premier n
         // libre ; si le renommage échoue on continue d'écrire dedans plutôt
@@ -71,7 +90,7 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
         }
       }
       await appendFile(target, chunk);
-      file.written += Buffer.byteLength(chunk);
+      file.written += size; usage += size; warnedCap = false;
       file.dropped = 0;
       file.warned = false;
     } catch (error) {
@@ -153,8 +172,10 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
         if (total <= cap) break;
         await remove(entry);
       }
+      usage = total;
     } catch (error) {
       if (error.code !== 'ENOENT') console.warn(`[telemetry] rétention impossible : ${error.message}`);
+      else usage = 0;
     }
     console.log(`[telemetry] rétention : ${deleted} fichiers supprimés (${(freed / MIO).toFixed(1)} Mio), dossier à ${(total / MIO).toFixed(1)} Mio`);
     return { deleted, freed, bytes: total };

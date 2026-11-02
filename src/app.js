@@ -58,6 +58,9 @@ const publicMovie = movie => ({ id: movie.id, title: movie.title, status: movie.
 // séances qu'il ouvre et des listes qu'il voit. `password` seul reste
 // l'unique compte fr-ko historique.
 const ACCOUNT_LANGUAGES = { 'fr-ko': ['fr', 'ko'], 'fr-vi': ['fr', 'vi'] };
+// Débit de télémétrie par session, fixé en dur comme les autres bornes de
+// protocole (docs/telemetry.md).
+const TELEMETRY_WINDOW_MS = 60_000, TELEMETRY_REQUESTS = 60, TELEMETRY_BYTES = 8 * 1024 ** 2;
 export function createApplication({ dataDir = path.join(ROOT, 'data'), password, passwords,
   origin = 'http://localhost:3000', secure = false, trustProxy = false, env = process.env,
   voiceService = null, voiceTiming } = {}) {
@@ -116,7 +119,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   // n'obtient jamais l'analyse de 4 Mio. Il refuse aussi les corps compressés,
   // qu'aucun client n'envoie et dont quelques Kio se gonfleraient en 4 Mio.
   const jsonSmall = express.json({ limit: '32kb' });
-  const jsonLarge = express.json({ limit: '4mb', inflate: false });
+  const jsonLarge = express.json({ limit: '4mb', inflate: false, verify: (req, res, buffer) => { req.bodyBytes = buffer.length; } });
   const LARGE_BODIES = [['POST', /^\/api\/rooms\/[^/]+\/telemetry$/], ['PUT', /^\/api\/movies\/[^/]+\/subtitles\/[^/]+\/cues$/]];
   app.use((req, res, next) => LARGE_BODIES.some(([method, route]) => req.method === method && route.test(req.path))
     ? next() : jsonSmall(req, res, next));
@@ -251,8 +254,28 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     req.room = hub.get(req.params.id);
     next(access(req, req.room) ? undefined : fail(404, 'Room introuvable.'));
   };
-  app.post('/api/rooms/:id/telemetry', authenticated, telemetryRoom, jsonLarge, (req, res) => {
+  // Débit par session, avant toute lecture du corps : un client légitime
+  // envoie un lot de 256 Kio au plus toutes les 5 s, et quelques lots
+  // d'affilée après une coupure. Le budget laisse passer un corps de 4 Mio
+  // entier mais pas un flot continu qui remplirait le disque. Un corps sans
+  // longueur déclarée est compté une fois lu.
+  const telemetryBudgets = new WeakMap();
+  const telemetryBudget = (req, res, next) => {
+    const at = Date.now();
+    let budget = telemetryBudgets.get(req.session);
+    if (!budget || at - budget.since >= TELEMETRY_WINDOW_MS) telemetryBudgets.set(req.session, budget = { since: at, requests: 0, bytes: 0 });
+    const declared = Number(req.headers['content-length']) || 0;
+    if (budget.requests >= TELEMETRY_REQUESTS || budget.bytes + declared > TELEMETRY_BYTES) {
+      res.set('Retry-After', String(Math.ceil((budget.since + TELEMETRY_WINDOW_MS - at) / 1000)));
+      return next(fail(429, 'Trop de télémétrie, réessayer plus tard.'));
+    }
+    budget.requests++; budget.bytes += declared;
+    req.telemetryBudget = budget;
+    next();
+  };
+  app.post('/api/rooms/:id/telemetry', authenticated, telemetryRoom, telemetryBudget, jsonLarge, (req, res) => {
     const { room } = req;
+    if (!req.headers['content-length']) req.telemetryBudget.bytes += req.bodyBytes ?? 0;
     const { memberId, events } = req.body;
     if (typeof memberId !== 'string' || !/^[a-f0-9-]{1,40}$/.test(memberId) ||
       !Array.isArray(events) || !events.length || events.length > 1000 ||

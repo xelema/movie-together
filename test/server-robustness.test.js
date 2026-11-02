@@ -126,3 +126,26 @@ test('the large json parser only runs on its two routes, after their guard, and 
   assert.equal((await request('/api/login', { method: 'POST', raw: JSON.stringify({ password: 'x'.repeat(40_000) }),
     headers: { 'Content-Type': 'application/json' } })).status, 413);
 });
+
+test('a guest cannot flood the telemetry journal', async t => {
+  const app = await boot(t, { movies: [ready(1)] });
+  const { room, guest, memberId } = await guestOf(t, app, movieId(1), 'deluge');
+  const post = events => app.request(`/api/rooms/${room.id}/telemetry`, { cookie: guest, method: 'POST', body: { memberId, events } });
+  // Three bodies near the 4 MiB route limit: the third goes over the session's byte budget.
+  const heavy = Array.from({ length: 1000 }, (_, i) => ({ t: i, type: 'tick', pad: 'x'.repeat(3300) }));
+  assert.equal((await post(heavy)).status, 204);
+  assert.equal((await post(heavy)).status, 204);
+  const refused = await post(heavy);
+  assert.equal(refused.status, 429);
+  assert.ok(Number(refused.headers.get('retry-after')) > 0);
+  // The request count is bounded as well, whatever the body weighs.
+  const app2 = await boot(t, { movies: [ready(2)] });
+  const second = await guestOf(t, app2, movieId(2), 'rafale');
+  const statuses = [];
+  for (let n = 0; n < 61; n++) {
+    statuses.push((await app2.request(`/api/rooms/${second.room.id}/telemetry`, { cookie: second.guest, method: 'POST',
+      body: { memberId: second.memberId, events: [{ t: n, type: 'tick' }] } })).status);
+  }
+  assert.deepEqual([...new Set(statuses.slice(0, 60))], [204]);
+  assert.equal(statuses[60], 429);
+});

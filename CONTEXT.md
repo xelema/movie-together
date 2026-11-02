@@ -76,7 +76,8 @@ vocabulaire partage.
   fenetres des limites de debit (15 min pour le login, 1 min pour les
   invitations), le budget de messages JSON par socket (40/s), le budget
   de trames PCM par socket (100/s, trois fois le rythme normal d'une
-  prise a 30 ms par trame), le seuil de bufferedAmount (64 Kio) et la
+  prise a 30 ms par trame), le debit de telemetrie par session (60 lots et
+  8 Mio par minute), le seuil de bufferedAmount (64 Kio) et la
   marge disque exigee a la creation d'un envoi (x2,2).
 
 ## Films
