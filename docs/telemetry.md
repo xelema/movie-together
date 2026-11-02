@@ -148,7 +148,9 @@ entière reste sans journal.
   - images : `frames` et `dropped` (`getVideoPlaybackQuality().totalVideoFrames`
     / `droppedVideoFrames`), `corrupted`, `fps` (images réellement présentées
     par seconde de temps réel, mesurées par `requestVideoFrameCallback`),
-    `pdelay` (durée de traitement médiane, ms).
+    `pdelay` (durée de traitement médiane, ms). `fps` est absent tant qu'aucun
+    callback rVFC n'a tiré depuis l'attache (TV à plan vidéo matériel où rVFC
+    ne se déclenche jamais) : la cadence se lit alors sur le delta de `frames`.
   - présentation (d'où viennent les images manquantes quand `dropped` reste
     à 0) — comptés sur l'intervalle du tick, entre callbacks rVFC consécutifs,
     hors seek, changement d'époque et onglet caché :
@@ -304,7 +306,9 @@ Une ligne par transition, jamais par battement (`tickMs` = 200 ms) :
   session : capacités du poste, phases, attentes, tampon, débits, dérive
   d'horloge, erreurs hls.js, journal des vidages et des ajouts, WebRTC, rendu
   couleur. La ligne `présentation` totalise `skip` et `miss` en lecture, la
-  médiane de `raf` et la part des ticks où l'overlay Gecko est affiché.
+  médiane de `raf` et la part des ticks où l'overlay Gecko est affiché ; sans
+  `fps` (rVFC muet), la ligne `images` donne la cadence décodée tirée du delta
+  de `frames`.
 - `sudo docker exec movie-together-app-1 ls /data/telemetry` puis, depuis
   l'hôte, `/var/lib/docker/volumes/movie-together_movie-data/_data/telemetry`.
 - `npm run logs` (`scripts/watch-rooms.js`) annote en clair les lignes

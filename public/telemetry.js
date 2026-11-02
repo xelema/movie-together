@@ -192,8 +192,8 @@ export function attachTelemetry(player, video, roomId, options = {}) {
   // connue, tick() le redemande — borné pour ne jamais boucler.
   let capsFilm = false, capsRetries = 0;
   const timers = [], removers = [], observers = [];
-  // `ever` : au moins un callback rVFC a tiré — avant lui, aucun saut n'est
-  // mesurable. `skip`/`miss` : voir frameSkips.
+  // `ever` : au moins un callback rVFC a tiré — sans lui (TV à plan vidéo
+  // matériel) le fps est inconnu, pas nul. `skip`/`miss` : voir frameSkips.
   const frames = { count: 0, since: now(), delays: [], ever: false, skip: 0, miss: 0, counted: false, prev: undefined, gaps: [] };
   const rafProbe = { running: false, id: undefined, result: undefined };
 
@@ -432,7 +432,9 @@ export function attachTelemetry(player, video, roomId, options = {}) {
       ranges: mediaRanges(g(() => video.buffered)), se: mediaRanges(g(() => video.seekable)),
       buf: hls ? sourceBufferState(hls) : undefined,
       frames: quality?.totalVideoFrames, dropped: quality?.droppedVideoFrames, corrupted: quality?.corruptedVideoFrames,
-      fps: elapsed > 0.5 ? Math.round(drawn / elapsed) : undefined,
+      // Sans aucun callback rVFC depuis l'attache, 0 serait un mensonge : la
+      // vidéo peut défiler sur un plan matériel que rVFC ne voit pas.
+      fps: elapsed > 0.5 && frames.ever ? Math.round(drawn / elapsed) : undefined,
       skip, miss, raf, ovl,
       pdelay: median(frames.delays.filter(d => Number.isFinite(d)).map(d => +(d * 1000).toFixed(1))),
       rtt: clock?.best ? Math.round(clock.best.rtt) : undefined, off: clock ? Math.round(clock.offset) : undefined,

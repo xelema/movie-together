@@ -492,3 +492,25 @@ test('un seek ne compte pas comme des images sautées', async t => {
   telemetry.dispose();
 });
 
+test('sans aucun callback rVFC, fps est inconnu et non nul', async t => {
+  const { posts } = stubBrowser(t);
+  let fakeNow = 0;
+  const savedPerf = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+  Object.defineProperty(globalThis, 'performance', { configurable: true, writable: true, value: { now: () => fakeNow } });
+  t.after(() => Object.defineProperty(globalThis, 'performance', savedPerf));
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  // TV à plan vidéo matériel : rVFC existe mais ne tire jamais, alors que
+  // totalVideoFrames avance.
+  const { video, telemetry } = attach(t);
+  fakeNow = 1000; t.mock.timers.tick(1000);
+  fakeNow = 2000; t.mock.timers.tick(1000);
+  video.rvfcs.at(-1)(0, {});
+  fakeNow = 5000; t.mock.timers.tick(3000);
+  await settle();
+  const ticks = allEvents(posts).filter(event => event.type === 'tick');
+  assert.equal(ticks[0].fps, undefined);
+  assert.equal(ticks[0].skip, undefined);
+  assert.equal(ticks[0].frames, 600);
+  assert.equal(typeof ticks[2].fps, 'number', 'dès le premier callback, le fps redevient mesuré');
+  telemetry.dispose();
+});

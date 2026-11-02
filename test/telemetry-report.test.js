@@ -22,6 +22,12 @@ const ticks = (count, fields) => Array.from({ length: count }, (_, i) => ({
   phase: 'playing', paused: false, pos: i, target: i, ahead: 20, rtt: 40, off: 0, ...fields(i),
 }));
 
+test('rVFC muet : le rapport retombe sur le delta de totalVideoFrames', t => {
+  // TV à plan vidéo matériel : fps absent, totalVideoFrames avance à 24 i/s.
+  const out = report(t, ticks(10, i => ({ frames: 1000 + 24 * i, dropped: 0 })));
+  assert.match(out, /images : rVFC muet — 24 i\/s décodées/);
+});
+
 test('le rapport affiche les images sautées, les callbacks manqués et le raf', t => {
   const out = report(t, ticks(10, i => ({
     fps: 22, frames: 24 * i, dropped: 0, skip: i % 2 ? 2 : 0, miss: 0, ovl: true,
