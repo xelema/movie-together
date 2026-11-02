@@ -9,6 +9,7 @@ import { attachVoice } from './voice.js';
 import { attachWebcam } from './webcam.js';
 import { attachFullscreen } from './fullscreen.js';
 import { attachAudioBoost } from './audio-boost.js';
+import { jsonResult, readJson, responseError } from './http.js';
 
 const $ = id => document.getElementById(id);
 const LANGUAGE_OPTIONS = { fr: 'Français', ko: '한국어', vi: 'Tiếng Việt' };
@@ -296,9 +297,7 @@ async function api(url, { body, method = 'GET', ...options } = {}) {
   try {
     const response = await fetch(url, { method, ...options, headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...options.headers }, body: body === undefined ? undefined : JSON.stringify(body) });
     status = response.status;
-    const result = await response.json();
-    if (!response.ok) throw new Error(label(result.error || t('Une erreur est survenue.', '오류가 발생했습니다.')));
-    return result;
+    return await jsonResult(response, { label, t });
   } catch (error) {
     // Jamais le corps de la réponse : chemin, méthode, statut, durée, message.
     telemetry?.event('api', { path: String(url).slice(0, 200), method, status,
@@ -569,8 +568,7 @@ function manageDetails(movie, minimal = false) {
       const trackLabel = subName.value.trim() || subLang.selectedOptions[0].textContent;
       if (movie.status === 'ready') {
         const response = await fetch(`/api/movies/${movie.id}/subtitles?label=${encodeURIComponent(trackLabel)}&language=${subLang.value}&name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: file });
-        const result = await response.json();
-        if (!response.ok) throw new Error(label(result.error || t('Une erreur est survenue.', '오류가 발생했습니다.')));
+        await jsonResult(response, { label, t });
         notice(t('Sous-titres ajoutés.', '자막이 추가되었습니다.'));
       } else await upload(file, { kind: 'subtitle', movieId: movie.id, label: trackLabel, language: subLang.value });
       await refresh();
@@ -1316,9 +1314,9 @@ async function upload(file, extra = {}) {
         const response = await fetch(`/api/uploads/${info.id}`, { method: 'PUT', headers: {
           'Content-Type': 'application/octet-stream', 'Upload-Offset': String(offset),
         }, body: file.slice(offset, offset + (info.chunkSize ?? 8 * 1024 ** 2)) });
-        const result = await response.json();
+        const result = await readJson(response) ?? {};
         if (response.status === 409 && Number.isFinite(result.offset)) offset = result.offset;
-        else if (!response.ok) throw new Error(result.error);
+        else if (!response.ok || !Number.isFinite(result.offset)) throw responseError(response.status, result, { label, t });
         else offset = result.offset;
         retries = 0; $('upload-progress').value = offset / file.size * 100;
         // Average since this session started: steadier than the last chunk, and a resumed upload does not count what was already there.
