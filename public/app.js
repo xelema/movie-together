@@ -59,6 +59,17 @@ $('close-settings').addEventListener('click', event => showSettings(false, event
 document.addEventListener('pointerdown', event => { if (!$('player-settings').contains(event.target) && !settingsButton.contains(event.target)) showSettings(false); });
 $('screen').addEventListener('keydown', event => { if (event.key === 'Escape' && !$('player-settings').hidden) { event.preventDefault(); event.stopPropagation(); showSettings(false, true); } });
 playbackUI.on('enterfullscreen exitfullscreen', () => { act('fullscreen', fullscreenControl.active()); showSettings(false); });
+// Le nom accessible d'un bouton à bascule dit les mots du libellé visible, que
+// Plyr choisit sur son état pressé : il suit donc cet état, quelle que soit la
+// cause de la bascule (bouton, raccourci, sortie faite par le navigateur).
+const toggleControls = () => [playbackUI.elements.buttons.mute, playbackUI.elements.buttons.fullscreen].filter(Boolean);
+function toggleLabel(control) {
+  const pressed = control.classList.contains('plyr__control--pressed');
+  const text = control.querySelector(pressed ? '.label--pressed' : '.label--not-pressed')?.textContent;
+  if (text && control.getAttribute('aria-label') !== text) control.setAttribute('aria-label', text);
+}
+for (const control of toggleControls()) new MutationObserver(() => toggleLabel(control))
+  .observe(control, { attributes: true, attributeFilter: ['class', 'aria-pressed'] });
 let lastMuted, lastVol;
 playbackUI.on('volumechange', () => {
   const muted = playbackUI.muted, vol = playbackUI.volume;
@@ -219,7 +230,7 @@ function translate() {
     button.querySelector('.label--not-pressed').textContent = normal;
     button.querySelector('.label--pressed').textContent = pressed;
   }
-  playbackUI.elements.buttons.fullscreen?.setAttribute('aria-label', playbackUI.fullscreen.active ? words.exitFullscreen : words.enterFullscreen);
+  for (const control of toggleControls()) toggleLabel(control);
   settingsButton.setAttribute('aria-label', t('Réglages', '설정'));
   $('player-settings').setAttribute('aria-label', t('Réglages', '설정')); $('close-settings').setAttribute('aria-label', t('Fermer', '닫기'));
   $('notice-close').setAttribute('aria-label', t('Fermer', '닫기'));
