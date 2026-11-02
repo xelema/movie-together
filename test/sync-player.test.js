@@ -54,12 +54,18 @@ test('reports are not stacked behind a socket that is not draining', t => {
   const { create } = fakeDom(t);
   const { player, sent } = create();
   player.state = { epoch: 1, phase: 'paused', position: 0, startsAt: null, duration: 100 };
+  const reports = () => sent.filter(message => message.type === 'report').map(message => message.sequence);
+  // A short backlog (PCM frames of a voice take) does not hold reports back.
   player.ws.bufferedAmount = 2048;
+  player.report();
+  assert.deepEqual(reports(), [0]);
+  // A socket not seen empty for over a second is frozen: nothing is stacked.
+  player.drainedAt = performance.now() - 1500;
   player.report(); player.report(false);
-  assert.equal(sent.filter(message => message.type === 'report').length, 0);
+  assert.deepEqual(reports(), [0]);
   player.ws.bufferedAmount = 0;
   player.report();
-  assert.deepEqual(sent.filter(message => message.type === 'report').map(message => message.sequence), [0]);
+  assert.deepEqual(reports(), [0, 1]);
 });
 
 test('a progress-bar drag sends one seek per gesture and one per epoch', t => {

@@ -2,6 +2,9 @@ import { ColorRenderer, colorNeedsRenderer, nativeHdrPipeline } from './color-re
 import { codecPlayable, createBackend, supportsMime } from './backends.js';
 import { INTERNAL_EVENT_MS, SEEK_SETTLE_MS, selfCaused, roomTarget, decide, playableSpan, readyBlockers, canBegin, subtitleFontSize, shownSubtitleTrack, reviveSubtitleCues } from './sync-core.js';
 
+// A socket not seen empty for this long is frozen: reports wait for it to drain.
+const SOCKET_STALL_MS = 1000;
+
 export class Clock {
   constructor() { this.samples = []; }
   sample(sentAt, receivedAt, serverNow) {
@@ -211,6 +214,7 @@ export class SyncPlayer {
     if (this.disposed) return;
     const connectAt = performance.now();
     this.emit('ws', { ev: 'connect', to: 0, retries: this.retries || undefined });
+    this.drainedAt = performance.now();
     this.ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws?room=${this.roomId}`);
     this.ws.onopen = () => {
       this.emit('ws', { ev: 'open', to: 1, ms: Math.round(performance.now() - connectAt), retries: this.retries || undefined });
@@ -520,8 +524,13 @@ export class SyncPlayer {
     if (!this.state) return;
     // A socket that is not draining (a network frozen for a few seconds) would
     // queue reports that are stale on arrival and land as one burst: skip until
-    // it drains, the next tick reports the situation as it is then.
-    if (this.ws?.bufferedAmount > 0) return;
+    // it drains, the next tick reports the situation as it is then. A backlog
+    // alone is not a freeze: the PCM frames of a voice take share this socket
+    // and keep it briefly non-empty on a slow uplink, so only a socket that has
+    // not been seen empty for a while holds the reports back.
+    const now = performance.now();
+    if (!(this.ws?.bufferedAmount > 0)) this.drainedAt = now;
+    else if (now - (this.drainedAt ?? now) > SOCKET_STALL_MS) return;
     const position = this.position();
     let blockers = readyBlockers({
       state: this.state, failure: this.failure,
