@@ -80,3 +80,43 @@ test('a progress-bar drag sends one seek per gesture and one per epoch', t => {
   assert.deepEqual(commands(sent).map(({ command, position, epoch }) => [command, position, epoch]),
     [['seek', 69, 3], ['seek', 80, 4]]);
 });
+
+test('a click on the progress bar while the séance plays seeks without pausing it', t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const { video, create } = fakeDom(t);
+  const { player, sent } = create();
+  const room = new Room({ now: () => performance.now() });
+  room.join('me'); room.load(100);
+  room.command('me', { epoch: room.epoch, type: 'play' });
+  Object.assign(room, { phase: 'playing', startsAt: performance.now() - 1000, position: 19 });
+  player.ws.send = message => {
+    const parsed = JSON.parse(message); sent.push(parsed);
+    if (parsed.type === 'command') room.command('me', { ...parsed, type: parsed.command });
+  };
+  player.activated = true;
+  deliver(player, room.snapshot());
+  video.paused = false; video.currentTime = 20;
+  // Plyr's press handler pauses the media element; app.js brackets it.
+  player.beginLocalToggle(); video.pause(); player.endLocalToggle();
+  // The range input reports the clicked position.
+  player.seek(60);
+  t.mock.timers.tick(150);
+  video.fire('pause');
+  deliver(player, room.snapshot());
+  // Release: Plyr plays the element again, its event lands after the self-caused window.
+  player.beginLocalToggle(); video.play(); player.endLocalToggle();
+  player.internalUntil = 0;
+  video.fire('play');
+  // Obeying the room, the player paused the element again: its own pause event follows.
+  video.fire('pause');
+  assert.deepEqual(commands(sent).map(message => message.command), ['seek']);
+  assert.equal(room.wantsPlay, true);
+  assert.notEqual(room.phase, 'paused');
+  assert.equal(room.position, 60);
+  // The room is preparing the new position: the element waits for the shared start.
+  assert.equal(video.paused, true);
+  // A real pause afterwards still reaches the room.
+  deliver(player, { ...room.snapshot(), phase: 'playing', startsAt: performance.now() - 1000 });
+  video.paused = false; video.pause(); video.fire('pause');
+  assert.deepEqual(commands(sent).map(message => message.command), ['seek', 'pause']);
+});

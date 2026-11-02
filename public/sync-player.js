@@ -33,7 +33,7 @@ export class SyncPlayer {
     this.subtitleLine = 84;
     this.name = name;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
-    this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.pendingPauses = 0;
+    this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.pendingPauses = 0; this.pendingPlays = 0;
     this.retries = 0; this.listeners = []; this.observers = [];
     // Defaults until the room publishes its sync policy in welcome.
     this.sync = { minBuffer: 8, tickMs: 200, startDelay: 1000 };
@@ -74,10 +74,14 @@ export class SyncPlayer {
     this.listen(window, 'resize', () => { if (this.video.webkitDisplayingFullscreen) refreshSubtitles(); });
     this.listen(video, 'error', () => { if (!this.backend?.recoversErrors) this.failPlayback('Lecture impossible sur cet appareil.'); });
     this.listen(video, 'play', () => {
+      // A play the seek gesture caused (see endLocalToggle) is spent first, so a
+      // count never outlives its event; it still obeys the room locally.
+      const local = this.pendingPlays > 0;
+      if (local) this.pendingPlays--;
       // Browsers can dispatch a queued play event after activate() already paused: the
       // self-caused window keeps that stale notification from leaking a play command.
       if (this.activating || selfCaused(performance.now(), this.internalUntil)) return;
-      if (this.state?.phase !== 'playing') { this.pauseLocal(); this.command('play'); }
+      if (this.state?.phase !== 'playing') { this.pauseLocal(); if (!local) this.command('play'); }
       else if (this.serverTime() < this.state.startsAt) this.pauseLocal();
     });
     // pause() only queues its event: a stalled main thread can deliver it
@@ -276,6 +280,18 @@ export class SyncPlayer {
     if (this.activationBlocked) this.emit('activation-blocked', { reason });
     else if (this.activated) this.emit('activation', {});
   }
+  // Plyr pauses the element while its progress bar is held and plays it again on
+  // release, from its own handlers. Relayed, that pause stopped the séance at the
+  // new position and the release play fell into the self-caused window of the
+  // seek. app.js brackets each of those handlers: a toggle made between the two
+  // calls belongs to the seek gesture, and its event is counted to stay local.
+  beginLocalToggle() { this.localPaused = this.video.paused; }
+  endLocalToggle() {
+    const before = this.localPaused;
+    this.localPaused = undefined;
+    if (before === undefined || before === this.video.paused) return;
+    if (this.video.paused) this.pendingPauses++; else this.pendingPlays++;
+  }
   pauseLocal() {
     this.internalUntil = performance.now() + INTERNAL_EVENT_MS;
     if (!this.video.paused) { this.pendingPauses++; this.video.pause(); }
@@ -319,7 +335,7 @@ export class SyncPlayer {
     this.movie = movie; this.failure = null; this.activated = activated; this.autoActivationTried = false; this.activationBlocked = false; this.emitFlags(); this.onActivation(activated);
     // video.load() drops media events still queued on the element, so pauses
     // counted but never delivered must not outlive the reload.
-    this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
+    this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0; this.pendingPlays = 0;
     if (!movie) return;
     const versions = movie.renditions?.length ? movie.renditions : [{ id: 'original', manifest: 'master.m3u8', timelineOffset: 0 }];
     this.rendition = versions[0];
@@ -531,7 +547,7 @@ export class SyncPlayer {
     this.disposed = true; if (this.subtitleFrame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.subtitleFrame);
     clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings); clearInterval(this.clocker);
     clearTimeout(this.startTimer); clearTimeout(this.retry); clearTimeout(this.seekTimer); this.subtitleObserver?.disconnect(); this.listeners.forEach(remove => remove());
-    this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.markShader(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
+    this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.markShader(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0; this.pendingPlays = 0;
     this.releaseWakeLock();
   }
 }
