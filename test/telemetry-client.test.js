@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { attachTelemetry } from '../public/telemetry.js';
+import { attachTelemetry, frameSkips, framePeriod, rafRate } from '../public/telemetry.js';
 import { hlsEventPayload, hlsErrorPayload, sourceBufferState } from '../public/hls-events.js';
 
 // Les doublures tiennent dans la page : globals navigateur minimaux, <video>
@@ -397,6 +397,98 @@ test('un échec après la fin de séance ne relance rien', async t => {
   await settle();
   for (let i = 0; i < 24; i++) { t.mock.timers.tick(5000); await settle(); }
   assert.equal(posts.length, 1);
+  telemetry.dispose();
+});
+
+test('frameSkips sépare les images sautées à l’écran des callbacks manqués', () => {
+  const period = 1 / 24;
+  const at = (n, presented) => ({ mediaTime: n * period, presentedFrames: presented });
+  // Image suivante, présentation suivante : rien ne manque.
+  assert.deepEqual(frameSkips(at(10, 10), at(11, 11), period), { skip: 0, miss: 0 });
+  // Deux images franchies, une seule présentation : une image sautée à l'écran.
+  assert.deepEqual(frameSkips(at(10, 10), at(12, 11), period), { skip: 1, miss: 0 });
+  // Deux images franchies, deux présentations : l'écran est juste, le callback a manqué.
+  assert.deepEqual(frameSkips(at(10, 10), at(12, 12), period), { skip: 0, miss: 1 });
+  // Sans presentedFrames (moteur qui ne le fournit pas), seul mediaTime parle.
+  assert.deepEqual(frameSkips({ mediaTime: 10 * period }, { mediaTime: 14 * period }, period), { skip: 3, miss: undefined });
+  // Écart sous 1,5 période (gigue d'horodatage) : pas de saut.
+  assert.equal(frameSkips({ mediaTime: 0 }, { mediaTime: 1.4 * period }, period).skip, 0);
+  // Seek arrière ou bond de plus d'une seconde : discontinuité, jamais un saut.
+  assert.deepEqual(frameSkips(at(100, 50), at(10, 51), period), { skip: 0, miss: 0 });
+  assert.deepEqual(frameSkips(at(0, 50), at(48, 51), period), { skip: 0, miss: 0 });
+  // Période inconnue : aucun comptage par mediaTime.
+  assert.equal(frameSkips({ mediaTime: 0 }, { mediaTime: 1 / 6 }, undefined).skip, 0);
+});
+
+test('framePeriod ignore les écarts doublés, rafRate donne la cadence de l’écran', () => {
+  const period = 1 / 24;
+  const gaps = [...Array(20).fill(period), ...Array(4).fill(2 * period)];
+  assert.equal(framePeriod(gaps), period);
+  assert.equal(framePeriod([period, period]), undefined, 'trop peu d’échantillons');
+  const stamps = Array.from({ length: 61 }, (_, i) => i * (1000 / 60));
+  assert.equal(rafRate(stamps), 60);
+  assert.equal(rafRate(Array.from({ length: 23 }, (_, i) => i * 45.87)), 21.8);
+  assert.equal(rafRate([0, 16, 900, 916]), undefined, 'trou d’onglet caché');
+  assert.equal(rafRate([5]), undefined);
+});
+
+test('tick porte skip, miss, ovl et le raf échantillonné', async t => {
+  const { posts } = stubBrowser(t);
+  let fakeNow = 0;
+  const savedPerf = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+  Object.defineProperty(globalThis, 'performance', { configurable: true, writable: true, value: { now: () => fakeNow } });
+  t.after(() => Object.defineProperty(globalThis, 'performance', savedPerf));
+  const frames = [];
+  globalThis.window.requestAnimationFrame = cb => { frames.push(cb); return frames.length; };
+  globalThis.window.cancelAnimationFrame = () => { };
+  const overlay = { display: 'block' };
+  globalThis.document.getElementById = id => id === 'gecko-overlay-fix' ? overlay : null;
+  globalThis.window.getComputedStyle = element => ({ display: element.display });
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const { video, telemetry } = attach(t);
+  const period = 1 / 24;
+  // 12 images consécutives (période estimée), puis une sautée à l'écran
+  // (mediaTime +2, presentedFrames +1) et un callback manqué (+2, +2).
+  let media = 0, presented = 0;
+  const frame = (dm, dp) => { media += dm; presented += dp; video.rvfcs.at(-1)(0, { mediaTime: media * period, presentedFrames: presented }); };
+  frame(0, 0);
+  for (let i = 0; i < 12; i++) frame(1, 1);
+  frame(2, 1);
+  frame(2, 2);
+  fakeNow = 1000; t.mock.timers.tick(1000);
+  // Deuxième tick : l'échantillon rAF démarre ; 61 images à 60 Hz.
+  fakeNow = 2000; t.mock.timers.tick(1000);
+  for (let i = 0; i <= 60; i++) frames.at(-1)(2000 + i * (1000 / 60));
+  overlay.display = 'none';
+  fakeNow = 3000; t.mock.timers.tick(1000);
+  fakeNow = 5000; t.mock.timers.tick(2000);
+  await settle();
+  const ticks = allEvents(posts).filter(event => event.type === 'tick');
+  assert.equal(ticks[0].skip, 1);
+  assert.equal(ticks[0].miss, 1);
+  assert.equal(ticks[0].ovl, true);
+  assert.equal(ticks[0].raf, undefined);
+  assert.equal(ticks[1].skip, 0, 'les compteurs repartent à zéro à chaque tick');
+  assert.equal(ticks[2].raf, 60);
+  assert.equal(ticks[2].ovl, false);
+  assert.equal(ticks[3].raf, undefined, 'un échantillon par minute, publié une fois');
+  telemetry.dispose();
+});
+
+test('un seek ne compte pas comme des images sautées', async t => {
+  const { posts } = stubBrowser(t);
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const { video, telemetry } = attach(t);
+  const period = 1 / 24;
+  for (let i = 0; i < 12; i++) video.rvfcs.at(-1)(0, { mediaTime: i * period });
+  // Petit seek de recalage (0,5 s) : l'événement seeking oublie la paire.
+  for (const fn of video.listeners.seeking ?? []) fn();
+  video.rvfcs.at(-1)(0, { mediaTime: 11 * period + 0.5 });
+  video.rvfcs.at(-1)(0, { mediaTime: 12 * period + 0.5 });
+  t.mock.timers.tick(5000);
+  await settle();
+  const tick = allEvents(posts).find(event => event.type === 'tick');
+  assert.equal(tick.skip, 0);
   telemetry.dispose();
 });
 

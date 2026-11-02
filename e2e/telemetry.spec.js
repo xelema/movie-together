@@ -209,6 +209,10 @@ test('une séance ordinaire écrit son journal client et serveur sur le disque',
   expect(ticks.some(tick => tick.pos > 0)).toBe(true);
   expect(ticks.some(tick => tick.phase === 'playing' || tick.phase === 'buffering')).toBe(true);
   expect(ticks.some(tick => Number.isFinite(tick.frames))).toBe(true);
+  // Présentation : l'overlay est lu sur la page réelle, skip suit rVFC.
+  expect(ticks.every(tick => tick.ovl === undefined || typeof tick.ovl === 'boolean')).toBe(true);
+  expect(ticks.some(tick => typeof tick.ovl === 'boolean')).toBe(true);
+  if (browserName === 'chromium') expect(ticks.some(tick => Number.isFinite(tick.skip))).toBe(true);
 
   // Les intentions utilisateur sont horodatées avec la position et la phase.
   const actions = participant.lines.filter(line => line.type === 'action').map(line => line.act);

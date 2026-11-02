@@ -149,6 +149,23 @@ entière reste sans journal.
     / `droppedVideoFrames`), `corrupted`, `fps` (images réellement présentées
     par seconde de temps réel, mesurées par `requestVideoFrameCallback`),
     `pdelay` (durée de traitement médiane, ms).
+  - présentation (d'où viennent les images manquantes quand `dropped` reste
+    à 0) — comptés sur l'intervalle du tick, entre callbacks rVFC consécutifs,
+    hors seek, changement d'époque et onglet caché :
+    - `skip` : images sautées à l'écran — écart de `metadata.mediaTime` de
+      plus de 1,5 période d'image estimée (premier quartile des écarts
+      récents) que `metadata.presentedFrames` ne couvre pas. Absent tant
+      qu'aucun callback rVFC n'a tiré.
+    - `miss` : images présentées dont le callback rVFC n'a pas été appelé
+      (`presentedFrames` saute de plus d'une unité) ; l'écran est juste, seul
+      `fps` sous-estime. Absent si le moteur ne fournit pas `presentedFrames`.
+    - `raf` : rafraîchissement réel de l'écran (Hz), cadence
+      `requestAnimationFrame` mesurée sur une seconde une fois par minute
+      (onglet visible seulement) ; publié sur le seul tick qui suit
+      l'échantillon.
+    - `ovl` : `true` si l'overlay anti-MPO `#gecko-overlay-fix` est
+      effectivement affiché (`getComputedStyle(…).display !== 'none'` :
+      Firefox seulement, masqué sous le rendu couleur WebGL).
   - horloge : `rtt`, `off`, `cok`, `samples`.
   - état du lecteur : `act`, `blk`, `rec`, `fail`, `back`, `bw`
     (`hls.bandwidthEstimate`), `ws` (`readyState`), `hid`, `on`, `focused`,
@@ -286,7 +303,8 @@ Une ligne par transition, jamais par battement (`tickMs` = 200 ms) :
 - `node scripts/telemetry-report.js <fichier.ndjson|dossier>` — synthèse d'une
   session : capacités du poste, phases, attentes, tampon, débits, dérive
   d'horloge, erreurs hls.js, journal des vidages et des ajouts, WebRTC, rendu
-  couleur.
+  couleur. La ligne `présentation` totalise `skip` et `miss` en lecture, la
+  médiane de `raf` et la part des ticks où l'overlay Gecko est affiché.
 - `sudo docker exec movie-together-app-1 ls /data/telemetry` puis, depuis
   l'hôte, `/var/lib/docker/volumes/movie-together_movie-data/_data/telemetry`.
 - `npm run logs` (`scripts/watch-rooms.js`) annote en clair les lignes

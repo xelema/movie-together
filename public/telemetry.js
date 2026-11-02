@@ -14,6 +14,8 @@ const QUEUE_MAX = 2000;     // purge FIFO hors quota côté serveur
 const LONGTASK_MAX = 200;   // puis on ne garde que le compteur
 const RETRY_MIN = 1000;     // premier délai après un lot refusé
 const RETRY_MAX = 60_000;   // plafond du recul exponentiel
+const RAF_EVERY = 60;       // un échantillon rAF toutes les 60 secondes…
+const RAF_MS = 1000;        // …d'une seconde, jamais une boucle permanente
 
 // Les globaux sont lus au moment de l'appel, jamais capturés à l'import :
 // la page comme un banc d'essai peuvent les fournir après coup.
@@ -27,6 +29,47 @@ const ag = async fn => { try { const v = await fn(); return v === null ? undefin
 const r2 = v => Number.isFinite(v) ? +v.toFixed(2) : undefined;
 const now = () => g(() => performance.now()) ?? 0;
 const median = values => values.length ? [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] : undefined;
+
+// Période d'image du flux, estimée sur les écarts de mediaTime entre callbacks
+// rVFC consécutifs. Le premier quartile plutôt que la médiane : les écarts
+// doublés par une image sautée ne doivent pas gonfler la période qui sert à
+// les compter. Trop peu d'échantillons : pas d'estimation, pas de comptage.
+export function framePeriod(gaps) {
+  const list = (gaps ?? []).filter(gap => Number.isFinite(gap) && gap > 0).sort((a, b) => a - b);
+  return list.length >= 8 ? list[Math.floor(list.length / 4)] : undefined;
+}
+
+// Images manquantes entre deux callbacks rVFC consécutifs (`prev`, `cur` :
+// {mediaTime, presentedFrames}). Deux causes que le décodeur ne voit pas
+// (droppedVideoFrames reste à 0) et qu'il faut séparer :
+// - `miss` : images présentées dont le callback n'a pas été appelé
+//   (presentedFrames saute de plus d'une unité) — l'écran est juste, seul le
+//   compteur rVFC sous-estime ;
+// - `skip` : images que l'horloge média a franchies (écart de mediaTime
+//   > 1,5 période) sans qu'aucune présentation les couvre — sautées à l'écran.
+// Un mediaTime qui recule ou bondit de plus de `maxGap` secondes est une
+// discontinuité (seek, changement d'époque), jamais un saut d'image.
+export function frameSkips(prev, cur, period, maxGap = 1) {
+  const dt = cur?.mediaTime - prev?.mediaTime;
+  const dp = cur?.presentedFrames - prev?.presentedFrames;
+  const counted = Number.isFinite(dp) && dp >= 0;
+  if (Number.isFinite(dt) && (dt < 0 || dt > maxGap)) return { skip: 0, miss: counted ? 0 : undefined };
+  const unseen = Number.isFinite(dt) && period > 0 && dt > 1.5 * period ? Math.round(dt / period) - 1 : 0;
+  if (!counted) return { skip: unseen, miss: undefined };
+  const miss = Math.max(0, dp - 1);
+  return { skip: Math.max(0, unseen - miss), miss };
+}
+
+// Cadence requestAnimationFrame (Hz) d'un échantillon d'horodatages : le
+// rafraîchissement réel de l'écran tel que la page le voit. Un trou de plus
+// d'une demi-seconde (onglet caché pendant l'échantillon) le rend inexploitable.
+export function rafRate(stamps) {
+  const list = (stamps ?? []).filter(Number.isFinite);
+  if (list.length < 2) return undefined;
+  for (let i = 1; i < list.length; i++) if (list[i] - list[i - 1] > 500 || list[i] < list[i - 1]) return undefined;
+  const span = list.at(-1) - list[0];
+  return span > 0 ? Math.round((list.length - 1) * 10000 / span) / 10 : undefined;
+}
 
 // TimeRanges de l'élément <video> en paires [début, fin] arrondies.
 const mediaRanges = ranges => g(() => {
@@ -149,7 +192,10 @@ export function attachTelemetry(player, video, roomId, options = {}) {
   // connue, tick() le redemande — borné pour ne jamais boucler.
   let capsFilm = false, capsRetries = 0;
   const timers = [], removers = [], observers = [];
-  const frames = { count: 0, since: now(), delays: [] };
+  // `ever` : au moins un callback rVFC a tiré — avant lui, aucun saut n'est
+  // mesurable. `skip`/`miss` : voir frameSkips.
+  const frames = { count: 0, since: now(), delays: [], ever: false, skip: 0, miss: 0, counted: false, prev: undefined, gaps: [] };
+  const rafProbe = { running: false, id: undefined, result: undefined };
 
   // Désactivation : l'opt-out URL / localStorage / option coupe l'envoi sans
   // empêcher l'attache — le handle reste rendu pour un code appelant stable.
@@ -252,6 +298,25 @@ export function attachTelemetry(player, video, roomId, options = {}) {
       .finally(() => { sending = false; if (accepted && queue.length) flush(); });
   };
 
+  // Échantillon de rafraîchissement : une seconde de requestAnimationFrame,
+  // relancée par tick() une fois par minute. Onglet caché : rien, rAF y dort.
+  const sampleRaf = () => {
+    const raf = g(() => env()?.requestAnimationFrame?.bind(env()));
+    if (!raf || rafProbe.running || disposed || g(() => doc()?.hidden)) return;
+    rafProbe.running = true;
+    const stamps = [];
+    const step = stamp => {
+      rafProbe.id = undefined;
+      if (disposed) { rafProbe.running = false; return; }
+      stamps.push(stamp);
+      if (stamp - stamps[0] < RAF_MS) { rafProbe.id = g(() => raf(step)); if (rafProbe.id === undefined) rafProbe.running = false; return; }
+      rafProbe.running = false;
+      rafProbe.result = rafRate(stamps);
+    };
+    rafProbe.id = g(() => raf(step));
+    if (rafProbe.id === undefined) rafProbe.running = false;
+  };
+
   // Déclaration des événements du contrat.
 
   const sessionEnd = reason => {
@@ -326,6 +391,16 @@ export function attachTelemetry(player, video, roomId, options = {}) {
     const drawn = frames.count;
     const elapsed = (now() - frames.since) / 1000;
     frames.since = now(); frames.count = 0;
+    const skip = frames.ever ? frames.skip : undefined;
+    const miss = frames.counted ? frames.miss : undefined;
+    frames.skip = 0; frames.miss = 0;
+    const raf = rafProbe.result;
+    rafProbe.result = undefined;
+    if (tickCount % RAF_EVERY === 2) sampleRaf();
+    // L'overlay Gecko n'existe que dans la page ; son affichage réel dépend du
+    // moteur (Firefox seulement) et du rendu couleur (masqué sous le shader).
+    const overlay = g(() => doc()?.getElementById?.('gecko-overlay-fix'));
+    const ovl = overlay ? g(() => env().getComputedStyle(overlay).display !== 'none') : undefined;
     const wakeLock = g(() => player.wakeLock && !player.wakeLock.released);
     if (lastWakeLock !== undefined && wakeLock !== lastWakeLock) push('wakeLock', { on: !!wakeLock });
     lastWakeLock = wakeLock;
@@ -358,6 +433,7 @@ export function attachTelemetry(player, video, roomId, options = {}) {
       buf: hls ? sourceBufferState(hls) : undefined,
       frames: quality?.totalVideoFrames, dropped: quality?.droppedVideoFrames, corrupted: quality?.corruptedVideoFrames,
       fps: elapsed > 0.5 ? Math.round(drawn / elapsed) : undefined,
+      skip, miss, raf, ovl,
       pdelay: median(frames.delays.filter(d => Number.isFinite(d)).map(d => +(d * 1000).toFixed(1))),
       rtt: clock?.best ? Math.round(clock.best.rtt) : undefined, off: clock ? Math.round(clock.offset) : undefined,
       cok: clock?.ready, samples: clock?.samples?.length,
@@ -431,9 +507,26 @@ export function attachTelemetry(player, video, roomId, options = {}) {
   // Rendu réel : le compteur de trames affichées donne le fps observé, pas le
   // fps nominal de la piste. Les délais de traitement sont médianisés au tick.
   if (g(() => typeof video.requestVideoFrameCallback === 'function')) {
+    // Une discontinuité de l'horloge média (seek, changement d'époque, onglet
+    // caché) n'est pas une image sautée : la paire suivante repart de zéro.
+    const forget = () => { frames.prev = undefined; };
+    for (const name of ['seeking', 'seeked', 'emptied']) listen(video, name, forget);
+    listen(doc(), 'visibilitychange', forget);
     const loop = (t, meta) => {
       if (disposed) return;
       frames.count++;
+      frames.ever = true;
+      g(() => {
+        const cur = { mediaTime: meta?.mediaTime, presentedFrames: meta?.presentedFrames, epoch: g(() => player.state?.epoch) };
+        const prev = frames.prev;
+        frames.prev = g(() => video.seeking) ? undefined : cur;
+        if (!prev || !frames.prev || prev.epoch !== cur.epoch) return;
+        const { skip, miss } = frameSkips(prev, cur, framePeriod(frames.gaps));
+        frames.skip += skip;
+        if (miss !== undefined) { frames.miss += miss; frames.counted = true; }
+        const gap = cur.mediaTime - prev.mediaTime;
+        if (gap > 0 && gap < 0.25) { frames.gaps.push(gap); if (frames.gaps.length > 48) frames.gaps.shift(); }
+      });
       if (Number.isFinite(meta?.processingDuration)) {
         frames.delays.push(meta.processingDuration);
         if (frames.delays.length > 600) frames.delays.splice(0, frames.delays.length - 600);
@@ -562,6 +655,7 @@ export function attachTelemetry(player, video, roomId, options = {}) {
     disposed = true;
     for (const id of timers) clearInterval(id);
     clearTimeout(envTimer); clearTimeout(retryTimer); retryTimer = undefined;
+    if (rafProbe.id !== undefined) g(() => env().cancelAnimationFrame?.(rafProbe.id));
     for (const remove of removers) remove();
     for (const obs of observers) { try { obs.disconnect(); } catch {} }
     try { unobserve?.(); } catch {}
