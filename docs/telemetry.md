@@ -29,15 +29,20 @@ l'est jamais. Il fait autorité : le client (`public/telemetry.js`), le serveur
 - `<code>` est le code d'invitation de la séance, `<member>` l'identifiant du
   participant (UUID attribué par le serveur à la connexion websocket). Un envoi
   pour un `<member>` que la séance n'a jamais vu (aucune websocket acceptée
-  sous cet identifiant) est refusé 404, comme une room introuvable.
+  sous cet identifiant), ou envoyé par une autre session que celle de sa
+  websocket, est refusé 404, comme une room introuvable.
 - Un même code réutilisé produit donc de nouveaux fichiers : le couple
   code + participant identifie une connexion, pas une personne.
 - Rotation : un fichier qui atteint `telemetryFileMb` est renommé en
   `<base>.<n>.ndjson` (n = 1, 2, …) et l'écriture reprend dans un fichier neuf.
 - Rétention : au démarrage et toutes les heures, les fichiers plus vieux que
   `telemetryDays` (mtime) sont supprimés, puis les plus anciens jusqu'à ce que
-  le dossier repasse sous `telemetryMb`. La suppression est journalisée en une
-  ligne `[telemetry] …` sur la sortie du serveur.
+  le dossier repasse sous `telemetryMb`. Le plafond `telemetryMb` tient aussi
+  à l'écriture : quand un vidage le franchirait, une rétention de rattrapage
+  passe (au plus une par minute), puis les lignes qui ne tiennent toujours pas
+  sont abandonnées et comptées dans l'événement `queue` suivant du fichier. Seul un journal alimenté depuis moins
+  d'une heure est épargné, qu'il date du démarrage ou non. La suppression est
+  journalisée en une ligne `[telemetry] …` sur la sortie du serveur.
 
 ## Réglages
 
@@ -51,7 +56,9 @@ Catégorie `telemetry` de la page admin (`PATCH /api/settings`) :
 
 ## Enveloppe d'une ligne
 
-Enveloppe écrite par le serveur (elle n'est jamais fabriquée par le client) :
+Enveloppe écrite par le serveur (elle n'est jamais fabriquée par le client :
+un champ `at` ou `member` envoyé par le client est écrasé ; seul `caps`
+remplace `room` par son descripteur de séance) :
 
 ```json
 {"at": 1759000000000, "room": "avant-premiere", "member": "5f0c…", "sid": "b31…", "t": 1758999999980, "p": 42123.5, "type": "tick", "…": "…"}
@@ -80,8 +87,10 @@ Bornes, tenues des deux côtés :
 | --- | --- | --- |
 | événements par lot | 400 | client |
 | octets par lot | 256 Kio | client |
+| octets par lot de sortie (`sendBeacon`) | 60 Kio, sous la limite de 64 Kio des navigateurs | client |
 | caractères par événement | 3800 | client |
-| corps accepté par la route | 4 Mio | serveur |
+| corps accepté par la route | 4 Mio, non compressé | serveur |
+| débit par session | 60 lots et 8 Mio par minute, sinon `429` | serveur |
 | file d'attente du client | 2000, purge FIFO | client |
 
 Un lot refusé est remis en file et repart au flush suivant ; une ligne qui
@@ -93,6 +102,9 @@ aussitôt le suivant. Un `404` ou un `410` (séance fermée, participant inconnu
 et tout refus survenu après la fin de séance (`session-end`, lecteur démonté)
 arrêtent définitivement l'envoi : la file est abandonnée et plus rien n'y entre,
 la séance ne reviendra pas.
+
+Ce corps n'est lu qu'après l'authentification et le contrôle d'accès à la
+séance ; un corps compressé (`Content-Encoding`) est refusé en `415`.
 Le corps de cette route est le seul de l'API au-dessus de 32 Ko : le lot doit
 tenir dans la borne serveur, sinon le POST est refusé en `413` et la séance
 entière reste sans journal.

@@ -293,6 +293,34 @@ test('dispose vide la file par sendBeacon et arrête les minuteurs', async t => 
   assert.equal(posts.length, before);
 });
 
+// Les navigateurs refusent tout sendBeacon de plus de 64 Kio : une file
+// gonflée pendant un recul (lots refusés) partait d'un bloc et la fin de
+// séance était perdue. Le lot de sortie est découpé sous ce plafond.
+test('le lot de sortie est découpé sous la limite de 64 Kio de sendBeacon', async t => {
+  const { beacons } = stubBrowser(t);
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const sizes = [];
+  globalThis.navigator.sendBeacon = (url, body) => {
+    sizes.push(body.size);
+    if (body.size > 64 * 1024) return false;
+    beacons.push({ url, body });
+    return true;
+  };
+  globalThis.fetch = async () => ({ ok: false, status: 503 });
+  const { telemetry } = attach(t);
+  await settle();
+  for (let i = 0; i < 80; i++) telemetry.event('probe', { i, pad: 'x'.repeat(3000) });
+  t.mock.timers.tick(5000);
+  await settle();
+  telemetry.dispose();
+  assert.ok(sizes.length >= 4);
+  assert.ok(sizes.every(size => size <= 64 * 1024), JSON.stringify(sizes));
+  const beaconed = [];
+  for (const beacon of beacons) beaconed.push(...JSON.parse(await beacon.body.text()).events);
+  assert.equal(beaconed.filter(event => event.type === 'probe').length, 80);
+  assert.ok(beaconed.some(event => event.type === 'session-end'));
+});
+
 test('l\'opt-out par l\'URL coupe l\'envoi même quand le hash porte aussi la salle', async t => {
   const { posts } = stubBrowser(t);
   // L'application réécrit le hash à l'entrée en salle : le drapeau doit y être

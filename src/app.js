@@ -12,7 +12,7 @@ import { reprobeMovie, prepareMovie, addSubtitle, writeMaster, decodeSubtitleTex
 import { SUBTITLE_FORMATS, SUBTITLE_EXT, IMAGE_SUBTITLE_CODECS } from '../public/subtitle-formats.js';
 import { clampCues, parseVtt, shiftSummary } from '../public/subtitle-timing.js';
 import { speechMask } from './speech-mask.js';
-import { findOffset } from './subtitle-sync.js';
+import { findOffsetInWorker } from './subtitle-sync.js';
 import { createRoomHub } from './sync/hub.js';
 import { createJournal } from './telemetry.js';
 import { createJobs } from './jobs.js';
@@ -58,6 +58,9 @@ const publicMovie = movie => ({ id: movie.id, title: movie.title, status: movie.
 // séances qu'il ouvre et des listes qu'il voit. `password` seul reste
 // l'unique compte fr-ko historique.
 const ACCOUNT_LANGUAGES = { 'fr-ko': ['fr', 'ko'], 'fr-vi': ['fr', 'vi'] };
+// Débit de télémétrie par session, fixé en dur comme les autres bornes de
+// protocole (docs/telemetry.md).
+const TELEMETRY_WINDOW_MS = 60_000, TELEMETRY_REQUESTS = 60, TELEMETRY_BYTES = 8 * 1024 ** 2;
 export function createApplication({ dataDir = path.join(ROOT, 'data'), password, passwords,
   origin = 'http://localhost:3000', secure = false, trustProxy = false, env = process.env,
   voiceService = null, voiceTiming } = {}) {
@@ -111,10 +114,15 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   });
   // Corps volumineux de l'API : le lot de télémétrie (400 événements de
   // 3800 caractères) et l'écriture des cues de sous-titres (un film entier
-  // dépasse 32 Ko), quand le reste garde 32 Ko.
+  // dépasse 32 Ko), quand le reste garde 32 Ko. Le grand parseur n'est monté
+  // que sur ces deux routes, derrière leur garde d'accès : un appelant anonyme
+  // n'obtient jamais l'analyse de 4 Mio. Il refuse aussi les corps compressés,
+  // qu'aucun client n'envoie et dont quelques Kio se gonfleraient en 4 Mio.
   const jsonSmall = express.json({ limit: '32kb' });
-  const jsonTelemetry = express.json({ limit: '4mb' });
-  app.use((req, res, next) => (req.path.endsWith('/telemetry') || req.path.endsWith('/cues') ? jsonTelemetry : jsonSmall)(req, res, next));
+  const jsonLarge = express.json({ limit: '4mb', inflate: false, verify: (req, res, buffer) => { req.bodyBytes = buffer.length; } });
+  const LARGE_BODIES = [['POST', /^\/api\/rooms\/[^/]+\/telemetry$/], ['PUT', /^\/api\/movies\/[^/]+\/subtitles\/[^/]+\/cues$/]];
+  app.use((req, res, next) => LARGE_BODIES.some(([method, route]) => req.method === method && route.test(req.path))
+    ? next() : jsonSmall(req, res, next));
   const admin = (req, res, next) => req.session?.admin ? next() : next(fail(401, 'Connexion administrateur requise.'));
   const authenticated = (req, res, next) => req.session ? next() : next(fail(401, 'Rejoindre une room ou se connecter.'));
   const access = (req, room) => room && (req.session?.admin || req.session?.rooms.has(room.id));
@@ -242,9 +250,32 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   // rejeté comme une room introuvable. L'écriture est tamponnée par le journal
   // et ne peut jamais échouer côté client.
   const telemetryFiles = new Set();
-  app.post('/api/rooms/:id/telemetry', authenticated, (req, res) => {
-    const room = hub.get(req.params.id);
-    if (!access(req, room)) throw fail(404, 'Room introuvable.');
+  const telemetryRoom = (req, res, next) => {
+    req.room = hub.get(req.params.id);
+    next(access(req, req.room) ? undefined : fail(404, 'Room introuvable.'));
+  };
+  // Débit par session, avant toute lecture du corps : un client légitime
+  // envoie un lot de 256 Kio au plus toutes les 5 s, et quelques lots
+  // d'affilée après une coupure. Le budget laisse passer un corps de 4 Mio
+  // entier mais pas un flot continu qui remplirait le disque. Un corps sans
+  // longueur déclarée est compté une fois lu.
+  const telemetryBudgets = new WeakMap();
+  const telemetryBudget = (req, res, next) => {
+    const at = Date.now();
+    let budget = telemetryBudgets.get(req.session);
+    if (!budget || at - budget.since >= TELEMETRY_WINDOW_MS) telemetryBudgets.set(req.session, budget = { since: at, requests: 0, bytes: 0 });
+    const declared = Number(req.headers['content-length']) || 0;
+    if (budget.requests >= TELEMETRY_REQUESTS || budget.bytes + declared > TELEMETRY_BYTES) {
+      res.set('Retry-After', String(Math.ceil((budget.since + TELEMETRY_WINDOW_MS - at) / 1000)));
+      return next(fail(429, 'Trop de télémétrie, réessayer plus tard.'));
+    }
+    budget.requests++; budget.bytes += declared;
+    req.telemetryBudget = budget;
+    next();
+  };
+  app.post('/api/rooms/:id/telemetry', authenticated, telemetryRoom, telemetryBudget, jsonLarge, (req, res) => {
+    const { room } = req;
+    if (!req.headers['content-length']) req.telemetryBudget.bytes += req.bodyBytes ?? 0;
     const { memberId, events } = req.body;
     if (typeof memberId !== 'string' || !/^[a-f0-9-]{1,40}$/.test(memberId) ||
       !Array.isArray(events) || !events.length || events.length > 1000 ||
@@ -252,11 +283,16 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         typeof event.type !== 'string' || event.type.length > 40 || JSON.stringify(event).length > 4000)) {
       throw fail(400, 'Commande invalide.');
     }
-    if (!hub.memberSeen(room.id, memberId)) throw fail(404, 'Room introuvable.');
+    // Un membre jamais vu, ou vu sous une autre session, est inconnu : un
+    // invité ne parle pas au nom d'un autre participant.
+    if (!hub.memberSeen(room.id, memberId) || hub.memberSession(room.id, memberId) !== req.session) throw fail(404, 'Room introuvable.');
     const base = `${room.code}-${memberId}`;
     if (!telemetryFiles.has(base)) { telemetryFiles.add(base); console.log(`[room ${room.tag}] télémétrie → data/telemetry/${base}.ndjson`); }
     const at = Date.now();
-    journal.write(base, events.map(event => ({ at, room: room.code, member: memberId, ...event })));
+    // L'horodatage et le membre du serveur passent en dernier : un événement
+    // ne les réécrit pas. `room` reste au client quand il en porte un : c'est
+    // le descripteur de séance de `caps` (docs/telemetry.md).
+    journal.write(base, events.map(event => ({ room: room.code, ...event, at, member: memberId })));
     res.status(204).end();
   });
   const uploadPath = id => {
@@ -361,14 +397,31 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       store.save(movie); res.json(movie);
     } finally { release(); }
   });
+  // Un travail lourd sur un film : la sauvegarde qui l'ouvre ou le referme peut
+  // échouer (disque plein, droits). Le verrou est toujours rendu et un film
+  // dont le travail n'a pas démarré garde son statut ; une sauvegarde finale
+  // perdue est journalisée, movie.json reprendra au prochain enregistrement
+  // (un statut resté « en cours » sur le disque est marqué en échec au
+  // redémarrage).
+  const startJob = (movie, status, claim) => {
+    const previous = { status: movie.status, error: movie.error };
+    const done = claim();
+    try { movie.status = status; movie.error = null; store.save(movie); }
+    catch (error) { Object.assign(movie, previous); done(); throw error; }
+    return done;
+  };
+  const finishJob = (movie, done) => {
+    try { store.save(movie); }
+    catch (error) { console.error(`[movie ${movie.id.slice(0, 8)}] enregistrement impossible : ${error.message}`); }
+    finally { done(); }
+  };
   app.post('/api/movies/:id/probe', admin, async (req, res) => {
     const movie = jobs.idle(req.params.id);
     if (movie.status === 'ready') throw fail(409, 'Analyse indisponible.');
-    const done = jobs.claimHeavy('Analyse indisponible.');
-    movie.status = 'probing'; movie.error = null; store.save(movie);
+    const done = startJob(movie, 'probing', () => jobs.claimHeavy('Analyse indisponible.'));
     res.status(202).json({ ok: true });
     try { await reprobeMovie(store, movie); }
-    finally { store.save(movie); done(); }
+    finally { finishJob(movie, done); }
   });
   app.post('/api/movies/:id/prepare', admin, async (req, res) => {
     const movie = jobs.idle(req.params.id);
@@ -377,8 +430,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       if (typeof req.body.names !== 'object' || req.body.names === null) throw fail(400, 'Noms de pistes invalides.');
       movie.trackNames = { audio: trackNames(req.body.names.audio), subtitles: trackNames(req.body.names.subtitles) };
     }
-    const done = jobs.claimHeavy();
-    movie.status = 'processing'; movie.error = null; store.save(movie);
+    const done = startJob(movie, 'processing', () => jobs.claimHeavy());
     res.status(202).json({ ok: true });
     try {
       movie.progress = { stage: 'analysis', percent: 0 }; store.save(movie);
@@ -403,8 +455,9 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       // A failed run never replaces a working one: a previous generation keeps playing.
       const servable = movie.generation && await stat(path.join(store.directory(movie.id), movie.generation)).then(() => true, () => false);
       movie.status = servable ? 'ready' : 'failed'; movie.error = error.message;
+      console.error(`[movie ${movie.id.slice(0, 8)}] préparation en échec : ${error.message}`);
     }
-    finally { delete movie.progress; store.save(movie); done(); }
+    finally { delete movie.progress; finishJob(movie, done); }
   });
   app.patch('/api/movies/:id', admin, (req, res) => {
     const movie = jobs.idle(req.params.id);
@@ -483,7 +536,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     res.json({ duration: movie.duration, cues, shift: shiftSummary(cues, origin),
       origin: origin?.map(({ start, end }) => ({ start, end })) ?? null });
   });
-  app.put('/api/movies/:id/subtitles/:track/cues', admin, async (req, res) => {
+  app.put('/api/movies/:id/subtitles/:track/cues', admin, jsonLarge, async (req, res) => {
     const movie = getMovie(req.params.id);
     if (movie.status !== 'ready' || jobs.heavyBusy()) throw fail(409, 'Film indisponible.');
     const track = timingTrack(movie, req.params.track);
@@ -544,7 +597,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         const mask = await speechMask(path.join(store.directory(movie.id), 'source'),
           { index: audioIndex, cache: path.join(directory, `speech_${audioIndex}.json`) });
         const cues = await readSubtitleCues(directory, track);
-        const result = findOffset({ cues, speech: mask.intervals, duration: movie.duration });
+        const result = await findOffsetInWorker({ cues, speech: mask.intervals, duration: movie.duration });
         Object.assign(entry, { state: 'done', result: { ...result, speechRatio: mask.speechRatio, audioMinutes: +(mask.duration / 60).toFixed(1) } });
       } catch (error) {
         Object.assign(entry, { state: 'error', error: error.message });

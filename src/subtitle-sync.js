@@ -11,6 +11,8 @@
 // réplique par réplique déformerait la piste d'origine et demanderait une
 // transcription complète — hors de propos ici.
 
+import { Worker } from 'node:worker_threads';
+
 export const HOP = 0.02;          // pas des enveloppes : 20 ms, sous l'image près
 export const MAX_OFFSET = 60;     // amplitude annoncée : ±1 min
 const COARSE = 0.1;               // balayage grossier au dixième avant l'affinage
@@ -154,4 +156,19 @@ export function findOffset({ cues = [], speech = [], duration, maxOffset = MAX_O
     cueRatio: +coverage(cueEnvelope, length).toFixed(3),
     speechRatio: +coverage(speechEnvelope, length).toFixed(3),
   };
+}
+
+// La même mesure hors du fil principal : sur un film de deux heures, le
+// balayage synchrone bloquerait la boucle d'événements (et donc le battement
+// des séances ouvertes) une à deux secondes. Seuls les instants voyagent.
+export function findOffsetInWorker({ cues = [], speech = [], duration, maxOffset } = {}) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./subtitle-sync-worker.js', import.meta.url), { workerData: {
+      cues: cues.map(({ start, end }) => ({ start, end })),
+      speech: speech.map(({ start, end }) => ({ start, end })), duration, maxOffset } });
+    let result = null;
+    worker.once('message', value => { result = value; });
+    worker.once('error', reject);
+    worker.once('exit', code => (result ? resolve(result) : reject(new Error(`Recalage interrompu (code ${code}).`))));
+  });
 }

@@ -130,3 +130,54 @@ test('un nom avec séparateur de chemin est refusé sans écrire', async t => {
   await journal.flush();
   assert.deepEqual(await readdir(dir(root)), ['ok.ndjson']);
 });
+
+test('la rétention reprend un journal du démarrage une fois qu\'il n\'est plus alimenté', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'journal-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let clock = Date.now();
+  const journal = createJournal({ root, days: 7, mb: 16, fileMb: 16, now: () => clock });
+  t.after(() => journal.close());
+  journal.write('abcd-server', [{ type: 'refused', ip: '203.0.113.7' }]);
+  journal.write('abcd-1234', [{ type: 'tick' }]);
+  await journal.flush();
+  // La séance s'est terminée il y a un mois, sans redémarrage du serveur.
+  const old = Date.now() / 1000 - 30 * 86400;
+  for (const name of await readdir(dir(root))) await utimes(path.join(dir(root), name), old, old);
+  clock += 30 * 86400_000;
+  const result = await journal.prune();
+  assert.equal(result.deleted, 2);
+  assert.deepEqual(await readdir(dir(root)), []);
+  // Le même nom repart d'un fichier neuf s'il est de nouveau alimenté.
+  journal.write('abcd-server', [{ type: 'join' }]);
+  await journal.flush();
+  assert.deepEqual(await lines(path.join(dir(root), 'abcd-server.ndjson')), [{ type: 'join' }]);
+});
+
+test('le plafond de volume tient à l\'écriture, sans attendre la rétention horaire', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'journal-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(() => { console.warn = warn; });
+  // ~52 Kio de dossier, rotation à ~10 Kio : un participant qui inonde le
+  // journal ne peut pas dépasser le plafond entre deux rétentions.
+  const cap = 0.05 * 1024 ** 2;
+  const journal = createJournal({ root, days: 7, mb: 0.05, fileMb: 0.01 });
+  t.after(() => journal.close());
+  for (let batch = 0; batch < 40; batch++) {
+    journal.write('seance-flot', Array.from({ length: 5 }, (_, i) => ({ type: 'tick', batch, i, pad: 'x'.repeat(1000) })));
+    await journal.flush();
+  }
+  const { bytes } = await journal.stats();
+  assert.ok(bytes <= cap, `dossier à ${bytes} octets pour un plafond de ${cap}`);
+  assert.equal(warnings.filter(line => line.includes('plafond')).length, 1);
+  // La place libérée par la rétention sert de nouveau, et la perte est comptée.
+  for (const name of await readdir(dir(root))) if (name !== 'seance-flot.ndjson') await rm(path.join(dir(root), name));
+  await journal.prune();
+  journal.write('seance-flot', [{ type: 'tick', batch: 'suite' }]);
+  await journal.flush();
+  const events = await lines(path.join(dir(root), 'seance-flot.ndjson'));
+  assert.ok(events.filter(event => event.type === 'queue').at(-1)?.dropped > 0, 'les lignes abandonnées sont comptées');
+  assert.equal(events.filter(event => event.batch === 'suite').length, 1);
+});

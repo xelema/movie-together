@@ -1,8 +1,11 @@
 // Journal NDJSON de la télémétrie : un fichier par base de nom sous
 // <root>/telemetry, alimenté en mémoire puis vidé par lot au plus une fois par
 // seconde (et dès qu'un tampon dépasse ~256 Kio), rotation par taille et
-// rétention par âge puis par volume. Aucune erreur ne remonte à l'appelant :
-// un fichier en échec est signalé une fois puis ignoré pendant une minute.
+// rétention par âge puis par volume. Le plafond de volume tient aussi à
+// l'écriture : une ligne qui le franchirait est abandonnée (et comptée) après
+// une rétention de rattrapage, au plus une par minute. Aucune erreur ne remonte
+// à l'appelant : un fichier en échec est signalé une fois puis ignoré pendant
+// une minute.
 import { appendFile, mkdir, readdir, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -10,6 +13,7 @@ const FLUSH_MS = 1000;           // cadence partagée de vidage des tampons
 const FLUSH_BYTES = 256 * 1024;  // vidage immédiat d'un tampon au-delà
 const QUEUE_MAX = 5000;          // lignes en attente avant abandon des plus vieilles
 const RETRY_MS = 60_000;         // silence d'un fichier après un échec d'écriture
+const LIVE_MS = 3600_000;        // un fichier alimenté depuis moins d'une heure est vivant
 const MIO = 1024 ** 2;
 
 export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
@@ -19,12 +23,15 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
   const value = option => typeof option === 'function' ? option() : option;
   const files = new Map();
   let pending = 0, warnedName = false;
+  // Octets du dossier : relus au premier vidage puis à chaque rétention, tenus
+  // à jour entre les deux par les ajouts.
+  let usage = null, cappedAt = -Infinity, warnedCap = false;
 
   const fileFor = name => {
     let file = files.get(name);
     if (file) return file;
-    file = { name, lines: [], bytes: 0, written: null, dropped: 0,
-      muted: 0, warned: false, chain: Promise.resolve() };
+    file = { name, lines: [], bytes: 0, written: null, dropped: 0, lastWrite: now(),
+      flushing: false, muted: 0, warned: false, chain: Promise.resolve() };
     files.set(name, file);
     return file;
   };
@@ -45,6 +52,7 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
 
   const flushFile = async file => {
     if (!file.lines.length || file.muted > now()) return;
+    file.flushing = true;
     const lines = file.lines.splice(0), bytes = file.bytes;
     pending -= lines.length; file.bytes = 0;
     let chunk = lines.join('');
@@ -56,6 +64,19 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
       await mkdir(directory, { recursive: true });
       if (file.written === null) {
         file.written = await stat(target).then(info => info.size, () => 0);
+      }
+      const size = Buffer.byteLength(chunk), cap = value(mb) * MIO;
+      if (usage === null) usage = (await stats()).bytes;
+      if (usage + size > cap && now() - cappedAt >= RETRY_MS) { cappedAt = now(); await prune(); }
+      if (usage + size > cap) {
+        // Dossier plein : les lignes sont perdues, pas remises en file, et la
+        // prochaine ligne écrite dans ce fichier en porte le compte.
+        file.dropped += lines.length;
+        if (!warnedCap) {
+          console.warn(`[telemetry] plafond de ${value(mb)} Mio atteint : lignes abandonnées`);
+          warnedCap = true;
+        }
+        return;
       }
       if (file.written >= value(fileMb) * MIO) {
         // Rotation : <base>.ndjson devient <base>.<n>.ndjson au premier n
@@ -69,7 +90,7 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
         }
       }
       await appendFile(target, chunk);
-      file.written += Buffer.byteLength(chunk);
+      file.written += size; usage += size; warnedCap = false;
       file.dropped = 0;
       file.warned = false;
     } catch (error) {
@@ -83,7 +104,7 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
         console.warn(`[telemetry] ${file.name} : ${error.message}`);
         file.warned = true;
       }
-    }
+    } finally { file.flushing = false; }
   };
 
   // Les ajouts d'un même fichier sont sérialisés : jamais d'entrelacement ni
@@ -97,6 +118,7 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
     }
     if (!Array.isArray(entries)) return;
     const file = fileFor(name);
+    file.lastWrite = now();
     for (const entry of entries) {
       let line;
       try { line = JSON.stringify(entry) + '\n'; } catch { continue; }
@@ -113,11 +135,17 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
   }, FLUSH_MS);
   timer.unref();
 
+  // Un fichier est vivant tant qu'il a des lignes en attente ou qu'il a été
+  // alimenté dans l'heure ; au-delà, son entrée quitte la table (elle renaît à
+  // la prochaine écriture) et la rétention peut le supprimer comme un autre.
+  const live = file => !!file && (file.lines.length > 0 || file.flushing || now() - file.lastWrite < LIVE_MS);
+
   // Rétention : d'abord les fichiers plus vieux que `days` (mtime), puis les
   // plus anciens tant que le dossier dépasse `mb`. Les fichiers encore
   // alimentés comptent dans le total mais ne sont jamais supprimés.
   const prune = async () => {
     let deleted = 0, freed = 0, total = 0;
+    for (const [name, file] of files) if (!live(file)) files.delete(name);
     try {
       // Le dossier naît à la première écriture : une rétention sans journaux
       // ne crée rien.
@@ -127,7 +155,7 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
         try {
           const info = await stat(path.join(directory, name));
           entries.push({ name, mtime: info.mtimeMs, size: info.size,
-            live: files.has(name.slice(0, -'.ndjson'.length)) });
+            live: live(files.get(name.slice(0, -'.ndjson'.length))) });
         } catch { }
       }
       const cutoff = now() - value(days) * 86400_000;
@@ -144,8 +172,10 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
         if (total <= cap) break;
         await remove(entry);
       }
+      usage = total;
     } catch (error) {
       if (error.code !== 'ENOENT') console.warn(`[telemetry] rétention impossible : ${error.message}`);
+      else usage = 0;
     }
     console.log(`[telemetry] rétention : ${deleted} fichiers supprimés (${(freed / MIO).toFixed(1)} Mio), dossier à ${(total / MIO).toFixed(1)} Mio`);
     return { deleted, freed, bytes: total };

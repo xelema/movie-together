@@ -10,6 +10,9 @@ import { sourceBufferState } from './hls-events.js';
 const FLUSH_MS = 5000;      // cadence d'envoi des lots
 const BATCH = 400;          // taille maximale d'un POST
 const BATCH_BYTES = 256 * 1024; // budget d'octets d'un POST
+// Les navigateurs refusent un sendBeacon au-delà de 64 Kio en vol : le lot de
+// sortie est découpé sous ce plafond, sinon la fin de séance est perdue.
+const BEACON_BYTES = 60 * 1024;
 const QUEUE_MAX = 2000;     // purge FIFO hors quota côté serveur
 const LONGTASK_MAX = 200;   // puis on ne garde que le compteur
 const RETRY_MIN = 1000;     // premier délai après un lot refusé
@@ -230,13 +233,13 @@ export function attachTelemetry(player, video, roomId, options = {}) {
   // Un lot est borné en nombre et en octets : un pic d'événements (capacités,
   // segments, longtasks) ne doit pas fabriquer un corps que le serveur refuse.
   // Le premier événement part toujours, quel que soit son poids.
-  const take = () => {
+  const take = (budget = BATCH_BYTES) => {
     const events = [];
     let bytes = 0;
     while (queue.length && events.length < BATCH) {
       let size;
       try { size = JSON.stringify(queue[0]).length + 1; } catch { dropped++; queue.shift(); continue; }
-      if (events.length && bytes + size > BATCH_BYTES) break;
+      if (events.length && bytes + size > budget) break;
       bytes += size;
       events.push(queue.shift());
     }
@@ -250,7 +253,7 @@ export function attachTelemetry(player, video, roomId, options = {}) {
     const memberId = g(() => player.memberId);
     if (halted || !queue.length || !memberId || !nav()?.sendBeacon) return;
     while (queue.length) {
-      const events = take();
+      const events = take(BEACON_BYTES);
       let ok = false;
       try { ok = nav().sendBeacon(url, new Blob([JSON.stringify({ memberId, events })], { type: 'application/json' })) === true; } catch {}
       if (!ok) { queue.unshift(...events); break; }

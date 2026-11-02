@@ -13,22 +13,30 @@ import { scanSegment, repairFile, repairSeams } from './hls-pts.js';
 export function run(binary, args, { timeout = 48 * 3600_000, cwd, onProgress, includeStderr = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '', expired = false;
+    let stdout = '', stderr = '', expired = false, failure = null;
     const timer = setTimeout(() => { expired = true; child.kill('SIGKILL'); }, timeout);
     let progressBuffer = '';
     child.stdout.on('data', chunk => {
       stdout = (stdout + chunk).slice(-4_000_000);
-      if (onProgress) {
+      if (onProgress && !failure) {
         progressBuffer += chunk;
         const lines = progressBuffer.split('\n'); progressBuffer = lines.pop();
-        for (const line of lines) if (line.startsWith('out_time_us=')) onProgress(Number(line.slice(12)) / 1_000_000);
+        for (const line of lines) {
+          if (!line.startsWith('out_time_us=')) continue;
+          // The callback runs inside a stream listener: a throw here (a full disk
+          // while saving progress) would escape every promise and kill the server.
+          // It fails this run instead, once the process is gone.
+          try { onProgress(Number(line.slice(12)) / 1_000_000); }
+          catch (error) { failure = error; child.kill('SIGKILL'); break; }
+        }
       }
     });
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8000); });
     child.on('error', error => { clearTimeout(timer); reject(error); });
     child.on('close', code => {
       clearTimeout(timer);
-      if (code === 0) resolve(includeStderr ? { stdout, stderr } : stdout);
+      if (failure) reject(failure);
+      else if (code === 0) resolve(includeStderr ? { stdout, stderr } : stdout);
       else reject(new Error(expired ? 'Traitement trop long.' : `${binary} : ${stderr.slice(-3000)}`));
     });
   });
