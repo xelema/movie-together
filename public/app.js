@@ -1388,7 +1388,15 @@ async function upload(file, extra = {}) {
       }
     }
     $('upload-status').textContent = label('Analyse du fichier…');
-    await api(`/api/uploads/${info.id}/complete`, { method: 'POST', body: {} });
+    try { await api(`/api/uploads/${info.id}/complete`, { method: 'POST', body: {} }); }
+    catch (error) {
+      // A file the server refuses for what it is (400) can never be resumed:
+      // drop the stored copy instead of leaving a 100 % upload that asks to be
+      // chosen again. Busy or incomplete answers (409) and outages keep it.
+      if (error.status === 400) await api(`/api/uploads/${info.id}`, { method: 'DELETE' }).catch(() => {});
+      $('upload-status').textContent = ''; $('upload-progress').value = 0;
+      throw error;
+    }
     $('upload-status').textContent = t('Fichier ajouté. Préparez le film pour l’utiliser.', '파일이 추가되었습니다. 영화를 준비하면 사용할 수 있습니다.'); $('upload-progress').value = 0;
     await refresh();
   } finally { uploadBusy = false; $('upload-file').disabled = false; $('upload-file').value = ''; }
