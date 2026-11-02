@@ -501,7 +501,14 @@ export class SyncPlayer {
     }
     this.internalUntil = performance.now() + INTERNAL_EVENT_MS;
     try { await this.video.play(); }
-    catch (error) { this.activated = false; this.activationBlocked = error.name === 'NotAllowedError'; this.emitFlags(error.name); this.onActivation(false); this.report(false); }
+    catch (error) {
+      // A pause while the start was pending (the room froze, reconcile paused)
+      // rejects play() with AbortError: an interruption we caused, not a lost
+      // activation. Dropping it left the member blocked on `activation` with no
+      // prompt to click, since only a refusal raises activationBlocked.
+      if (this.disposed || error.name === 'AbortError') return;
+      this.activated = false; this.activationBlocked = error.name === 'NotAllowedError'; this.emitFlags(error.name); this.onActivation(false); this.report(false);
+    }
   }
   report(force) {
     if (!this.state) return;

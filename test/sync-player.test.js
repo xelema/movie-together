@@ -120,3 +120,40 @@ test('a click on the progress bar while the séance plays seeks without pausing 
   video.paused = false; video.pause(); video.fire('pause');
   assert.deepEqual(commands(sent).map(message => message.command), ['seek', 'pause']);
 });
+
+test('a start interrupted by our own pause keeps the activation', async t => {
+  const { video, create } = fakeDom(t);
+  const { player } = create();
+  let rejectPending = null;
+  video.play = function () { this.paused = false; return new Promise((resolve, reject) => { rejectPending = reject; }); };
+  video.pause = function () {
+    this.paused = true;
+    rejectPending?.(Object.assign(new Error('The play() request was interrupted by a call to pause()'), { name: 'AbortError' }));
+    rejectPending = null;
+  };
+  player.activated = true; player.autoActivationTried = true; player.movie = { id: 'm' };
+  const startsAt = player.serverTime() - 1;
+  player.state = { epoch: 4, phase: 'playing', position: 10, startsAt, duration: 100 };
+  player.scheduled = startsAt;
+  const started = player.begin();
+  // Another member stalls at the start: the room freezes and reconcile pauses.
+  player.state = { epoch: 5, phase: 'buffering', position: 10, startsAt: null, duration: 100 };
+  player.pauseLocal();
+  await started;
+  assert.equal(player.activated, true);
+  assert.ok(!player.activationBlocked);
+});
+
+test('a refused start still asks for a gesture', async t => {
+  const { video, create, activations } = fakeDom(t);
+  const { player } = create();
+  video.play = () => Promise.reject(Object.assign(new Error('blocked'), { name: 'NotAllowedError' }));
+  player.activated = true; player.movie = { id: 'm' };
+  const startsAt = player.serverTime() - 1;
+  player.state = { epoch: 4, phase: 'playing', position: 10, startsAt, duration: 100 };
+  player.scheduled = startsAt;
+  await player.begin();
+  assert.equal(player.activated, false);
+  assert.equal(player.activationBlocked, true);
+  assert.equal(activations.at(-1), false);
+});
