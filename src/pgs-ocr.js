@@ -20,6 +20,10 @@ const CHARSET = fileURLToPath(new URL('./models/pgs-ocr-charset.json', import.me
 const SEGMENT_PALETTE = 0x14, SEGMENT_OBJECT = 0x15, SEGMENT_PRESENTATION = 0x16, SEGMENT_END = 0x80;
 const TRANSPARENT = 0;      // palette entry 0 is transparent, whatever the stream stored
 const UNTOUCHED = 255;      // marker for canvas the display set never painted
+// A subtitle bitmap never exceeds the picture, and the largest picture a PGS stream
+// accompanies is 4K. Sizes come from the stream (up to 65535 each): bound them
+// before allocating, so a malformed or crafted track cannot exhaust memory.
+export const MAX_WIDTH = 4096, MAX_HEIGHT = 2160;
 
 // Run-length bitmap: a bare byte paints one pixel of that palette index; 0x00 opens a
 // run whose length is the low six bits of the next byte (0x40 extends it by one byte)
@@ -103,15 +107,19 @@ export function parseDisplaySets(buffer) {
       else if (pending) pending.chunks.push(chunk);
       if (pending && (flags & 0x40)) {
         const data = Buffer.concat(pending.chunks);
-        const width = data.readUInt16BE(0), height = data.readUInt16BE(2);
-        objects.set(pending.objectId, { width, height, pixels: decodeRun(data.subarray(4), width, height) });
+        const width = data.length >= 4 ? data.readUInt16BE(0) : 0, height = data.length >= 4 ? data.readUInt16BE(2) : 0;
+        if (width && height && width <= MAX_WIDTH && height <= MAX_HEIGHT) {
+          objects.set(pending.objectId, { width, height, pixels: decodeRun(data.subarray(4), width, height) });
+        } else objects.delete(pending.objectId);
         pending = null;
       }
     } else if (type === SEGMENT_END && presentation) {
-      // Objects and windows are overwritten by the next display set: snapshot now.
+      // Objects and windows are replaced, never edited, by the next display set: a
+      // snapshot keeps a reference to the decoded pixels rather than a copy, so a
+      // run of display sets over the same object costs no bitmap each.
       const items = presentation.items.map(item => ({
         ...item,
-        object: objects.get(item.objectId) ? { ...objects.get(item.objectId), pixels: objects.get(item.objectId).pixels.slice() } : null,
+        object: objects.get(item.objectId) ? { ...objects.get(item.objectId) } : null,
         window: windows.get(item.windowId) ? { ...windows.get(item.windowId) } : null,
       }));
       sets.push({ pts, items, palette: (palettes.get(presentation.paletteId) ?? new Uint8Array(256 * 4)).slice() });
@@ -126,21 +134,25 @@ export function parseDisplaySets(buffer) {
 // background white, ink darkening with the palette alpha so the recogniser sees a
 // picture rather than a screen of film.
 export function coverage(set) {
-  const placed = set.items.filter(item => item.object).map(item => ({
-    object: item.object,
-    left: item.crop ? item.crop.x : item.window ? item.window.x : item.x,
-    top: item.crop ? item.crop.y : item.window ? item.window.y : item.y,
-    offsetX: item.crop ? item.crop.x : 0,
-    offsetY: item.crop ? item.crop.y : 0,
-    width: item.crop ? item.crop.width : item.object.width,
-    height: item.crop ? item.crop.height : item.object.height,
-  }));
+  // A crop never reaches past its object: the stream's own numbers are not trusted.
+  const placed = set.items.filter(item => item.object).map(item => {
+    const offsetX = item.crop ? Math.min(item.crop.x, item.object.width) : 0;
+    const offsetY = item.crop ? Math.min(item.crop.y, item.object.height) : 0;
+    return {
+      object: item.object,
+      left: item.crop ? item.crop.x : item.window ? item.window.x : item.x,
+      top: item.crop ? item.crop.y : item.window ? item.window.y : item.y,
+      offsetX, offsetY,
+      width: item.crop ? Math.min(item.crop.width, item.object.width - offsetX) : item.object.width,
+      height: item.crop ? Math.min(item.crop.height, item.object.height - offsetY) : item.object.height,
+    };
+  });
   if (!placed.length) return null;
   const left = Math.min(...placed.map(part => part.left)), top = Math.min(...placed.map(part => part.top));
   const right = Math.max(...placed.map(part => part.left + part.width));
   const bottom = Math.max(...placed.map(part => part.top + part.height));
   const width = right - left, height = bottom - top;
-  if (width < 16 || height < 8) return null;
+  if (width < 16 || height < 8 || width > MAX_WIDTH || height > MAX_HEIGHT) return null;
   const gray = Buffer.alloc(width * height, 255);
   for (const part of placed) {
     for (let y = 0; y < part.height; y++) {
@@ -315,16 +327,21 @@ export async function ocrSubtitleTrack(source, ordinal, { temporaryDirectory, du
         error ? reject(new Error(stderr?.trim() || error.message)) : resolve());
     });
     const sets = parseDisplaySets(await readFile(path));
-    const shots = sets.map(set => ({ time: set.pts / 90000, image: coverage(set) }))
-      .filter(shot => shot.image);
+    // One coverage image at a time: built, recognised, dropped. Rendering them all
+    // first would hold every bitmap of the film in memory at once.
+    const painted = sets.filter(set => set.items.some(item => item.object));
     const sessions = await loadSessions();
     const recognised = [];
-    let done = 0;
-    for (const shot of shots) {
-      recognised.push({ time: shot.time, text: await recogniseImage(sessions, shot.image) });
-      onProgress?.(++done, shots.length);
+    let done = 0, images = 0;
+    for (const set of painted) {
+      const image = coverage(set);
+      if (image) {
+        images++;
+        recognised.push({ time: set.pts / 90000, text: await recogniseImage(sessions, image) });
+      }
+      onProgress?.(++done, painted.length);
     }
-    return { cues: cuesFromDisplaySets(recognised, duration), displaySets: sets.length, images: shots.length };
+    return { cues: cuesFromDisplaySets(recognised, duration), displaySets: sets.length, images };
   } finally {
     await rm(path, { force: true });
   }

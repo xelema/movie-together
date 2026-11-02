@@ -53,3 +53,54 @@ test('a PGS track of a real film decodes to images the recogniser can read', asy
   assert.match(cue.text, /hot, sunny day/);
   assert.match(cue.text, /Southern Ca/);
 });
+
+// A minimal PGS stream: one presentation per display set showing object 1 at the
+// origin (optionally cropped), a palette, the object once, then END segments.
+const segment = (type, body, pts = 0) => {
+  const head = Buffer.alloc(13);
+  head.write('PG', 0, 'latin1'); head.writeUInt32BE(pts, 2); head[10] = type; head.writeUInt16BE(body.length, 11);
+  return Buffer.concat([head, body]);
+};
+const presentation = crop => {
+  const body = Buffer.alloc(11 + 8 + (crop ? 8 : 0));
+  body[10] = 1; body.writeUInt16BE(1, 11); body[14] = crop ? 0x40 : 0;
+  if (crop) { body.writeUInt16BE(crop.x, 19); body.writeUInt16BE(crop.y, 21); body.writeUInt16BE(crop.width, 23); body.writeUInt16BE(crop.height, 25); }
+  return body;
+};
+const pgsStream = ({ width, height, sets, crop }) => {
+  // One opaque line of colour 1 across the object, then end of line.
+  const line = Buffer.from([0x00, 0xc0 | (width >> 8), width & 0xff, 0x01, 0x00, 0x00]);
+  const object = Buffer.alloc(11); object.writeUInt16BE(1, 0); object[3] = 0xc0;
+  object.writeUIntBE(4 + line.length, 4, 3); object.writeUInt16BE(width, 7); object.writeUInt16BE(height, 9);
+  const parts = [segment(0x16, presentation(crop)), segment(0x14, Buffer.from([0, 0, 1, 235, 128, 128, 255])),
+    segment(0x15, Buffer.concat([object, line])), segment(0x80, Buffer.alloc(0))];
+  for (let n = 1; n < sets; n++) parts.push(segment(0x16, presentation(crop), n * 90000), segment(0x80, Buffer.alloc(0), n * 90000));
+  return Buffer.concat(parts);
+};
+
+test('an object larger than any picture is skipped instead of allocated', () => {
+  // 6000 x 6000 is 34 MiB per bitmap; the audit's 314-byte track reached 470 MiB.
+  const before = process.memoryUsage().arrayBuffers;
+  const sets = parseDisplaySets(pgsStream({ width: 6000, height: 6000, sets: 6 }));
+  assert.equal(sets.length, 6);
+  assert.ok(sets.every(set => set.items[0].object === null));
+  assert.ok(sets.every(set => coverage(set) === null));
+  assert.ok(process.memoryUsage().arrayBuffers - before < 16 * 1024 ** 2);
+});
+
+test('display sets over the same object share its bitmap', () => {
+  const sets = parseDisplaySets(pgsStream({ width: 1920, height: 200, sets: 40 }));
+  assert.equal(sets.length, 40);
+  const pixels = sets[0].items[0].object.pixels;
+  assert.equal(pixels.length, 1920 * 200);
+  assert.ok(sets.every(set => set.items[0].object.pixels === pixels));
+  const image = coverage(sets[0]);
+  assert.equal(image.width, 1920);
+  assert.equal(image.gray[0], 0);
+});
+
+test('a crop is bounded by its object, not by the stream', () => {
+  const [set] = parseDisplaySets(pgsStream({ width: 400, height: 40, sets: 1, crop: { x: 0, y: 0, width: 65535, height: 65535 } }));
+  const image = coverage(set);
+  assert.deepEqual([image.width, image.height], [400, 40]);
+});
