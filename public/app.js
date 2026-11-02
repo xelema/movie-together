@@ -272,13 +272,30 @@ function updatePlayback(controller) {
   }
 }
 // Errors and links to read stay until closed, confirmations fade on their own.
+// A modal dialog veils the page and makes it inert: an error raised while one
+// is open is written in the dialog's own alert, above the veil, where it can be
+// read and dismissed from the keyboard.
 let noticeTimer = null;
+const dialogAlert = () => [...document.querySelectorAll('dialog[open]')].at(-1)?.querySelector('.dialog-error') ?? null;
+function showAlert(node, message) { node.textContent = message; node.hidden = !message; }
 function notice(message = '', sticky = false) {
   const error = message instanceof Error;
+  const alert = error && dialogAlert();
+  if (alert) { showAlert(alert, label(message.message)); return; }
   $('notice').textContent = label(error ? message.message : message);
   $('toast').dataset.tone = error ? 'danger' : '';
   clearTimeout(noticeTimer);
   if (message && !error && !sticky) noticeTimer = setTimeout(notice, 5000);
+}
+for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('close', () => {
+  for (const alert of dialog.querySelectorAll('.dialog-error')) showAlert(alert, '');
+});
+// A refused form names its error next to the field as well as in the toast:
+// the field is marked invalid and described by the message. An empty message
+// is cleared rather than hidden, so the description never reads a stale error.
+function fieldError(input, node, error) {
+  showAlert(node, error ? error.message : '');
+  if (error) input.setAttribute('aria-invalid', 'true'); else input.removeAttribute('aria-invalid');
 }
 $('notice-close').addEventListener('click', () => notice());
 // Sections are shown by clearing [hidden]; replay the entrance animation whenever that happens.
@@ -621,7 +638,9 @@ function renderPrepare(focus = false) {
   const movie = movies.find(item => item.id === prepareId);
   if (!movie || !prepareDialog.open) return;
   const draft = prepareDraft(movie);
-  $('prepare-error').hidden = true;
+  // A server refresh re-renders the step without erasing an error the
+  // administrator has not read yet; a step change does.
+  if (focus) showAlert($('prepare-error'), '');
   $('prepare-steps').replaceChildren(...PREPARE_STEPS.map(([fr, ko, vi], index) => {
     const item = el('li', t(fr, ko, vi));
     item.dataset.state = index < draft.step ? 'done' : index === draft.step ? 'active' : 'todo';
@@ -678,6 +697,7 @@ function renderPrepare(focus = false) {
     const subName = el('input'); subName.maxLength = 100; subName.placeholder = 'Ex. Korean'; subName.setAttribute('aria-label', t('Nom affiché', '표시 이름'));
     const addRow = el('div', undefined, 'add-row');
     addRow.append(subLang, subName, button(t('Ajouter', '추가'), async () => {
+      showAlert($('prepare-error'), '');
       const file = subFile.files[0];
       const maxSubMb = settingsValues.maxSubtitleMb ?? 2;
       if (!file || !SUBTITLE_EXT.test(file.name) || file.size > maxSubMb * 1024 ** 2) throw new Error(t(`Choisir un fichier de sous-titres de moins de ${maxSubMb} Mo (SRT, VTT, SMI, ASS, SUB…).`, `자막 파일을 선택하세요 (SRT, VTT, SMI, ASS, SUB 등, 최대 ${maxSubMb}MB).`, `Chọn tệp phụ đề nhỏ hơn ${maxSubMb}MB (SRT, VTT, SMI, ASS, SUB…).`));
@@ -721,9 +741,7 @@ $('prepare-next').addEventListener('click', handle(async () => {
   if (!movie || !draft) return;
   const missingAudio = (movie.probe?.audio ?? []).length > 0 && !keptTracks(movie, draft, 'audio').length;
   if (missingAudio && draft.step === 0) {
-    const error = $('prepare-error');
-    error.textContent = t('Choisir au moins une piste audio.', '음성 트랙을 하나 이상 선택하세요.');
-    error.hidden = false;
+    showAlert($('prepare-error'), t('Choisir au moins une piste audio.', '음성 트랙을 하나 이상 선택하세요.'));
     return;
   }
   if (draft.step < PREPARE_STEPS.length - 1) { draft.step++; renderPrepare(true); return; }
@@ -827,10 +845,24 @@ async function enterRoom(id, name, context = {}) {
   if (session.admin) { movies = await api('/api/movies'); selectOptions($('room-movie'), movies.filter(movie => movie.status === 'ready').map(movie => [movie.id, movie.title])); }
 }
 $('language').addEventListener('change', handle(async () => { localStorage.setItem('language', $('language').value); translate(); notice(); if (!player && !uploadBusy) await refresh(); }));
-$('login-form').addEventListener('submit', handle(async event => { await api('/api/login', { method: 'POST', body: { password: new FormData(event.target).get('password') } }); event.target.reset(); notice(); await refresh(); }));
+// The refusal is said next to the field, not only in the toast at the corner:
+// the field is marked invalid, described by the message and focused again.
+const formRequest = async (input, alert, request) => {
+  fieldError(input, alert, null);
+  try { return await request(); } catch (error) { fieldError(input, alert, error); input.focus(); throw error; }
+};
+for (const [input, alert] of [[$('login-form').elements.password, $('login-error')], [$('join-form').elements.code, $('join-error')]])
+  input.addEventListener('input', () => fieldError(input, alert, null));
+$('login-form').addEventListener('submit', handle(async event => {
+  await formRequest(event.target.elements.password, $('login-error'),
+    () => api('/api/login', { method: 'POST', body: { password: new FormData(event.target).get('password') } }));
+  event.target.reset(); notice(); await refresh();
+}));
 $('join-form').addEventListener('submit', handle(async event => {
   const data = new FormData(event.target);
-  const room = await api('/api/join', { method: 'POST', body: { code: data.get('code') } }); notice();
+  const room = await formRequest(event.target.elements.code, $('join-error'),
+    () => api('/api/join', { method: 'POST', body: { code: data.get('code') } }));
+  notice();
   await enterRoom(room.id, undefined, { code: String(data.get('code')).trim(), enter: /[#&?]invite=/.test(location.hash) ? 'invite' : 'join' });
 }));
 // A pasted invitation link would be cut by maxlength before any input event, so it is caught at paste time.
