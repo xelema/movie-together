@@ -468,6 +468,10 @@ export class SyncPlayer {
   }
   report(force) {
     if (!this.state) return;
+    // A socket that is not draining (a network frozen for a few seconds) would
+    // queue reports that are stale on arrival and land as one burst: skip until
+    // it drains, the next tick reports the situation as it is then.
+    if (this.ws?.bufferedAmount > 0) return;
     const position = this.position();
     let blockers = readyBlockers({
       state: this.state, failure: this.failure,

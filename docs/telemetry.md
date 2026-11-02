@@ -280,7 +280,8 @@ Une ligne par transition, jamais par battement (`tickMs` = 200 ms) :
   `reason` vaut `origin`, `session`, `access`, `expired`, `sockets`,
   `capacity` ou `movie`. Un refus visant une room inexistante n'a pas de
   journal où écrire et reste muet.
-- `disconnect` — `{ms, messages, frames, reason}`.
+- `disconnect` — `{ms, messages, frames, dropped, reason}` ; `dropped` compte
+  les messages et trames ignorés au-delà du budget du socket.
 - `identify` — `{from, to}`.
 - `report` — rapport accepté dont la signature change : `{epoch, seq, pos,
   bufferedUntil, bufferedStart, ready, blockers, failure}`.
@@ -299,8 +300,12 @@ Une ligne par transition, jamais par battement (`tickMs` = 200 ms) :
   `peer-left`), plus `renegotiate` (`{from, peers}`), `signal-rerouted` (`{from,
   to, member}` : un signal adressé à un memberId remplacé livré au socket vivant
   de sa session) et `delivered` sur `signal` (nombre de sockets servis).
-- `limit` — fermeture par garde-fou : `{reason}` = `messages`, `frames`,
-  `session` ou `backpressure`.
+- `limit` — garde-fou : `{reason}` = `messages`, `frames`, `session` ou
+  `backpressure`. `messages` et `frames` (`dropped: true`) marquent une
+  rafale au-delà du budget du socket (40 messages JSON, 100 trames PCM par
+  seconde) : le surplus est ignoré, une ligne par fenêtre d'une seconde, et
+  le socket reste ouvert. `session` ferme le socket en 1008 (session
+  expirée), `backpressure` ferme un client qui ne lit plus.
 - `error` — commande invalide (`{error}`) ou erreur HTTP 5xx du serveur.
 - `media` — une ligne par requête `/media/*` **si `LOG_MEDIA=1`** :
   `{file, status, bytes, ms, cache}`.
