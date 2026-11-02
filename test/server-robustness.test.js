@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { gzipSync } from 'node:zlib';
+import { WebSocket } from 'ws';
 import { createApplication } from '../src/app.js';
 
 const ORIGIN = 'http://localhost:3000';
@@ -30,6 +32,22 @@ async function boot(t, { movies = [], settings } = {}) {
   return { instance, dataDir, base, request, cookie };
 }
 
+// A guest of a fresh room on a ready movie, connected once so the room knows
+// its member id: what a viewer's page holds before it sends telemetry.
+async function guestOf(t, { request, cookie, base }, movie, code) {
+  const room = await (await request('/api/rooms', { cookie, method: 'POST', body: { movieId: movie, code } })).json();
+  const joined = await request('/api/join', { method: 'POST', body: { code: room.code } });
+  const guest = joined.headers.get('set-cookie').split(';')[0];
+  const socket = new WebSocket(`${base.replace('http', 'ws')}/ws?room=${room.id}`, { headers: { Cookie: guest, Origin: ORIGIN } });
+  t.after(() => socket.terminate());
+  const memberId = await new Promise((resolve, reject) => {
+    socket.on('error', reject);
+    socket.on('message', data => { const message = JSON.parse(data); if (message.type === 'welcome') resolve(message.id); });
+  });
+  return { room, guest, memberId, socket };
+}
+
+const ready = n => ({ id: movieId(n), title: `Film ${n}`, status: 'ready', duration: 120 });
 const movieId = n => `00000000-0000-4000-8000-00000000000${n}`;
 const uploaded = n => ({ id: movieId(n), title: `Film ${n}`, status: 'uploaded' });
 
@@ -79,4 +97,32 @@ test('a failing metadata save never leaks the heavy job lock', async t => {
   assert.notEqual((await (await request('/api/movies', { cookie })).json()).find(item => item.id === movieId(2)).status, 'processing');
   assert.equal((await request(`/api/movies/${movieId(3)}/probe`, { cookie, method: 'POST', body: {} })).status, 202);
   await settled(request, cookie, movieId(3), 'probing');
+});
+
+test('the large json parser only runs on its two routes, after their guard, and never inflates', async t => {
+  const app = await boot(t, { movies: [ready(1)] });
+  const { request, cookie } = app;
+  const malformed = { raw: '{"a":', headers: { 'Content-Type': 'application/json' } };
+  // Paths that merely end like a large route keep the small limit.
+  const heavy = { raw: JSON.stringify(Array(40_000).fill(0)), headers: { 'Content-Type': 'application/json' } };
+  assert.equal((await request('/nope/telemetry', { method: 'POST', ...heavy })).status, 413);
+  assert.equal((await request('/x/cues', { method: 'PUT', ...heavy })).status, 413);
+  // The real routes reject an anonymous caller before reading its body.
+  assert.equal((await request(`/api/rooms/${movieId(9)}/telemetry`, { method: 'POST', ...malformed })).status, 401);
+  assert.equal((await request(`/api/movies/${movieId(1)}/subtitles/x/cues`, { method: 'PUT', ...malformed })).status, 401);
+  const { room, guest, memberId } = await guestOf(t, app, movieId(1), 'parseur');
+  // A guest outside the room is refused before its body is read as well.
+  assert.equal((await request(`/api/rooms/${movieId(9)}/telemetry`, { cookie: guest, method: 'POST', ...malformed })).status, 404);
+  // A compressed body is refused: a few KiB on the wire must not become 4 MiB to parse.
+  const batch = { memberId, events: Array.from({ length: 400 }, (_, i) => ({ t: i, type: 'tick', pad: 'x'.repeat(3700) })) };
+  const json = JSON.stringify(batch);
+  assert.ok(json.length > 1024 ** 2, 'a batch at the client bounds weighs over a MiB');
+  assert.equal((await request(`/api/rooms/${room.id}/telemetry`, { cookie: guest, method: 'POST', raw: gzipSync(json),
+    headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' } })).status, 415);
+  // The client contract still holds: 400 events of 3800 characters pass whole.
+  assert.equal((await request(`/api/rooms/${room.id}/telemetry`, { cookie: guest, method: 'POST', raw: json,
+    headers: { 'Content-Type': 'application/json' } })).status, 204);
+  // Every other route keeps the small limit.
+  assert.equal((await request('/api/login', { method: 'POST', raw: JSON.stringify({ password: 'x'.repeat(40_000) }),
+    headers: { 'Content-Type': 'application/json' } })).status, 413);
 });

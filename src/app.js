@@ -111,10 +111,15 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   });
   // Corps volumineux de l'API : le lot de télémétrie (400 événements de
   // 3800 caractères) et l'écriture des cues de sous-titres (un film entier
-  // dépasse 32 Ko), quand le reste garde 32 Ko.
+  // dépasse 32 Ko), quand le reste garde 32 Ko. Le grand parseur n'est monté
+  // que sur ces deux routes, derrière leur garde d'accès : un appelant anonyme
+  // n'obtient jamais l'analyse de 4 Mio. Il refuse aussi les corps compressés,
+  // qu'aucun client n'envoie et dont quelques Kio se gonfleraient en 4 Mio.
   const jsonSmall = express.json({ limit: '32kb' });
-  const jsonTelemetry = express.json({ limit: '4mb' });
-  app.use((req, res, next) => (req.path.endsWith('/telemetry') || req.path.endsWith('/cues') ? jsonTelemetry : jsonSmall)(req, res, next));
+  const jsonLarge = express.json({ limit: '4mb', inflate: false });
+  const LARGE_BODIES = [['POST', /^\/api\/rooms\/[^/]+\/telemetry$/], ['PUT', /^\/api\/movies\/[^/]+\/subtitles\/[^/]+\/cues$/]];
+  app.use((req, res, next) => LARGE_BODIES.some(([method, route]) => req.method === method && route.test(req.path))
+    ? next() : jsonSmall(req, res, next));
   const admin = (req, res, next) => req.session?.admin ? next() : next(fail(401, 'Connexion administrateur requise.'));
   const authenticated = (req, res, next) => req.session ? next() : next(fail(401, 'Rejoindre une room ou se connecter.'));
   const access = (req, room) => room && (req.session?.admin || req.session?.rooms.has(room.id));
@@ -242,9 +247,12 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   // rejeté comme une room introuvable. L'écriture est tamponnée par le journal
   // et ne peut jamais échouer côté client.
   const telemetryFiles = new Set();
-  app.post('/api/rooms/:id/telemetry', authenticated, (req, res) => {
-    const room = hub.get(req.params.id);
-    if (!access(req, room)) throw fail(404, 'Room introuvable.');
+  const telemetryRoom = (req, res, next) => {
+    req.room = hub.get(req.params.id);
+    next(access(req, req.room) ? undefined : fail(404, 'Room introuvable.'));
+  };
+  app.post('/api/rooms/:id/telemetry', authenticated, telemetryRoom, jsonLarge, (req, res) => {
+    const { room } = req;
     const { memberId, events } = req.body;
     if (typeof memberId !== 'string' || !/^[a-f0-9-]{1,40}$/.test(memberId) ||
       !Array.isArray(events) || !events.length || events.length > 1000 ||
@@ -500,7 +508,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
     res.json({ duration: movie.duration, cues, shift: shiftSummary(cues, origin),
       origin: origin?.map(({ start, end }) => ({ start, end })) ?? null });
   });
-  app.put('/api/movies/:id/subtitles/:track/cues', admin, async (req, res) => {
+  app.put('/api/movies/:id/subtitles/:track/cues', admin, jsonLarge, async (req, res) => {
     const movie = getMovie(req.params.id);
     if (movie.status !== 'ready' || jobs.heavyBusy()) throw fail(409, 'Film indisponible.');
     const track = timingTrack(movie, req.params.track);

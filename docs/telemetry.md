@@ -81,7 +81,7 @@ Bornes, tenues des deux côtés :
 | événements par lot | 400 | client |
 | octets par lot | 256 Kio | client |
 | caractères par événement | 3800 | client |
-| corps accepté par la route | 4 Mio | serveur |
+| corps accepté par la route | 4 Mio, non compressé | serveur |
 | file d'attente du client | 2000, purge FIFO | client |
 
 Un lot refusé est remis en file et repart au flush suivant ; une ligne qui
@@ -93,6 +93,9 @@ aussitôt le suivant. Un `404` ou un `410` (séance fermée, participant inconnu
 et tout refus survenu après la fin de séance (`session-end`, lecteur démonté)
 arrêtent définitivement l'envoi : la file est abandonnée et plus rien n'y entre,
 la séance ne reviendra pas.
+
+Ce corps n'est lu qu'après l'authentification et le contrôle d'accès à la
+séance ; un corps compressé (`Content-Encoding`) est refusé en `415`.
 Le corps de cette route est le seul de l'API au-dessus de 32 Ko : le lot doit
 tenir dans la borne serveur, sinon le POST est refusé en `413` et la séance
 entière reste sans journal.
