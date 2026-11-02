@@ -61,3 +61,22 @@ test('reports are not stacked behind a socket that is not draining', t => {
   player.report();
   assert.deepEqual(sent.filter(message => message.type === 'report').map(message => message.sequence), [0]);
 });
+
+test('a progress-bar drag sends one seek per gesture and one per epoch', t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const { create } = fakeDom(t);
+  const { player, sent } = create();
+  deliver(player, { epoch: 3, phase: 'paused', position: 10, startsAt: null, duration: 100 });
+  // A drag fires one input per pointer move, about 60 per second.
+  for (let i = 0; i < 60; i++) { player.seek(10 + i); t.mock.timers.tick(16); }
+  assert.deepEqual(commands(sent), []);
+  t.mock.timers.tick(150);
+  assert.deepEqual(commands(sent).map(({ command, position, epoch }) => [command, position, epoch]), [['seek', 69, 3]]);
+  // The gesture goes on before the room answered: nothing more is sent at this epoch.
+  player.seek(80); t.mock.timers.tick(150);
+  assert.equal(commands(sent).length, 1);
+  // The answer opens a new epoch: the position the gesture settled on follows.
+  deliver(player, { epoch: 4, phase: 'paused', position: 69, startsAt: null, duration: 100 });
+  assert.deepEqual(commands(sent).map(({ command, position, epoch }) => [command, position, epoch]),
+    [['seek', 69, 3], ['seek', 80, 4]]);
+});

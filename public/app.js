@@ -32,7 +32,7 @@ const playbackUI = new window.Plyr($('video'), {
   fullscreen: { enabled: true, fallback: true, iosNative: false, container: '#screen' },
   listeners: {
     play: () => { act($('video').paused ? 'play' : 'pause'); player?.togglePlayback().catch(error => notice(error)); return false; },
-    seek: event => { if (player?.state) { const to = Number(event.target.value) / 100 * player.state.duration; act('seek', Math.round(to)); player.command('seek', to); } return false; },
+    seek: event => { if (player?.state) { const to = Number(event.target.value) / 100 * player.state.duration; act('seek', Math.round(to)); player.seek(to); } return false; },
   },
 });
 const settingsButton = document.createElement('button');

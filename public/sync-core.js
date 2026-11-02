@@ -6,6 +6,9 @@
 // and seek mark this window before touching the media element.
 export const INTERNAL_EVENT_MS = 500;
 export const selfCaused = (now, internalUntil) => now <= internalUntil;
+// Quiet time after the last input of a progress-bar gesture before its seek
+// leaves for the room.
+export const SEEK_SETTLE_MS = 150;
 
 // A remuxed film can start a few frames after zero, and nothing plays before that
 // first decodable frame: a start position behind it is unreachable, so the member

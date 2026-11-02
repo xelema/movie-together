@@ -1,6 +1,6 @@
 import { ColorRenderer, colorNeedsRenderer, nativeHdrPipeline } from './color-renderer.js';
 import { codecPlayable, createBackend, supportsMime } from './backends.js';
-import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, playableSpan, readyBlockers, canBegin, subtitleFontSize, shownSubtitleTrack, reviveSubtitleCues } from './sync-core.js';
+import { INTERNAL_EVENT_MS, SEEK_SETTLE_MS, selfCaused, roomTarget, decide, playableSpan, readyBlockers, canBegin, subtitleFontSize, shownSubtitleTrack, reviveSubtitleCues } from './sync-core.js';
 
 export class Clock {
   constructor() { this.samples = []; }
@@ -243,6 +243,8 @@ export class SyncPlayer {
         if (message.movie?.id !== this.movie?.id || message.movie?.generation !== this.movie?.generation) this.load(message.movie);
         if (this.lastEpoch !== this.state.epoch) { clearTimeout(this.startTimer); this.startTimer = null; this.scheduled = null; this.lastEpoch = this.state.epoch; }
         this.reconcile();
+        // A gesture that went on while its first seek was in flight sends where it settled.
+        if (!this.seekTimer) this.flushSeek();
         if (this.scheduled === this.state.startsAt) this.report();
         this.onState(message, this);
       }
@@ -254,6 +256,7 @@ export class SyncPlayer {
       this.onVoice?.(null);
       this.onWebcam?.(null);
       clearInterval(this.initialPings); this.pauseLocal(); clearTimeout(this.startTimer); this.state = null;
+      clearTimeout(this.seekTimer); this.seekTimer = null; this.seekWanted = undefined;
       if ([1000, 1008].includes(event.code)) this.failure = 'Room fermée ou session expirée.';
       this.onStatus(event.code === 1000 || event.code === 1008 ? 'Room fermée ou session expirée.' : 'Connexion perdue. Séance en pause, reconnexion…');
       // Back off reconnects so a down server is not hammered every two seconds.
@@ -412,6 +415,24 @@ export class SyncPlayer {
     if (command === 'pause' || command === 'seek') this.pauseLocal();
     this.send({ type: 'command', command, position, epoch: this.state.epoch });
   }
+  // A drag on the progress bar fires one input per pointer move, about 60 per
+  // second: relayed one by one they blew the socket's message budget and each
+  // applied seek froze the room again. Only where the gesture settles is worth a
+  // command, and one seek per epoch is enough: the next one waits for the state
+  // that answers it.
+  seek(position) {
+    if (!this.state) return;
+    this.pauseLocal();
+    this.seekWanted = position;
+    clearTimeout(this.seekTimer);
+    this.seekTimer = setTimeout(() => { this.seekTimer = null; this.flushSeek(); }, SEEK_SETTLE_MS);
+  }
+  flushSeek() {
+    if (this.seekWanted === undefined || !this.state || this.seekEpoch === this.state.epoch) return;
+    const position = this.seekWanted;
+    this.seekWanted = undefined; this.seekEpoch = this.state.epoch;
+    this.command('seek', position);
+  }
   async togglePlayback() {
     if (this.activated && ['playing', 'buffering'].includes(this.state?.phase)) { this.command('pause'); return; }
     if (!this.activated) await this.activate();
@@ -509,7 +530,7 @@ export class SyncPlayer {
   dispose() {
     this.disposed = true; if (this.subtitleFrame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.subtitleFrame);
     clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings); clearInterval(this.clocker);
-    clearTimeout(this.startTimer); clearTimeout(this.retry); this.subtitleObserver?.disconnect(); this.listeners.forEach(remove => remove());
+    clearTimeout(this.startTimer); clearTimeout(this.retry); clearTimeout(this.seekTimer); this.subtitleObserver?.disconnect(); this.listeners.forEach(remove => remove());
     this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.markShader(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
     this.releaseWakeLock();
   }
