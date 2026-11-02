@@ -361,14 +361,31 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       store.save(movie); res.json(movie);
     } finally { release(); }
   });
+  // Un travail lourd sur un film : la sauvegarde qui l'ouvre ou le referme peut
+  // échouer (disque plein, droits). Le verrou est toujours rendu et un film
+  // dont le travail n'a pas démarré garde son statut ; une sauvegarde finale
+  // perdue est journalisée, movie.json reprendra au prochain enregistrement
+  // (un statut resté « en cours » sur le disque est marqué en échec au
+  // redémarrage).
+  const startJob = (movie, status, claim) => {
+    const previous = { status: movie.status, error: movie.error };
+    const done = claim();
+    try { movie.status = status; movie.error = null; store.save(movie); }
+    catch (error) { Object.assign(movie, previous); done(); throw error; }
+    return done;
+  };
+  const finishJob = (movie, done) => {
+    try { store.save(movie); }
+    catch (error) { console.error(`[movie ${movie.id.slice(0, 8)}] enregistrement impossible : ${error.message}`); }
+    finally { done(); }
+  };
   app.post('/api/movies/:id/probe', admin, async (req, res) => {
     const movie = jobs.idle(req.params.id);
     if (movie.status === 'ready') throw fail(409, 'Analyse indisponible.');
-    const done = jobs.claimHeavy('Analyse indisponible.');
-    movie.status = 'probing'; movie.error = null; store.save(movie);
+    const done = startJob(movie, 'probing', () => jobs.claimHeavy('Analyse indisponible.'));
     res.status(202).json({ ok: true });
     try { await reprobeMovie(store, movie); }
-    finally { store.save(movie); done(); }
+    finally { finishJob(movie, done); }
   });
   app.post('/api/movies/:id/prepare', admin, async (req, res) => {
     const movie = jobs.idle(req.params.id);
@@ -377,8 +394,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       if (typeof req.body.names !== 'object' || req.body.names === null) throw fail(400, 'Noms de pistes invalides.');
       movie.trackNames = { audio: trackNames(req.body.names.audio), subtitles: trackNames(req.body.names.subtitles) };
     }
-    const done = jobs.claimHeavy();
-    movie.status = 'processing'; movie.error = null; store.save(movie);
+    const done = startJob(movie, 'processing', () => jobs.claimHeavy());
     res.status(202).json({ ok: true });
     try {
       movie.progress = { stage: 'analysis', percent: 0 }; store.save(movie);
@@ -405,7 +421,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       movie.status = servable ? 'ready' : 'failed'; movie.error = error.message;
       console.error(`[movie ${movie.id.slice(0, 8)}] préparation en échec : ${error.message}`);
     }
-    finally { delete movie.progress; store.save(movie); done(); }
+    finally { delete movie.progress; finishJob(movie, done); }
   });
   app.patch('/api/movies/:id', admin, (req, res) => {
     const movie = jobs.idle(req.params.id);
