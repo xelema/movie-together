@@ -565,10 +565,11 @@ test('binary traffic is bounded per socket while healthy frames and JSON flow', 
   a.socket.send('not json');
   await a.waitFor(m => m.type === 'error');
   await a.settle();
-  // Une rafale binaire hors écoute dépasse le budget : fermeture propre 1008.
-  const flooded = new Promise(resolve => b.socket.on('close', code => resolve(code)));
+  // Une rafale binaire hors écoute dépasse le budget : le surplus est ignoré,
+  // le socket reste ouvert et répond encore (le budget JSON est distinct).
   for (let i = 0; i < 120; i++) b.socket.send(tone(300, 1));
-  assert.equal(await flooded, 1008);
+  await b.settle();
+  assert.equal(b.socket.readyState, WebSocket.OPEN);
   // Le socket de l'autre participant et la séance ne bougent pas.
   await a.settle();
   // Une trame au-delà du maxPayload (8 Kio) est refermée par le transport.

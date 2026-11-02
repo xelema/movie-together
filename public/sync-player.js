@@ -1,6 +1,9 @@
 import { ColorRenderer, colorNeedsRenderer, nativeHdrPipeline } from './color-renderer.js';
 import { codecPlayable, createBackend, supportsMime } from './backends.js';
-import { INTERNAL_EVENT_MS, selfCaused, roomTarget, decide, playableSpan, readyBlockers, canBegin, subtitleFontSize, shownSubtitleTrack, reviveSubtitleCues } from './sync-core.js';
+import { INTERNAL_EVENT_MS, SEEK_SETTLE_MS, selfCaused, roomTarget, decide, playableSpan, readyBlockers, canBegin, subtitleFontSize, shownSubtitleTrack, reviveSubtitleCues } from './sync-core.js';
+
+// A socket not seen empty for this long is frozen: reports wait for it to drain.
+const SOCKET_STALL_MS = 1000;
 
 export class Clock {
   constructor() { this.samples = []; }
@@ -33,7 +36,7 @@ export class SyncPlayer {
     this.subtitleLine = 84;
     this.name = name;
     this.clock = new Clock(); this.sequence = 0; this.activated = false; this.disposed = false;
-    this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.pendingPauses = 0;
+    this.lastMessage = 0; this.lastEpoch = -1; this.internalUntil = 0; this.pendingPauses = 0; this.pendingPlays = 0;
     this.retries = 0; this.listeners = []; this.observers = [];
     // Defaults until the room publishes its sync policy in welcome.
     this.sync = { minBuffer: 8, tickMs: 200, startDelay: 1000 };
@@ -74,10 +77,14 @@ export class SyncPlayer {
     this.listen(window, 'resize', () => { if (this.video.webkitDisplayingFullscreen) refreshSubtitles(); });
     this.listen(video, 'error', () => { if (!this.backend?.recoversErrors) this.failPlayback('Lecture impossible sur cet appareil.'); });
     this.listen(video, 'play', () => {
+      // A play the seek gesture caused (see endLocalToggle) is spent first, so a
+      // count never outlives its event; it still obeys the room locally.
+      const local = this.pendingPlays > 0;
+      if (local) this.pendingPlays--;
       // Browsers can dispatch a queued play event after activate() already paused: the
       // self-caused window keeps that stale notification from leaking a play command.
       if (this.activating || selfCaused(performance.now(), this.internalUntil)) return;
-      if (this.state?.phase !== 'playing') { this.pauseLocal(); this.command('play'); }
+      if (this.state?.phase !== 'playing') { this.pauseLocal(); if (!local) this.command('play'); }
       else if (this.serverTime() < this.state.startsAt) this.pauseLocal();
     });
     // pause() only queues its event: a stalled main thread can deliver it
@@ -207,6 +214,7 @@ export class SyncPlayer {
     if (this.disposed) return;
     const connectAt = performance.now();
     this.emit('ws', { ev: 'connect', to: 0, retries: this.retries || undefined });
+    this.drainedAt = performance.now();
     this.ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws?room=${this.roomId}`);
     this.ws.onopen = () => {
       this.emit('ws', { ev: 'open', to: 1, ms: Math.round(performance.now() - connectAt), retries: this.retries || undefined });
@@ -243,6 +251,8 @@ export class SyncPlayer {
         if (message.movie?.id !== this.movie?.id || message.movie?.generation !== this.movie?.generation) this.load(message.movie);
         if (this.lastEpoch !== this.state.epoch) { clearTimeout(this.startTimer); this.startTimer = null; this.scheduled = null; this.lastEpoch = this.state.epoch; }
         this.reconcile();
+        // A gesture that went on while its first seek was in flight sends where it settled.
+        if (!this.seekTimer) this.flushSeek();
         if (this.scheduled === this.state.startsAt) this.report();
         this.onState(message, this);
       }
@@ -254,6 +264,7 @@ export class SyncPlayer {
       this.onVoice?.(null);
       this.onWebcam?.(null);
       clearInterval(this.initialPings); this.pauseLocal(); clearTimeout(this.startTimer); this.state = null;
+      clearTimeout(this.seekTimer); this.seekTimer = null; this.seekWanted = undefined;
       if ([1000, 1008].includes(event.code)) this.failure = 'Room fermée ou session expirée.';
       this.onStatus(event.code === 1000 || event.code === 1008 ? 'Room fermée ou session expirée.' : 'Connexion perdue. Séance en pause, reconnexion…');
       // Back off reconnects so a down server is not hammered every two seconds.
@@ -272,6 +283,18 @@ export class SyncPlayer {
     this.lastFlags = flags;
     if (this.activationBlocked) this.emit('activation-blocked', { reason });
     else if (this.activated) this.emit('activation', {});
+  }
+  // Plyr pauses the element while its progress bar is held and plays it again on
+  // release, from its own handlers. Relayed, that pause stopped the séance at the
+  // new position and the release play fell into the self-caused window of the
+  // seek. app.js brackets each of those handlers: a toggle made between the two
+  // calls belongs to the seek gesture, and its event is counted to stay local.
+  beginLocalToggle() { this.localPaused = this.video.paused; }
+  endLocalToggle() {
+    const before = this.localPaused;
+    this.localPaused = undefined;
+    if (before === undefined || before === this.video.paused) return;
+    if (this.video.paused) this.pendingPauses++; else this.pendingPlays++;
   }
   pauseLocal() {
     this.internalUntil = performance.now() + INTERNAL_EVENT_MS;
@@ -316,7 +339,7 @@ export class SyncPlayer {
     this.movie = movie; this.failure = null; this.activated = activated; this.autoActivationTried = false; this.activationBlocked = false; this.emitFlags(); this.onActivation(activated);
     // video.load() drops media events still queued on the element, so pauses
     // counted but never delivered must not outlive the reload.
-    this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
+    this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0; this.pendingPlays = 0;
     if (!movie) return;
     const versions = movie.renditions?.length ? movie.renditions : [{ id: 'original', manifest: 'master.m3u8', timelineOffset: 0 }];
     this.rendition = versions[0];
@@ -385,9 +408,15 @@ export class SyncPlayer {
     const token = this.loadToken;
     // A play() that never settles would hold activating for the whole timeout,
     // and its promise rejects as AbortError when we pause it: a stall, not a refusal.
+    // Still, nothing retries it (canplay activates once): without the prompt the
+    // viewer sat on « Chargement du film… » and held the séance on `activation`,
+    // so the stall asks for the same click a refusal does.
     let interrupted = false;
     const timeout = setTimeout(() => {
-      if (token === this.loadToken) { interrupted = true; this.activating = false; this.pauseLocal(); }
+      if (token !== this.loadToken || this.disposed) return;
+      interrupted = true; this.activating = false; this.pauseLocal();
+      if (this.activated) return;
+      this.activationBlocked = true; this.emitFlags('stalled'); this.onActivation(false);
     }, 3_000);
     this.internalUntil = performance.now() + 1500;
     try {
@@ -411,6 +440,24 @@ export class SyncPlayer {
     if (!this.state) return;
     if (command === 'pause' || command === 'seek') this.pauseLocal();
     this.send({ type: 'command', command, position, epoch: this.state.epoch });
+  }
+  // A drag on the progress bar fires one input per pointer move, about 60 per
+  // second: relayed one by one they blew the socket's message budget and each
+  // applied seek froze the room again. Only where the gesture settles is worth a
+  // command, and one seek per epoch is enough: the next one waits for the state
+  // that answers it.
+  seek(position) {
+    if (!this.state) return;
+    this.pauseLocal();
+    this.seekWanted = position;
+    clearTimeout(this.seekTimer);
+    this.seekTimer = setTimeout(() => { this.seekTimer = null; this.flushSeek(); }, SEEK_SETTLE_MS);
+  }
+  flushSeek() {
+    if (this.seekWanted === undefined || !this.state || this.seekEpoch === this.state.epoch) return;
+    const position = this.seekWanted;
+    this.seekWanted = undefined; this.seekEpoch = this.state.epoch;
+    this.command('seek', position);
   }
   async togglePlayback() {
     if (this.activated && ['playing', 'buffering'].includes(this.state?.phase)) { this.command('pause'); return; }
@@ -464,10 +511,26 @@ export class SyncPlayer {
     }
     this.internalUntil = performance.now() + INTERNAL_EVENT_MS;
     try { await this.video.play(); }
-    catch (error) { this.activated = false; this.activationBlocked = error.name === 'NotAllowedError'; this.emitFlags(error.name); this.onActivation(false); this.report(false); }
+    catch (error) {
+      // A pause while the start was pending (the room froze, reconcile paused)
+      // rejects play() with AbortError: an interruption we caused, not a lost
+      // activation. Dropping it left the member blocked on `activation` with no
+      // prompt to click, since only a refusal raises activationBlocked.
+      if (this.disposed || error.name === 'AbortError') return;
+      this.activated = false; this.activationBlocked = error.name === 'NotAllowedError'; this.emitFlags(error.name); this.onActivation(false); this.report(false);
+    }
   }
   report(force) {
     if (!this.state) return;
+    // A socket that is not draining (a network frozen for a few seconds) would
+    // queue reports that are stale on arrival and land as one burst: skip until
+    // it drains, the next tick reports the situation as it is then. A backlog
+    // alone is not a freeze: the PCM frames of a voice take share this socket
+    // and keep it briefly non-empty on a slow uplink, so only a socket that has
+    // not been seen empty for a while holds the reports back.
+    const now = performance.now();
+    if (!(this.ws?.bufferedAmount > 0)) this.drainedAt = now;
+    else if (now - (this.drainedAt ?? now) > SOCKET_STALL_MS) return;
     const position = this.position();
     let blockers = readyBlockers({
       state: this.state, failure: this.failure,
@@ -505,8 +568,8 @@ export class SyncPlayer {
   dispose() {
     this.disposed = true; if (this.subtitleFrame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.subtitleFrame);
     clearInterval(this.interval); clearInterval(this.pinger); clearInterval(this.initialPings); clearInterval(this.clocker);
-    clearTimeout(this.startTimer); clearTimeout(this.retry); this.subtitleObserver?.disconnect(); this.listeners.forEach(remove => remove());
-    this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.markShader(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0;
+    clearTimeout(this.startTimer); clearTimeout(this.retry); clearTimeout(this.seekTimer); this.subtitleObserver?.disconnect(); this.listeners.forEach(remove => remove());
+    this.ws?.close(1000); this.pauseLocal(); this.colorRenderer?.dispose(); this.colorRenderer = null; this.markShader(); this.backend?.destroy(); this.video.removeAttribute('src'); this.video.load(); this.pendingPauses = 0; this.pendingPlays = 0;
     this.releaseWakeLock();
   }
 }

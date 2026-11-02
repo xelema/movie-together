@@ -203,9 +203,9 @@ function serverReport(file, events) {
   console.log(`\n===== ${path.basename(file)} =====`);
   const created = of(events, 'create').at(-1);
   if (created) console.log(`séance : ${new Date(first).toISOString()} → ${((last - first) / 60000).toFixed(1)} min · ${events.length} événements · probe=${created.probe} · langues ${created.languages} · film ${created.movie}`);
-  console.log(`connexions : ${of(events, 'connect').length} · déconnexions ${of(events, 'disconnect').length} · refus ${of(events, 'refused').length} · fermetures par garde-fou ${of(events, 'limit').length}`);
+  console.log(`connexions : ${of(events, 'connect').length} · déconnexions ${of(events, 'disconnect').length} · refus ${of(events, 'refused').length} · garde-fous ${of(events, 'limit').length}`);
   for (const refused of of(events, 'refused')) console.log(`  refus ${refused.reason} depuis ${refused.ip} (${String(refused.ua ?? '').slice(0, 60)})`);
-  for (const limit of of(events, 'limit')) console.log(`  garde-fou ${limit.reason} — membre ${String(limit.member ?? '').slice(0, 8)}`);
+  for (const limit of of(events, 'limit')) console.log(`  garde-fou ${limit.reason}${limit.dropped ? ' (surplus ignoré)' : ''} — membre ${String(limit.member ?? '').slice(0, 8)}`);
   for (const disconnect of of(events, 'disconnect')) console.log(`  départ ${String(disconnect.member ?? '').slice(0, 8)} après ${((disconnect.ms ?? 0) / 1000).toFixed(0)} s · ${disconnect.messages} messages, ${disconnect.frames} trames · ${disconnect.reason}`);
 
   const phases = of(events, 'phase');
@@ -231,7 +231,7 @@ function serverReport(file, events) {
 // -------------------------------------------------- chronologie client + serveur
 
 const TIMELINE = new Set(['phase', 'mediaError', 'video-error', 'js-error', 'resource-error', 'action',
-  'connect', 'disconnect', 'refused', 'limit', 'command', 'report-rejected', 'expire', 'session-start', 'session-end', 'queue']);
+  'connect', 'disconnect', 'superseded', 'readmitted', 'refused', 'limit', 'command', 'report-rejected', 'expire', 'session-start', 'session-end', 'queue']);
 
 // Met une action utilisateur en face d'une phase serveur : c'est le seul angle
 // que ni le journal client ni le journal serveur ne donne à lui seul.

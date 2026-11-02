@@ -32,9 +32,20 @@ const playbackUI = new window.Plyr($('video'), {
   fullscreen: { enabled: true, fallback: true, iosNative: false, container: '#screen' },
   listeners: {
     play: () => { act($('video').paused ? 'play' : 'pause'); player?.togglePlayback().catch(error => notice(error)); return false; },
-    seek: event => { if (player?.state) { const to = Number(event.target.value) / 100 * player.state.duration; act('seek', Math.round(to)); player.command('seek', to); } return false; },
+    seek: event => { if (player?.state) { const to = Number(event.target.value) / 100 * player.state.duration; act('seek', Math.round(to)); player.seek(to); } return false; },
   },
 });
+// Plyr pauses the film while its progress bar is held and plays it on release
+// ("pause while seeking"): bracket those handlers so the toggle stays local and
+// only the seek reaches the room. Capture on the parent runs before Plyr's
+// handler on the input, the bubbling listener after it.
+{
+  const seekInput = playbackUI.elements.inputs.seek, progress = seekInput?.parentElement;
+  for (const type of ['mousedown', 'mouseup', 'keydown', 'keyup', 'touchstart', 'touchend']) {
+    progress?.addEventListener(type, event => { if (event.target === seekInput) player?.beginLocalToggle(); }, { capture: true, passive: true });
+    progress?.addEventListener(type, event => { if (event.target === seekInput) player?.endLocalToggle(); }, { passive: true });
+  }
+}
 const settingsButton = document.createElement('button');
 settingsButton.id = 'open-settings'; settingsButton.type = 'button'; settingsButton.className = 'plyr__control plyr__controls__item';
 settingsButton.textContent = '⚙'; settingsButton.setAttribute('aria-controls', 'player-settings'); settingsButton.setAttribute('aria-expanded', 'false');

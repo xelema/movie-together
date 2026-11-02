@@ -406,3 +406,19 @@ lecture se joue d'un seul tenant. `bufferEnd` y mesure la réserve. Le membre en
 pause se cale au début de cette plage, et il rapporte ce début comme
 `bufferedStart`, que la salle accepte déjà comme position alignée (même
 tolérance qu'en tête de film).
+
+## Gestes sur la barre de progression
+
+Un glissé sur la barre Plyr émet un `input` par mouvement de pointeur (environ
+60 par seconde). Le lecteur n'envoie qu'un `seek` par geste : la commande part
+150 ms après le dernier `input` (`SEEK_SETTLE_MS`, `public/sync-core.js`), et un
+seul seek reste en vol par epoch ; la position où le geste s'est posé suit
+l'état qui répond au premier.
+
+Plyr met aussi l'élément en pause tant que la barre est tenue et le relance au
+relâchement (« pause while seeking »). Cette bascule appartient au geste, pas à
+la salle : `app.js` encadre les gestionnaires de Plyr (`beginLocalToggle` /
+`endLocalToggle`) et l'événement `pause` ou `play` qui en résulte est compté pour
+rester local, comme les pauses du lecteur lui-même (`pendingPauses`). La salle
+ne reçoit que le seek et garde `wantsPlay` : elle reprend d'elle-même à la
+nouvelle position.
