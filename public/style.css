@@ -176,6 +176,12 @@ html[lang=ko] #screen .track-controls strong,html[lang=ko] #participants span:no
 .watch-top{display:flex;align-items:center;gap:12px;min-height:40px;margin-bottom:24px}
 .watch-top .eyebrow{flex-shrink:0}
 #room-code{font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Participants read the code aloud to each other: on a phone it takes the
+   first line whole and the two buttons drop to the next one. */
+@media(max-width:480px){
+  .watch-top{flex-wrap:wrap;row-gap:8px}
+  #room-code{flex:1 0 60%;overflow:visible;white-space:normal;overflow-wrap:anywhere}
+}
 #leave{margin-left:auto}
 #copy-invite{flex-shrink:0;min-height:34px;padding:5px 12px;font-size:13px}
 #room-code:empty+#copy-invite{display:none}
@@ -400,6 +406,17 @@ dialog button{width:100%}
   #participants li{padding:4px 10px 4px 4px;gap:7px}
   .avatar{width:24px;height:24px;font-size:11px}
   #participants strong{font-size:12px}
+}
+/* A phone on its side has ~390 px of height: during a séance the page header
+   goes, the séance bar shrinks, and the picture is bounded so the player and
+   its control bar fit the visible height without scrolling. */
+@media(orientation:landscape) and (max-height:500px){
+  body:has(#watch:not([hidden])) header{display:none}
+  body:has(#watch:not([hidden])) main{padding-top:4px}
+  .watch-top{min-height:0;margin-bottom:4px;gap:10px}
+  #watch .watch-top button{min-height:32px;padding:3px 12px;font-size:13px}
+  #screen{max-height:100vh;max-height:100svh}
+  video{max-height:calc(100vh - 44px);max-height:calc(100svh - 44px)}
 }
 @media(max-width:360px){
   header{gap:8px;padding:0 12px}
