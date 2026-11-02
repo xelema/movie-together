@@ -403,6 +403,7 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
       // A failed run never replaces a working one: a previous generation keeps playing.
       const servable = movie.generation && await stat(path.join(store.directory(movie.id), movie.generation)).then(() => true, () => false);
       movie.status = servable ? 'ready' : 'failed'; movie.error = error.message;
+      console.error(`[movie ${movie.id.slice(0, 8)}] préparation en échec : ${error.message}`);
     }
     finally { delete movie.progress; store.save(movie); done(); }
   });

@@ -352,3 +352,17 @@ test('a text track of the same language spares the film the recognition', async 
   assert.ok(!stages.includes('ocr'), `expected no recognition, got ${stages.join(', ')}`);
   assert.match(await readFile(path.join(directory, result.generation, result.subtitles[0].filename), 'utf8'), /Bonjour/);
 });
+
+test('a progress callback that throws fails the run instead of crashing the process', { timeout: 10_000 }, async () => {
+  // The preparation saves its progress from this callback: a full disk throws
+  // inside the stdout listener, outside any promise.
+  const started = Date.now();
+  const full = Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+  let calls = 0;
+  await assert.rejects(run('sh', ['-c', 'echo out_time_us=1000000; echo out_time_us=2000000; exec sleep 5'], {
+    onProgress() { calls++; throw full; },
+  }), error => error === full);
+  assert.equal(calls, 1);
+  // The child is killed rather than left to finish its work.
+  assert.ok(Date.now() - started < 4000, `run settled after ${Date.now() - started} ms`);
+});
