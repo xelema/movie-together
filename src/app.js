@@ -283,11 +283,16 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
         typeof event.type !== 'string' || event.type.length > 40 || JSON.stringify(event).length > 4000)) {
       throw fail(400, 'Commande invalide.');
     }
-    if (!hub.memberSeen(room.id, memberId)) throw fail(404, 'Room introuvable.');
+    // Un membre jamais vu, ou vu sous une autre session, est inconnu : un
+    // invité ne parle pas au nom d'un autre participant.
+    if (!hub.memberSeen(room.id, memberId) || hub.memberSession(room.id, memberId) !== req.session) throw fail(404, 'Room introuvable.');
     const base = `${room.code}-${memberId}`;
     if (!telemetryFiles.has(base)) { telemetryFiles.add(base); console.log(`[room ${room.tag}] télémétrie → data/telemetry/${base}.ndjson`); }
     const at = Date.now();
-    journal.write(base, events.map(event => ({ at, room: room.code, member: memberId, ...event })));
+    // L'horodatage et le membre du serveur passent en dernier : un événement
+    // ne les réécrit pas. `room` reste au client quand il en porte un : c'est
+    // le descripteur de séance de `caps` (docs/telemetry.md).
+    journal.write(base, events.map(event => ({ room: room.code, ...event, at, member: memberId })));
     res.status(204).end();
   });
   const uploadPath = id => {

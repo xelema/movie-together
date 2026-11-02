@@ -628,6 +628,8 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     },
     // A member id stays valid for telemetry even after its socket is gone.
     memberSeen: (roomId, memberId) => rooms.get(roomId)?.seenMembers.has(memberId) ?? false,
+    // The session a member id was handed to: only that session speaks for it.
+    memberSession: (roomId, memberId) => rooms.get(roomId)?.memberSessions.get(memberId) ?? null,
     // idleMovie guards edits; movie deletion guards any reference.
     movieInUse: movieId => [...rooms.values()].some(room => room.movieId === movieId && room.engine.members.size),
     movieAssigned: movieId => [...rooms.values()].some(room => room.movieId === movieId),

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -148,4 +148,23 @@ test('a guest cannot flood the telemetry journal', async t => {
   }
   assert.deepEqual([...new Set(statuses.slice(0, 60))], [204]);
   assert.equal(statuses[60], 429);
+});
+
+test('a participant only writes its own journal, under the server envelope', async t => {
+  const app = await boot(t, { movies: [ready(1)] });
+  const host = await guestOf(t, app, movieId(1), 'usurpation');
+  // A second viewer joins the same room with its own session.
+  const joined = await app.request('/api/join', { method: 'POST', body: { code: 'usurpation' } });
+  const intruder = joined.headers.get('set-cookie').split(';')[0];
+  const post = (cookie, memberId, events) => app.request(`/api/rooms/${host.room.id}/telemetry`, { cookie, method: 'POST', body: { memberId, events } });
+  assert.equal((await post(intruder, host.memberId, [{ t: 1, type: 'error' }])).status, 404);
+  assert.equal((await post(host.guest, host.memberId, [{ t: 2, type: 'tick', at: 0, member: 'x' },
+    { t: 3, type: 'caps', room: { probe: false } }])).status, 204);
+  await app.instance.journal.flush();
+  const lines = (await readFile(path.join(app.dataDir, 'telemetry', `usurpation-${host.memberId}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(lines.map(line => line.type), ['tick', 'caps']);
+  assert.ok(lines.every(line => line.at > 0 && line.member === host.memberId));
+  assert.equal(lines[0].room, 'usurpation');
+  // The caps event's own séance descriptor is part of the contract and stays.
+  assert.deepEqual(lines[1].room, { probe: false });
 });

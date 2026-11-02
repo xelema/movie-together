@@ -29,7 +29,8 @@ l'est jamais. Il fait autorité : le client (`public/telemetry.js`), le serveur
 - `<code>` est le code d'invitation de la séance, `<member>` l'identifiant du
   participant (UUID attribué par le serveur à la connexion websocket). Un envoi
   pour un `<member>` que la séance n'a jamais vu (aucune websocket acceptée
-  sous cet identifiant) est refusé 404, comme une room introuvable.
+  sous cet identifiant), ou envoyé par une autre session que celle de sa
+  websocket, est refusé 404, comme une room introuvable.
 - Un même code réutilisé produit donc de nouveaux fichiers : le couple
   code + participant identifie une connexion, pas une personne.
 - Rotation : un fichier qui atteint `telemetryFileMb` est renommé en
@@ -55,7 +56,9 @@ Catégorie `telemetry` de la page admin (`PATCH /api/settings`) :
 
 ## Enveloppe d'une ligne
 
-Enveloppe écrite par le serveur (elle n'est jamais fabriquée par le client) :
+Enveloppe écrite par le serveur (elle n'est jamais fabriquée par le client :
+un champ `at` ou `member` envoyé par le client est écrasé ; seul `caps`
+remplace `room` par son descripteur de séance) :
 
 ```json
 {"at": 1759000000000, "room": "avant-premiere", "member": "5f0c…", "sid": "b31…", "t": 1758999999980, "p": 42123.5, "type": "tick", "…": "…"}
