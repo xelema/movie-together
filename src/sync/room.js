@@ -108,9 +108,15 @@ export class Room {
     return { snapshot: this.snapshot(), changed: true };
   }
 
-  leave(id) {
+  // `superseded`: the person is still here behind another socket of the same
+  // session (a reconnect whose predecessor never closed, a second tab). Only
+  // their old member goes: playback is not theirs to stop, and the readiness of
+  // the others still holds, so no freeze either; a start it was holding back
+  // can go ahead.
+  leave(id, { superseded = false } = {}) {
     this.requireMember(id);
     this.members.delete(id);
+    if (superseded) { this.tick(); return { snapshot: this.snapshot(), changed: true }; }
     // A disconnect always stops playback; resuming is an explicit group action.
     this.wantsPlay = false;
     this.freeze('leave');

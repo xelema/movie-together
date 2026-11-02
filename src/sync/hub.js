@@ -425,6 +425,15 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     }
     return false;
   };
+  // The member behind a socket that a newer one of the same session replaced
+  // leaves the engine at once; the socket itself stays until it closes or the
+  // sweep kills it, so it still counts toward the session's socket allowance.
+  const supersede = (room, ws) => {
+    ws.superseded = true;
+    if (room.utterance?.ws === ws) releaseUtterance(room, room.utterance, 'aborted:disconnect');
+    if (room.engine.members.has(ws.memberId)) room.engine.leave(ws.memberId, { superseded: true });
+    record(room, { type: 'superseded', member: ws.memberId });
+  };
   const attach = server => server.on('upgrade', (request, socket, head) => {
     const session = sessionFor(request);
     const url = new URL(request.url, origin), room = rooms.get(url.searchParams.get('room'));
@@ -455,6 +464,13 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       ws.connectedAt = Date.now(); ws.received = { messages: 0, frames: 0, dropped: 0 };
       const isVi = room.languages?.includes('vi');
       ws.displayName = session.admin ? (isVi ? 'Hôte / Chủ nhà' : 'Hôte / 호스트') : (isVi ? 'Invité / Khách' : 'Invité / 게스트');
+      // A reconnect can arrive while the server still holds the socket it
+      // replaces: a phone that changed network or a laptop back from sleep never
+      // sent its FIN, and that socket will not report again before the liveness
+      // sweep kills it. Its member blocked every start with no-report, then its
+      // close paused the séance. It leaves the engine now, without touching
+      // wantsPlay; a second tab that is really alive is readmitted by its next message.
+      for (const other of room.clients) if (other.session === session && !other.superseded) supersede(room, other);
       room.clients.add(ws); room.engine.join(id); room.seenMembers.add(id);
       room.memberSessions.set(id, session);
       // The client derives its cadence and buffer targets from these thresholds:
@@ -512,6 +528,11 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
           return ws.close(1008, 'Session invalide');
         }
         if (++messages > 40) return overBudget('messages');
+        if (ws.superseded) {
+          ws.superseded = false; room.engine.join(id);
+          record(room, { type: 'readmitted', member: id });
+          broadcast(room);
+        }
         try {
           const message = JSON.parse(data);
           if (message.type === 'identify') {
@@ -572,10 +593,14 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
       });
       ws.on('close', () => {
         if (room.utterance?.ws === ws) releaseUtterance(room, room.utterance, 'aborted:disconnect');
-        room.clients.delete(ws); room.engine.leave(id);
+        room.clients.delete(ws);
+        // Another live socket of the same session still stands for this person:
+        // the departure of this one is not theirs and must not pause the séance.
+        const present = [...room.clients].some(client => client.session === ws.session && !client.superseded);
+        if (room.engine.members.has(id)) room.engine.leave(id, { superseded: present });
         record(room, { type: 'disconnect', member: id, ms: Date.now() - ws.connectedAt,
           messages: ws.received.messages, frames: ws.received.frames,
-          dropped: ws.received.dropped || undefined, reason: ws.killed ?? 'client' });
+          dropped: ws.received.dropped || undefined, reason: ws.killed ?? (ws.superseded ? 'superseded' : 'client') });
         if (!rooms.has(room.id)) return;
         // Le pair restant raccroche sa session WebRTC : le flux n'a plus de
         // destinataire et sa vignette retombe sur l'attente. Un socket supplanté

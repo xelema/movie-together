@@ -135,3 +135,34 @@ test('a drag that floods seek commands keeps the socket and the séance', async 
     { socket: a, label: 'pong after the drag' });
   assert.equal(latest(b).cause === 'leave', false);
 });
+
+test('a reconnect retires the socket it replaces without pausing the séance', async t => {
+  const { room, open } = await liveHub(t);
+  const a = await open('alice'), b = await open('bob');
+  await until(() => a.states.at(-1)?.members?.length === 2, { socket: a, label: 'two members' });
+  a.send(JSON.stringify({ type: 'command', command: 'play', epoch: latest(a).epoch }));
+  await until(() => room.engine.wantsPlay, { socket: a, label: 'wantsPlay' });
+  // Bob's network flipped: his browser reconnected under the same session while
+  // the server never saw the old socket die. That socket stays silent.
+  const b2 = await open('bob');
+  const reporter = setInterval(() => { healthyReport(a); healthyReport(b2); }, 50);
+  t.after(() => clearInterval(reporter));
+  await until(() => latest(a)?.phase === 'playing', { socket: a, label: 'start with the ghost around' });
+  // The liveness sweep finally kills the ghost: the séance keeps wanting to play.
+  b.terminate();
+  await until(() => room.clients.size === 2, { label: 'ghost closed' });
+  assert.equal(room.engine.wantsPlay, true);
+  assert.notEqual(room.engine.phase, 'paused');
+});
+
+test('the last socket of a session leaving still pauses the séance', async t => {
+  const { room, open } = await liveHub(t);
+  const a = await open('alice'), b = await open('bob');
+  await until(() => a.states.at(-1)?.members?.length === 2, { socket: a, label: 'two members' });
+  a.send(JSON.stringify({ type: 'command', command: 'play', epoch: latest(a).epoch }));
+  await until(() => room.engine.wantsPlay, { socket: a, label: 'wantsPlay' });
+  b.terminate();
+  await until(() => room.clients.size === 1, { label: 'bob gone' });
+  assert.equal(room.engine.wantsPlay, false);
+  assert.equal(room.engine.phase, 'paused');
+});

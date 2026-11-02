@@ -282,6 +282,12 @@ Une ligne par transition, jamais par battement (`tickMs` = 200 ms) :
   journal où écrire et reste muet.
 - `disconnect` — `{ms, messages, frames, dropped, reason}` ; `dropped` compte
   les messages et trames ignorés au-delà du budget du socket.
+- `superseded` — un socket neuf de la même session arrive alors que le serveur
+  tient encore l'ancien (reconnexion dont le prédécesseur n'a jamais fermé,
+  second onglet) : le membre de l'ancien quitte la séance sans la mettre en
+  pause. Le socket reste ouvert jusqu'à sa fermeture ou au balayage
+  (`disconnect` `reason: superseded`) ; `readmitted` le réintègre s'il parle
+  encore (onglet bien vivant).
 - `identify` — `{from, to}`.
 - `report` — rapport accepté dont la signature change : `{epoch, seq, pos,
   bufferedUntil, bufferedStart, ready, blockers, failure}`.

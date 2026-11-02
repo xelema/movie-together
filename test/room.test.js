@@ -65,6 +65,19 @@ test('joining cancels a pending start, leaving requires explicit resumption', ()
   room.leave('c'); assert.equal(room.phase, 'paused');
 });
 
+test('a superseded member leaves without stopping playback or the start it held back', () => {
+  const { room, command, report } = setup();
+  room.join('ghost'); command('play'); report('a'); report('b');
+  assert.equal(room.phase, 'buffering');
+  room.leave('ghost', { superseded: true });
+  assert.equal(room.wantsPlay, true);
+  assert.equal(room.phase, 'playing');
+  const epoch = room.epoch;
+  room.join('c'); room.leave('c', { superseded: true });
+  assert.equal(room.wantsPlay, true);
+  assert.equal(room.epoch, epoch + 1);
+});
+
 test('rejects duplicate reports and invalid input', () => {
   const { room, command, report } = setup(); command('play'); report('a');
   report('a', { sequence: 0, ready: false }); report('b');

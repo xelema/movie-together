@@ -231,7 +231,7 @@ function serverReport(file, events) {
 // -------------------------------------------------- chronologie client + serveur
 
 const TIMELINE = new Set(['phase', 'mediaError', 'video-error', 'js-error', 'resource-error', 'action',
-  'connect', 'disconnect', 'refused', 'limit', 'command', 'report-rejected', 'expire', 'session-start', 'session-end', 'queue']);
+  'connect', 'disconnect', 'superseded', 'readmitted', 'refused', 'limit', 'command', 'report-rejected', 'expire', 'session-start', 'session-end', 'queue']);
 
 // Met une action utilisateur en face d'une phase serveur : c'est le seul angle
 // que ni le journal client ni le journal serveur ne donne à lui seul.
