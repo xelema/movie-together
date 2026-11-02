@@ -509,12 +509,7 @@ function movieCard(movie) {
       movie.subtitles?.length ? t(`${movie.subtitles.length} sous-titres`, `자막 ${movie.subtitles.length}개`, `${movie.subtitles.length} phụ đề`) : '']
       .filter(Boolean).join(' · ');
     if (meta) card.append(el('p', meta, 'hint'));
-    const create = async () => {
-      randomCode(); $('create-voice').checked = $('create-webcam').checked = false;
-      const code = await askDialog('create-dialog', 'create-code'); if (!code) return;
-      const room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code, voice: $('create-voice').checked, webcam: $('create-webcam').checked } });
-      await enterRoom(room.id, undefined, { code: room.code, title: movie.title, enter: 'create' });
-    };
+    const create = () => openCreate(movie);
     card.append(button(t('Créer une séance', '시청방 만들기'), create));
     card.classList.add('clickable');
     card.addEventListener('click', event => { if (!event.target.closest('details, button, input, select, a, label')) handle(create)(); });
@@ -1305,6 +1300,36 @@ timingDialog.addEventListener('close', () => {
   $('timing-overlay').textContent = '';
 });
 
+function randomCode() { $('create-code').value = Array.from(crypto.getRandomValues(new Uint8Array(4)), n => n.toString(16).padStart(2, '0')).join(''); fieldError($('create-code'), $('create-error'), null); }
+$('random-code').addEventListener('click', randomCode);
+// The creation dialog stays open until the server accepts the séance: a
+// refusal is shown under the code, with the typed code and the ticked options
+// still in place. Closing it never creates anything.
+let createMovie = null;
+const CODE_REFUSALS = ['Code : 4 à 32 lettres, chiffres ou tirets.', 'Ce code est déjà utilisé.'];
+function openCreate(movie) {
+  createMovie = movie;
+  randomCode(); $('create-voice').checked = $('create-webcam').checked = false;
+  $('create-dialog').showModal();
+}
+$('create-code').addEventListener('input', () => fieldError($('create-code'), $('create-error'), null));
+$('create-dialog').addEventListener('close', () => { createMovie = null; });
+$('create-dialog').querySelector('form').addEventListener('submit', handle(async () => {
+  const movie = createMovie, submit = $('create-submit');
+  if (!movie || submit.disabled) return;
+  fieldError($('create-code'), $('create-error'), null);
+  submit.disabled = true;
+  let room;
+  try {
+    room = await api('/api/rooms', { method: 'POST', body: { movieId: movie.id, code: $('create-code').value.trim(),
+      voice: $('create-voice').checked, webcam: $('create-webcam').checked } });
+  } catch (error) {
+    if (CODE_REFUSALS.includes(error.source)) { fieldError($('create-code'), $('create-error'), error); $('create-code').focus(); return; }
+    throw error;
+  } finally { submit.disabled = false; }
+  $('create-dialog').close();
+  await enterRoom(room.id, undefined, { code: room.code, title: movie.title, enter: 'create' });
+}));
 window.addEventListener('beforeunload', event => { if (uploadBusy) { event.preventDefault(); event.returnValue = ''; } });
 setInterval(() => { if (!player && !uploadBusy && movies.some(movie => ['processing', 'probing'].includes(movie.status))) refresh().catch(error => notice(error)); }, 3000);
 translate();
@@ -1324,8 +1349,6 @@ function askDialog(id, input) {
     dialog.showModal();
   });
 }
-function randomCode() { $('create-code').value = Array.from(crypto.getRandomValues(new Uint8Array(4)), n => n.toString(16).padStart(2, '0')).join(''); }
-$('random-code').addEventListener('click', randomCode);
 async function upload(file, extra = {}) {
   if (uploadBusy) return;
   if (!file) throw new Error(t('Choisir un fichier.', '파일을 선택하세요.'));

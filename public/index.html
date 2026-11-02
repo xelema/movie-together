@@ -124,11 +124,12 @@
 
     <dialog id="create-dialog"><form method="dialog">
       <h2 data-fr="Créer une séance" data-ko="시청방 만들기" data-vi="Tạo buổi xem"></h2>
-      <label><span class="eyebrow" data-fr="Code à partager" data-ko="공유할 코드" data-vi="Mã để chia sẻ"></span><input id="create-code" required minlength="4" maxlength="32" pattern="[A-Za-z0-9-]{4,32}" autocomplete="off" spellcheck="false"></label>
-      <p data-fr="4 à 32 lettres, chiffres ou tirets." data-ko="영문, 숫자, 하이픈 4~32자." data-vi="4 đến 32 chữ cái, số hoặc dấu gạch."></p>
+      <label><span class="eyebrow" data-fr="Code à partager" data-ko="공유할 코드" data-vi="Mã để chia sẻ"></span><input id="create-code" required minlength="4" maxlength="32" pattern="[A-Za-z0-9\-]{4,32}" autocomplete="off" spellcheck="false" aria-describedby="create-hint create-error"></label>
+      <p id="create-hint" data-fr="4 à 32 lettres, chiffres ou tirets." data-ko="영문, 숫자, 하이픈 4~32자." data-vi="4 đến 32 chữ cái, số hoặc dấu gạch."></p>
+      <p id="create-error" class="field-error dialog-error" role="alert" hidden></p>
       <label class="check"><input id="create-voice" type="checkbox"><span id="create-voice-label" data-fr="Traduction vocale (français ↔ coréen)" data-ko="음성 번역 (프랑스어 ↔ 한국어)" data-vi="Dịch giọng nói (tiếng Pháp ↔ tiếng Việt)"></span></label>
       <label class="check"><input id="create-webcam" type="checkbox"><span data-fr="Caméra (face-à-face à 2)" data-ko="웹캠 (2인용)" data-vi="Camera (2 người đối mặt)"></span></label>
-      <div class="dialog-actions"><button id="random-code" class="secondary" type="button" data-fr="Aléatoire" data-ko="무작위" data-vi="Ngẫu nhiên"></button><button data-fr="Créer" data-ko="만들기" data-vi="Tạo"></button></div>
+      <div class="dialog-actions"><button id="random-code" class="secondary" type="button" data-fr="Aléatoire" data-ko="무작위" data-vi="Ngẫu nhiên"></button><button id="create-submit" data-fr="Créer" data-ko="만들기" data-vi="Tạo"></button></div>
     </form></dialog>
 
     <dialog id="prepare-dialog" aria-labelledby="prepare-heading">
