@@ -130,3 +130,25 @@ test('un nom avec séparateur de chemin est refusé sans écrire', async t => {
   await journal.flush();
   assert.deepEqual(await readdir(dir(root)), ['ok.ndjson']);
 });
+
+test('la rétention reprend un journal du démarrage une fois qu\'il n\'est plus alimenté', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'journal-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let clock = Date.now();
+  const journal = createJournal({ root, days: 7, mb: 16, fileMb: 16, now: () => clock });
+  t.after(() => journal.close());
+  journal.write('abcd-server', [{ type: 'refused', ip: '203.0.113.7' }]);
+  journal.write('abcd-1234', [{ type: 'tick' }]);
+  await journal.flush();
+  // La séance s'est terminée il y a un mois, sans redémarrage du serveur.
+  const old = Date.now() / 1000 - 30 * 86400;
+  for (const name of await readdir(dir(root))) await utimes(path.join(dir(root), name), old, old);
+  clock += 30 * 86400_000;
+  const result = await journal.prune();
+  assert.equal(result.deleted, 2);
+  assert.deepEqual(await readdir(dir(root)), []);
+  // Le même nom repart d'un fichier neuf s'il est de nouveau alimenté.
+  journal.write('abcd-server', [{ type: 'join' }]);
+  await journal.flush();
+  assert.deepEqual(await lines(path.join(dir(root), 'abcd-server.ndjson')), [{ type: 'join' }]);
+});

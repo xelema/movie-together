@@ -10,6 +10,7 @@ const FLUSH_MS = 1000;           // cadence partagée de vidage des tampons
 const FLUSH_BYTES = 256 * 1024;  // vidage immédiat d'un tampon au-delà
 const QUEUE_MAX = 5000;          // lignes en attente avant abandon des plus vieilles
 const RETRY_MS = 60_000;         // silence d'un fichier après un échec d'écriture
+const LIVE_MS = 3600_000;        // un fichier alimenté depuis moins d'une heure est vivant
 const MIO = 1024 ** 2;
 
 export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
@@ -23,8 +24,8 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
   const fileFor = name => {
     let file = files.get(name);
     if (file) return file;
-    file = { name, lines: [], bytes: 0, written: null, dropped: 0,
-      muted: 0, warned: false, chain: Promise.resolve() };
+    file = { name, lines: [], bytes: 0, written: null, dropped: 0, lastWrite: now(),
+      flushing: false, muted: 0, warned: false, chain: Promise.resolve() };
     files.set(name, file);
     return file;
   };
@@ -45,6 +46,7 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
 
   const flushFile = async file => {
     if (!file.lines.length || file.muted > now()) return;
+    file.flushing = true;
     const lines = file.lines.splice(0), bytes = file.bytes;
     pending -= lines.length; file.bytes = 0;
     let chunk = lines.join('');
@@ -83,7 +85,7 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
         console.warn(`[telemetry] ${file.name} : ${error.message}`);
         file.warned = true;
       }
-    }
+    } finally { file.flushing = false; }
   };
 
   // Les ajouts d'un même fichier sont sérialisés : jamais d'entrelacement ni
@@ -97,6 +99,7 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
     }
     if (!Array.isArray(entries)) return;
     const file = fileFor(name);
+    file.lastWrite = now();
     for (const entry of entries) {
       let line;
       try { line = JSON.stringify(entry) + '\n'; } catch { continue; }
@@ -113,11 +116,17 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
   }, FLUSH_MS);
   timer.unref();
 
+  // Un fichier est vivant tant qu'il a des lignes en attente ou qu'il a été
+  // alimenté dans l'heure ; au-delà, son entrée quitte la table (elle renaît à
+  // la prochaine écriture) et la rétention peut le supprimer comme un autre.
+  const live = file => !!file && (file.lines.length > 0 || file.flushing || now() - file.lastWrite < LIVE_MS);
+
   // Rétention : d'abord les fichiers plus vieux que `days` (mtime), puis les
   // plus anciens tant que le dossier dépasse `mb`. Les fichiers encore
   // alimentés comptent dans le total mais ne sont jamais supprimés.
   const prune = async () => {
     let deleted = 0, freed = 0, total = 0;
+    for (const [name, file] of files) if (!live(file)) files.delete(name);
     try {
       // Le dossier naît à la première écriture : une rétention sans journaux
       // ne crée rien.
@@ -127,7 +136,7 @@ export function createJournal({ root, days, mb, fileMb, now = Date.now }) {
         try {
           const info = await stat(path.join(directory, name));
           entries.push({ name, mtime: info.mtimeMs, size: info.size,
-            live: files.has(name.slice(0, -'.ndjson'.length)) });
+            live: live(files.get(name.slice(0, -'.ndjson'.length))) });
         } catch { }
       }
       const cutoff = now() - value(days) * 86400_000;

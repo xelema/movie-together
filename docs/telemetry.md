@@ -36,8 +36,9 @@ l'est jamais. Il fait autorité : le client (`public/telemetry.js`), le serveur
   `<base>.<n>.ndjson` (n = 1, 2, …) et l'écriture reprend dans un fichier neuf.
 - Rétention : au démarrage et toutes les heures, les fichiers plus vieux que
   `telemetryDays` (mtime) sont supprimés, puis les plus anciens jusqu'à ce que
-  le dossier repasse sous `telemetryMb`. La suppression est journalisée en une
-  ligne `[telemetry] …` sur la sortie du serveur.
+  le dossier repasse sous `telemetryMb`. Seul un journal alimenté depuis moins
+  d'une heure est épargné, qu'il date du démarrage ou non. La suppression est
+  journalisée en une ligne `[telemetry] …` sur la sortie du serveur.
 
 ## Réglages
 
