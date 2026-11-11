@@ -17,3 +17,9 @@
 korean-coach.duckdns.org {
     reverse_proxy korean-coach:51121
 }
+
+# draftline partage ce proxy : le service `api` de la stack draftline est joint
+# au reseau movie-together_default sous l alias draftline-api.
+draftline-xxx.duckdns.org {
+    reverse_proxy draftline-api:8080
+}
