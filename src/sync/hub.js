@@ -456,6 +456,8 @@ export function createRoomHub({ origin, settings = createSettings(), sessionFor,
     if (refused) {
       if (room) record(room, { type: 'refused', reason: refused, path: url.pathname + url.search,
         origin: request.headers.origin, ua: request.headers['user-agent'], ip: request.socket.remoteAddress });
+      // A browser cannot read a refused upgrade, so a full séance closes with a code the client can show.
+      if (refused === 'capacity') return wss.handleUpgrade(request, socket, head, ws => ws.close(4001, 'capacity'));
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
     }
     wss.handleUpgrade(request, socket, head, ws => {

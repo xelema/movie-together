@@ -219,8 +219,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.post('/api/join', inviteLimiter, (req, res) => {
     const room = hub.findByCode(req.body.code);
     if (!room) throw fail(404, 'Code invalide ou expiré.');
-    if (room.webcam && hub.countSessions(room) >= 2 && !req.session?.rooms?.has(room.id)) {
-      throw fail(409, 'Séance complète (2 personnes maximum avec caméra).');
+    if (!req.session?.rooms?.has(room.id) && hub.countSessions(room) >= (room.webcam ? 2 : settings.get('maxClients'))) {
+      throw fail(409, room.webcam ? 'Séance complète (2 personnes maximum avec caméra).' : 'Séance complète.');
     }
     const session = req.session ?? { admin: false, rooms: new Set(), expires: Date.now() + ttlMs() };
     session.rooms.add(room.id);

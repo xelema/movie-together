@@ -33,8 +33,9 @@ FFmpeg et FFmpeg Full installés avec Chocolatey sous Windows.
    sous-titres sont immédiats.
 4. Attendre « Prêt à regarder », créer une séance et choisir un code ou utiliser
    « Aléatoire ». Partager le lien ou le code. Les codes expirent après 12 heures.
-   Une séance accepte huit participants au plus et vingt séances peuvent rester
-   ouvertes en parallèle.
+   Une séance accepte huit participants par défaut, administrateur compris, et
+   vingt séances peuvent rester ouvertes en parallèle. Les réglages permettent de
+   monter jusqu'à 32 participants.
 5. L'invité saisit le code puis son pseudo. Il ne peut pas choisir un autre film.
 6. Un clic sur Lecture lance tout le monde lorsque chaque lecteur est prêt.
    Si le navigateur bloque le son, cliquer une fois sur « Activer le son ».

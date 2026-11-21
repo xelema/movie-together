@@ -266,9 +266,14 @@ export class SyncPlayer {
       clearInterval(this.initialPings); this.pauseLocal(); clearTimeout(this.startTimer); this.state = null;
       clearTimeout(this.seekTimer); this.seekTimer = null; this.seekWanted = undefined;
       if ([1000, 1008].includes(event.code)) this.failure = 'Room fermée ou session expirée.';
-      this.onStatus(event.code === 1000 || event.code === 1008 ? 'Room fermée ou session expirée.' : 'Connexion perdue. Séance en pause, reconnexion…');
-      // Back off reconnects so a down server is not hammered every two seconds.
-      if (!this.disposed && ![1000, 1008].includes(event.code)) this.retry = setTimeout(() => this.connect(), Math.min(2000 * 2 ** this.retries++, 30_000));
+      const full = event.code === 4001;
+      this.onStatus(event.code === 1000 || event.code === 1008 ? 'Room fermée ou session expirée.'
+        : full ? 'Séance complète. Nouvelle tentative automatique.' : 'Connexion perdue. Séance en pause, reconnexion…');
+      // Back off reconnects so a down server is not hammered every two seconds. A full séance retries
+      // at a steady pace instead, so a freed seat is taken without a reload.
+      if (!this.disposed && ![1000, 1008].includes(event.code)) {
+        this.retry = setTimeout(() => this.connect(), full ? 15_000 : Math.min(2000 * 2 ** this.retries++, 30_000));
+      }
     };
     this.ws.onerror = () => {
       this.emit('ws', { ev: 'error', to: this.ws?.readyState, ms: Math.round(performance.now() - connectAt) });
