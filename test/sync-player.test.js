@@ -201,3 +201,31 @@ test('an automatic activation that stalls asks for a click instead of loading fo
   assert.equal(player.activationBlocked, true);
   assert.equal(activations.at(-1), false);
 });
+
+test('after a server restart the player stops retrying once the room is gone', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const { create } = fakeDom(t);
+  const { player } = create();
+  const statuses = [], asked = [];
+  player.onStatus = message => statuses.push(message);
+  const saved = globalThis.fetch;
+  t.after(() => { globalThis.fetch = saved; });
+  let status = 503;
+  globalThis.fetch = url => { asked.push(url); return Promise.resolve({ status }); };
+  player.ws.onclose({ code: 1006 });
+  assert.deepEqual(asked, []);
+  t.mock.timers.tick(2000);
+  player.ws.onclose({ code: 1006 });
+  await new Promise(setImmediate);
+  assert.deepEqual(asked, ['/api/rooms/room']);
+  assert.equal(player.failure, undefined);
+  t.mock.timers.tick(4000);
+  status = 401;
+  player.ws.onclose({ code: 1006 });
+  await new Promise(setImmediate);
+  assert.equal(player.failure, 'Room fermée ou session expirée.');
+  assert.equal(statuses.at(-1), 'Room fermée ou session expirée.');
+  const sockets = asked.length;
+  t.mock.timers.tick(60_000);
+  assert.equal(asked.length, sockets);
+});

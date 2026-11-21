@@ -217,9 +217,10 @@ export class SyncPlayer {
     this.emit('ws', { ev: 'connect', to: 0, retries: this.retries || undefined });
     this.drainedAt = performance.now();
     this.ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws?room=${this.roomId}`);
+    let opened = false;
     this.ws.onopen = () => {
       this.emit('ws', { ev: 'open', to: 1, ms: Math.round(performance.now() - connectAt), retries: this.retries || undefined });
-      this.retries = 0;
+      this.retries = 0; opened = true;
       if (this.name) this.send({ type: 'identify', name: this.name });
       this.clock = new Clock(); this.lastMessage = performance.now(); this.sequence = 0;
       this.ping();
@@ -272,9 +273,18 @@ export class SyncPlayer {
         : full ? 'Séance complète. Nouvelle tentative automatique.' : 'Connexion perdue. Séance en pause, reconnexion…');
       // Back off reconnects so a down server is not hammered every two seconds. A full séance retries
       // at a steady pace instead, so a freed seat is taken without a reload.
-      if (!this.disposed && ![1000, 1008].includes(event.code)) {
-        this.retry = setTimeout(() => this.connect(), full ? 15_000 : Math.min(2000 * 2 ** this.retries++, 30_000));
-      }
+      if (this.disposed || [1000, 1008].includes(event.code)) return;
+      const retry = () => { this.retry = setTimeout(() => this.connect(), full ? 15_000 : Math.min(2000 * 2 ** this.retries++, 30_000)); };
+      // A restart forgets sessions and rooms: the refused upgrade reads as a plain drop,
+      // so after two failed opens the room itself says whether a retry can ever succeed.
+      this.failedOpens = opened || full ? 0 : (this.failedOpens ?? 0) + 1;
+      if (this.failedOpens < 2) { retry(); return; }
+      fetch(`/api/rooms/${this.roomId}`).then(response => [401, 404].includes(response.status), () => false).then(gone => {
+        if (this.disposed) return;
+        if (!gone) { retry(); return; }
+        this.failure = 'Room fermée ou session expirée.';
+        this.onStatus(this.failure);
+      });
     };
     this.ws.onerror = () => {
       this.emit('ws', { ev: 'error', to: this.ws?.readyState, ms: Math.round(performance.now() - connectAt) });
