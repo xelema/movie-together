@@ -12,7 +12,8 @@ test('subtitle font size follows the rendered picture height', () => {
   // Reference: the old 2.4vw rule on a 1280x720 16:9 picture, raised 25%.
   assert.equal(subtitleFontSize(720), 38.4);
   assert.equal(subtitleFontSize(360), 19.2);
-  assert.equal(subtitleFontSize(0), 18);
+  assert.equal(subtitleFontSize(0), 14);
+  assert.equal(subtitleFontSize(200), 14);
   assert.ok(Math.abs(subtitleFontSize(1080) - 57.6) < 1e-9);
   assert.ok(Math.abs(subtitleFontSize(540) - 28.8) < 1e-9);
 });
@@ -81,12 +82,12 @@ test('webkit native fullscreen sizes subtitles from the screen', () => {
   positionSubtitles(player);
   assert.equal(player.styles['--subtitle-size'], '38.4px');
   const saved = globalThis.screen;
-  globalThis.screen = { width: 640, height: 300 };
+  globalThis.screen = { width: 640, height: 200 };
   player.video.webkitDisplayingFullscreen = true;
   try {
     positionSubtitles(player);
-    // Landscape 640x300 paints a 300 px tall picture, floored at 18 px.
-    assert.equal(player.styles['--subtitle-size'], '18px');
+    // Landscape 640x200 paints a 200 px tall picture, floored at 14 px.
+    assert.equal(player.styles['--subtitle-size'], '14px');
     assert.equal(player.video.textTracks[0].cues[0].line, 84);
   } finally {
     if (saved === undefined) delete globalThis.screen; else globalThis.screen = saved;

@@ -218,7 +218,7 @@ video{display:block;width:100%;max-height:72vh;object-fit:contain}
 .video-stage[data-shader] #gecko-overlay-fix{display:none}
 .plyr{width:100%}
 .color-canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;pointer-events:none}
-.color-captions{position:absolute;left:4%;right:4%;bottom:16%;pointer-events:none;text-align:center;white-space:pre-line;
+.color-captions{position:absolute;left:4%;right:4%;bottom:16%;pointer-events:none;text-align:center;white-space:pre-line;word-break:keep-all;overflow-wrap:break-word;
   color:#fff;font-family:Arial,"Segoe UI",sans-serif;font-size:calc(var(--subtitle-size,clamp(18px,3vw,45px)) * var(--subtitle-scale,1));font-weight:500;line-height:1.3;
   text-shadow:-1px -1px 2px #000,1px -1px 2px #000,-1px 1px 2px #000,1px 1px 2px #000,0 2px 4px #000}
 .color-captions:empty{display:none}
@@ -246,6 +246,9 @@ video{display:block;width:100%;max-height:72vh;object-fit:contain}
 #watch[data-playing=true] #screen [data-plyr=play] .icon--not-pressed,#watch[data-playing=false] #screen [data-plyr=play] .icon--pressed{display:none}
 #screen[data-overlay=true] .plyr__control--overlaid,#watch[data-playing=true] .plyr__control--overlaid,#screen.settings-open .plyr__control--overlaid,
 #screen .plyr--hide-controls .plyr__control--overlaid{opacity:0;visibility:hidden;pointer-events:none}
+/* Le coréen se coupe aux espaces, jamais entre deux syllabes d'un mot. ::cue n'accepte pas
+   word-break : Chromium l'expose sur la boîte de la cue, dans sa propre règle. */
+video::-webkit-media-text-track-display{word-break:keep-all;overflow-wrap:break-word}
 video::cue{color:#fff;background:transparent;font-family:Arial,"Segoe UI",sans-serif;font-size:calc(var(--subtitle-size,clamp(18px,3vw,45px)) * var(--subtitle-scale,1));font-weight:500;
   text-shadow:-1px -1px 2px #000,1px -1px 2px #000,-1px 1px 2px #000,1px 1px 2px #000,0 2px 4px #000}
 
@@ -279,7 +282,7 @@ video::cue{color:#fff;background:transparent;font-family:Arial,"Segoe UI",sans-s
 #voice-local[data-kind=transcript]{font-style:italic}
 #voice-result{position:absolute;z-index:4;top:9%;left:50%;transform:translateX(-50%);max-width:82%;color:#4fd7e8;
   font-family:Arial,"Segoe UI",sans-serif;font-size:calc(var(--subtitle-size,clamp(18px,3vw,45px)) * var(--subtitle-scale,1));font-weight:500;line-height:1.3;
-  text-align:center;white-space:pre-line;
+  text-align:center;white-space:pre-line;word-break:keep-all;overflow-wrap:break-word;
   text-shadow:-1px -1px 2px #000,1px -1px 2px #000,-1px 1px 2px #000,1px 1px 2px #000,0 2px 4px #000;pointer-events:none}
 #webcam-toggle{position:absolute;z-index:4;top:calc(50% - 62px);right:14px;transform:translateY(-50%);width:52px;height:52px;min-height:0;padding:0;
   display:grid;place-items:center;border-radius:50%;background:rgba(10,10,12,.62);color:var(--white);border:1px solid rgba(255,255,255,.18);
@@ -445,7 +448,7 @@ dialog button{width:100%}
 #timing-context{margin:0 0 12px}
 .timing-stage{position:relative;background:#000;border-radius:10px;overflow:hidden;margin-bottom:10px}
 .timing-stage video{display:block;width:100%;height:auto;max-height:36vh}
-#timing-overlay{position:absolute;left:4%;right:4%;bottom:9%;text-align:center;white-space:pre-line;pointer-events:none;
+#timing-overlay{position:absolute;left:4%;right:4%;bottom:9%;text-align:center;white-space:pre-line;word-break:keep-all;overflow-wrap:break-word;pointer-events:none;
   color:#fff;font-family:Arial,"Segoe UI",sans-serif;font-size:var(--subtitle-size,clamp(18px,3vw,45px));font-weight:500;line-height:1.3;
   text-shadow:-1px -1px 2px #000,1px -1px 2px #000,-1px 1px 2px #000,1px 1px 2px #000,0 2px 4px #000}
 #timing-overlay:empty{display:none}

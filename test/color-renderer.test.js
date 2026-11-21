@@ -180,6 +180,23 @@ test('renderer skips an already-presented frame and stays silent during resume g
   assert.equal(errors, 2); assert.equal(reads, 2);
 });
 
+test('a long cue lifted over the controls stops at the top of the picture', () => {
+  const cue = { startTime: 1, endTime: 3, text: '긴 자막', line: 36, snapToLines: false, getCueAsHTML: () => '긴 자막' };
+  const previous = globalThis.document;
+  globalThis.document = { createElement: () => ({ append() {} }) };
+  try {
+    const renderer = Object.assign(Object.create(ColorRenderer.prototype), {
+      video: { textTracks: [{ mode: 'showing', kind: 'subtitles', activeCues: [cue] }] },
+      captions: { style: {}, offsetTop: 4, replaceChildren() {} },
+    });
+    renderer.updateCaptions();
+    assert.equal(renderer.captions.style.bottom, '64%');
+    renderer.captions.offsetTop = -30;
+    renderer.updateCaptions();
+    assert.equal(renderer.captions.style.bottom, 'calc(64% + -30px)');
+  } finally { if (previous === undefined) delete globalThis.document; else globalThis.document = previous; }
+});
+
 test('a 50 or 60 fps film moves from video-frame callbacks to a vsync-sampled draw', t => {
   const votes = fps => {
     const renderer = Object.assign(Object.create(ColorRenderer.prototype), { sampleVotes: 0 });

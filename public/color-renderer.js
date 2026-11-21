@@ -559,8 +559,12 @@ export class ColorRenderer {
     this.captions.replaceChildren(...cues.map(cue => {
       const line = document.createElement('div'); line.append(cue.getCueAsHTML()); return line;
     }));
-    const line = cues[0]?.line;
-    this.captions.style.bottom = `${typeof line === 'number' && !cues[0].snapToLines ? 100 - line : 16}%`;
+    const line = cues[0]?.line, bottom = typeof line === 'number' && !cues[0].snapToLines ? 100 - line : 16;
+    this.captions.style.bottom = `${bottom}%`;
+    // Lifted over the control bar of a short phone picture, a long cue grows
+    // past the top edge: it stops there and overlaps the bar instead.
+    const top = cues.length ? this.captions.offsetTop : 0;
+    if (top < 0) this.captions.style.bottom = `calc(${bottom}% + ${top}px)`;
   }
   render(width, height) {
     const { gl, u } = this;

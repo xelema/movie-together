@@ -127,7 +127,7 @@ const expectSubtitleSize = page => expect.poll(async () => page.locator('#video'
   const css = parseFloat(getComputedStyle(video.parentElement).getPropertyValue('--subtitle-size'));
   const captions = document.querySelector('.color-captions');
   const overlay = captions ? parseFloat(getComputedStyle(captions).fontSize) : css;
-  return picture > 0 && Math.abs(css - Math.max(18, picture * 38.4 / 720)) < 1 && Math.abs(overlay - css) < 1;
+  return picture > 0 && Math.abs(css - Math.max(14, picture * 38.4 / 720)) < 1 && Math.abs(overlay - css) < 1;
 })).toBe(true);
 
 // A member stall freezes its element while the room still broadcasts
