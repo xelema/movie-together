@@ -456,6 +456,7 @@ test('room capacity counts distinct sessions and a session holds at most two soc
     sockets.push(socket);
     socket.on('unexpected-response', () => resolve(null));
     socket.on('error', () => resolve(null));
+    socket.on('close', code => resolve(code === 4001 ? 'full' : null));
     socket.on('message', data => { if (JSON.parse(data).type === 'welcome') resolve(socket); });
   });
   const guestA = await join();
@@ -468,9 +469,15 @@ test('room capacity counts distinct sessions and a session holds at most two soc
   assert.ok(await open(guestA));
   const guestB = await join();
   assert.ok(await open(guestB));
+  const guestC = await join();
   // Sessions in the room: A (two sockets) + B = 2 of 8. Six more fill it.
   for (let count = 0; count < 6; count++) assert.ok(await open(await join()), `guest ${count}`);
-  assert.equal(await open(await join()), null);
+  // A newcomer is told at the invite, before any cookie, that the séance is full.
+  const late = await request('/api/join', { method: 'POST', body: { code: room.code } });
+  assert.equal(late.status, 409);
+  assert.equal((await late.json()).error, 'Séance complète.');
+  // A guest who joined earlier and lost the seat gets a readable close, not a bare 403.
+  assert.equal(await open(guestC), 'full');
 });
 
 test('webcam room limits capacity to 2 participants and refuses a 3rd participant', async t => {

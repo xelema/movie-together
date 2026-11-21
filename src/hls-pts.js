@@ -2,8 +2,9 @@
 // segmentation HLS démarre sur une keyframe suivie d'images leading (open
 // GOP) : la keyframe est présentée après elles, son cto est ramené sur la
 // plus petite PTS du fragment et deux échantillons se retrouvent avec la
-// même PTS. Chrome/MSE rejette alors tout l'append, sans erreur. Décaler le
-// cto fautif d'une milliseconde rend les PTS distinctes. Voir docs/playback.md.
+// même PTS. Chrome/MSE rejette alors tout l'append, sans erreur. La keyframe
+// retourne dans le trou laissé à sa vraie place, ou à défaut le cto fautif
+// est décalé d'une milliseconde. Voir docs/playback.md.
 import { open, readFile, writeFile, rename } from 'node:fs/promises';
 
 const CONTAINERS = new Set(['moov', 'trak', 'mdia', 'minf', 'edts', 'moof', 'traf', 'mvex', 'mfra', 'stbl']);
@@ -100,22 +101,50 @@ function collisionsOf(samples) {
   return collisions;
 }
 
-export function scanSegment(buf) {
-  const samples = fragmentSamples(buf);
-  const collisions = collisionsOf(samples);
-  return { timescale: mdhdTimescale(buf), count: samples.length, collisions, ok: samples.length > 0 && !collisions.length };
+// La keyframe ramenée sur la PTS d'une image leading laisse un trou de deux
+// images à sa vraie place, et Chrome saute une image à chaque jointure. Elle
+// y retourne, et l'image leading reprend sa PTS si un ancien passage l'avait
+// décalée d'1 ms. Sans trou net (VFR, plusieurs images manquantes), rien.
+function keyframeSlot(samples) {
+  const [key] = samples;
+  if (!key || key.ctoAt < 0 || samples.some(sample => sample.traf !== key.traf)) return null;
+  const step = samples.map(sample => sample.dur).sort((a, b) => a - b)[samples.length >> 1];
+  const twin = step && samples.find((sample, i) => i && sample.ctoAt >= 0 && Math.abs(sample.pts - key.pts) < step / 4);
+  if (!twin || (!twin.ctoSigned && twin.cto < twin.pts - key.pts)) return null;
+  const rest = samples.filter(sample => sample !== key).map(sample => sample === twin ? key.pts : sample.pts).sort((a, b) => a - b);
+  for (let k = 1; k < rest.length; k++) {
+    const gap = rest[k] - rest[k - 1];
+    if (gap >= 1.5 * step && gap <= 2.5 * step) return { key, twin, pts: rest[k - 1] + Math.round(gap / 2) };
+  }
+  return null;
 }
 
-// La réparation validée dans Chrome : +1 ms (round(timescale/1000), repli 16
-// ticks) sur le cto de l'échantillon en collision, recalculé jusqu'à 8 fois.
-// Seuls ces champs de 4 octets sont réécrits.
+export function scanSegment(buf) {
+  const samples = fragmentSamples(buf);
+  const collisions = collisionsOf(samples), hole = !!keyframeSlot(samples);
+  return { timescale: mdhdTimescale(buf), count: samples.length, collisions, hole, ok: samples.length > 0 && !collisions.length && !hole };
+}
+
+// Repli validé dans Chrome quand la keyframe n'a pas de place : +1 ms
+// (round(timescale/1000), repli 16 ticks) sur le cto de l'échantillon en
+// collision, recalculé jusqu'à 8 fois. Seuls ces champs de 4 octets changent.
 export function repairSegment(buf, { timescale } = {}) {
   const step = Math.round((timescale ?? mdhdTimescale(buf) ?? 16000) / 1000) || 16;
   const fixed = Buffer.from(buf);
   const patches = [];
   let samples = fragmentSamples(fixed);
+  const detected = collisionsOf(samples);
+  const slot = keyframeSlot(samples);
+  if (slot) {
+    const { key, twin, pts } = slot;
+    for (const [sample, after] of [[key, key.cto + pts - key.pts], [twin, twin.cto - (twin.pts - key.pts)]]) {
+      if (after === sample.cto) continue;
+      fixed.writeUInt32BE(after >>> 0, sample.ctoAt);
+      patches.push({ offset: sample.ctoAt, before: sample.cto, after });
+    }
+    samples = fragmentSamples(fixed);
+  }
   let collisions = collisionsOf(samples);
-  const detected = collisions;
   for (let iteration = 0; collisions.length && iteration < 8; iteration++) {
     let touched = false;
     for (const i of new Set(collisions.map(({ i }) => i))) {
@@ -130,7 +159,7 @@ export function repairSegment(buf, { timescale } = {}) {
     samples = fragmentSamples(fixed);
     collisions = collisionsOf(samples);
   }
-  return { buf: fixed, patches, collisions: detected, remaining: collisions };
+  return { buf: fixed, patches, collisions: detected, hole: !!slot, remaining: collisions };
 }
 
 // Les tables du trun vivent dans le moof, avant le mdat qui porte la masse du
@@ -160,16 +189,17 @@ export async function scanFile(file) {
 }
 
 // Réécriture atomique (fichier temporaire dans le même dossier puis rename),
-// seulement quand le scan d'en-tête trouve des doublons.
+// seulement quand le scan d'en-tête trouve un doublon ou une keyframe déplacée.
 export async function repairFile(file, { timescale, dryRun } = {}) {
-  if (!(await scanFile(file)).collisions.length) return { patches: [], collisions: [], remaining: [] };
-  const { buf, patches, collisions, remaining } = repairSegment(await readFile(file), { timescale });
+  const scan = await scanFile(file);
+  if (!scan.collisions.length && !scan.hole) return { patches: [], collisions: [], hole: false, remaining: [] };
+  const { buf, patches, collisions, hole, remaining } = repairSegment(await readFile(file), { timescale });
   if (patches.length && !dryRun) {
     const tmp = `${file}.tmp-${process.pid}`;
     await writeFile(tmp, buf);
     await rename(tmp, file);
   }
-  return { patches, collisions, remaining };
+  return { patches, collisions, hole, remaining };
 }
 
 // Jointures entre fragments. ffmpeg écrit la durée d'un échantillon comme

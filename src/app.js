@@ -219,8 +219,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   app.post('/api/join', inviteLimiter, (req, res) => {
     const room = hub.findByCode(req.body.code);
     if (!room) throw fail(404, 'Code invalide ou expiré.');
-    if (room.webcam && hub.countSessions(room) >= 2 && !req.session?.rooms?.has(room.id)) {
-      throw fail(409, 'Séance complète (2 personnes maximum avec caméra).');
+    if (!req.session?.rooms?.has(room.id) && hub.countSessions(room) >= (room.webcam ? 2 : settings.get('maxClients'))) {
+      throw fail(409, room.webcam ? 'Séance complète (2 personnes maximum avec caméra).' : 'Séance complète.');
     }
     const session = req.session ?? { admin: false, rooms: new Set(), expires: Date.now() + ttlMs() };
     session.rooms.add(room.id);
@@ -661,8 +661,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   });
   app.get('/vendor/hls.js', (req, res) => res.sendFile(path.join(ROOT, 'node_modules/hls.js/dist/hls.min.js'), { maxAge: '1d' }));
   app.get('/admin', (req, res) => res.sendFile(path.join(ROOT, 'public/index.html')));
-  for (const file of ['plyr.js', 'plyr.css', 'plyr.svg']) app.get(`/vendor/${file}`, (req, res) =>
-    res.sendFile(path.join(ROOT, 'node_modules/plyr/dist', file), { maxAge: '1d' }));
+  for (const [file, source] of [['plyr.js', 'plyr.min.js'], ['plyr.css', 'plyr.css'], ['plyr.svg', 'plyr.svg']]) app.get(`/vendor/${file}`, (req, res) =>
+    res.sendFile(path.join(ROOT, 'node_modules/plyr/dist', source), { maxAge: '1d' }));
   app.use('/fonts', express.static(path.join(ROOT, 'public/fonts'), { maxAge: '30d' }));
   app.use(express.static(path.join(ROOT, 'public')));
   app.use((req, res) => res.status(404).json({ error: 'Page introuvable.' }));

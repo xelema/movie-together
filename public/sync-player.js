@@ -93,8 +93,9 @@ export class SyncPlayer {
       if (this.pendingPauses) { this.pendingPauses--; return; }
       if (this.state?.phase === 'playing' && this.serverTime() > this.state.startsAt) this.command('pause');
     });
+    // A seek before the first decoded frame is the engine's own jump to its start position, never the viewer's.
     this.listen(video, 'seeking', () => {
-      if (!selfCaused(performance.now(), this.internalUntil) && this.state) this.command('seek', this.position());
+      if (this.decoded && !selfCaused(performance.now(), this.internalUntil) && this.state) this.command('seek', this.position());
     });
     this.listen(document, 'visibilitychange', () => {
       if (!document.hidden && this.activated) this.acquireWakeLock();
@@ -216,9 +217,10 @@ export class SyncPlayer {
     this.emit('ws', { ev: 'connect', to: 0, retries: this.retries || undefined });
     this.drainedAt = performance.now();
     this.ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws?room=${this.roomId}`);
+    let opened = false;
     this.ws.onopen = () => {
       this.emit('ws', { ev: 'open', to: 1, ms: Math.round(performance.now() - connectAt), retries: this.retries || undefined });
-      this.retries = 0;
+      this.retries = 0; opened = true;
       if (this.name) this.send({ type: 'identify', name: this.name });
       this.clock = new Clock(); this.lastMessage = performance.now(); this.sequence = 0;
       this.ping();
@@ -266,9 +268,23 @@ export class SyncPlayer {
       clearInterval(this.initialPings); this.pauseLocal(); clearTimeout(this.startTimer); this.state = null;
       clearTimeout(this.seekTimer); this.seekTimer = null; this.seekWanted = undefined;
       if ([1000, 1008].includes(event.code)) this.failure = 'Room fermée ou session expirée.';
-      this.onStatus(event.code === 1000 || event.code === 1008 ? 'Room fermée ou session expirée.' : 'Connexion perdue. Séance en pause, reconnexion…');
-      // Back off reconnects so a down server is not hammered every two seconds.
-      if (!this.disposed && ![1000, 1008].includes(event.code)) this.retry = setTimeout(() => this.connect(), Math.min(2000 * 2 ** this.retries++, 30_000));
+      const full = event.code === 4001;
+      this.onStatus(event.code === 1000 || event.code === 1008 ? 'Room fermée ou session expirée.'
+        : full ? 'Séance complète. Nouvelle tentative automatique.' : 'Connexion perdue. Séance en pause, reconnexion…');
+      // Back off reconnects so a down server is not hammered every two seconds. A full séance retries
+      // at a steady pace instead, so a freed seat is taken without a reload.
+      if (this.disposed || [1000, 1008].includes(event.code)) return;
+      const retry = () => { this.retry = setTimeout(() => this.connect(), full ? 15_000 : Math.min(2000 * 2 ** this.retries++, 30_000)); };
+      // A restart forgets sessions and rooms: the refused upgrade reads as a plain drop,
+      // so after two failed opens the room itself says whether a retry can ever succeed.
+      this.failedOpens = opened || full ? 0 : (this.failedOpens ?? 0) + 1;
+      if (this.failedOpens < 2) { retry(); return; }
+      fetch(`/api/rooms/${this.roomId}`).then(response => [401, 404].includes(response.status), () => false).then(gone => {
+        if (this.disposed) return;
+        if (!gone) { retry(); return; }
+        this.failure = 'Room fermée ou session expirée.';
+        this.onStatus(this.failure);
+      });
     };
     this.ws.onerror = () => {
       this.emit('ws', { ev: 'error', to: this.ws?.readyState, ms: Math.round(performance.now() - connectAt) });
@@ -351,9 +367,10 @@ export class SyncPlayer {
     this.hdrPipeline = undefined; this.probing = false; this.updateColorPath();
     if (this.failure) return;
     const url = `/media/${movie.id}/${this.rendition.manifest}`;
+    const timelineOffset = this.rendition.timelineOffset ?? 0;
     this.backend = createBackend(this.video, url,
-      { timelineOffset: this.rendition.timelineOffset ?? 0, bufferSeconds: this.bufferSeconds,
-        minBuffer: this.sync.minBuffer, bitrate: movie.bitrate },
+      { timelineOffset, bufferSeconds: this.bufferSeconds, minBuffer: this.sync.minBuffer, bitrate: movie.bitrate,
+        startPosition: this.target() > 0 ? this.target() + timelineOffset : -1 },
       { onTracksChanged: () => { this.applyTrackChoices(); this.tracks(); },
         onBuffered: () => { if (this.video.readyState >= 3) this.recovering = false; },
         onStalled: () => { this.pauseLocal(); this.report(false); this.recovering = true; },
@@ -369,7 +386,10 @@ export class SyncPlayer {
   updateColorPath() {
     const color = this.rendition?.color;
     if (!color || !colorNeedsRenderer(color)) { this.setShader(false); return; }
-    if (this.forceShader || !this.hdrScreen.matches || this.hdrPipeline === false) { this.setShader(true); return; }
+    // An engine that does not know the dynamic-range query (older TV browsers) says nothing about the
+    // screen: it goes through the decoder probe like an HDR screen instead of the 4K shader a weak SoC cannot hold.
+    const sdrScreen = !this.hdrScreen.matches && this.hdrScreen.media !== 'not all';
+    if (this.forceShader || sdrScreen || this.hdrPipeline === false) { this.setShader(true); return; }
     if (this.hdrPipeline === true) { this.setShader(false); return; }
     if (this.probing) return;
     this.probing = true; const token = this.loadToken;

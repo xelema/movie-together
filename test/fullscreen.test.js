@@ -12,13 +12,14 @@ const FULL = { left: 0, top: 0, width: 900, height: 620 };
 const WINDOWED = { left: 8, top: 8, width: 884, height: 150 };
 
 const rig = (t, { paintedRect = WINDOWED, fullscreenElement = null, display = { width: 900, height: 620 },
-  exitFullscreen, requestFullscreen } = {}) => {
+  exitFullscreen, requestFullscreen, media } = {}) => {
   const names = ['document', 'window', 'screen', 'innerWidth', 'innerHeight'];
   const saved = names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
   const calls = [], events = [], listeners = {};
   const classes = new Set();
   const screenEl = {
     id: 'screen',
+    classList: { contains: name => classes.has(name) },
     // Un élément plein écran recouvre la fenêtre courante : la boîte suit donc
     // le viewport, d'où les mesures de sortie subie qui la lisent rétrécie.
     getBoundingClientRect: () => (paintedRect === FULL
@@ -37,13 +38,13 @@ const rig = (t, { paintedRect = WINDOWED, fullscreenElement = null, display = { 
   };
   const container = {
     listeners: {},
-    classList: { contains: name => classes.has(name) },
+    classList: { contains: () => false },
     addEventListener: (name, fn) => (container.listeners[name] ??= []).push(fn),
     removeEventListener: (name, fn) => { container.listeners[name] = (container.listeners[name] ?? []).filter(other => other !== fn); },
   };
   const player = {
     config: { classNames: { fullscreen: { fallback: 'plyr--fullscreen-fallback' } } },
-    elements: { container },
+    elements: { container }, media,
     fullscreen: { toggleFallback: value => {
       calls.push(`fallback:${value}`);
       classes[value ? 'add' : 'delete']('plyr--fullscreen-fallback');
@@ -206,4 +207,22 @@ test('la surcouche CSS de Plyr sort et entre sans toucher l\'API', async t => {
   delete plain.screenEl.requestFullscreen;
   await plain.fullscreen.toggle();
   assert.deepEqual(plain.calls, ['fallback:true']);
+  // iPhone : le second appui sort de la surcouche au lieu d'y rentrer encore.
+  await plain.fullscreen.toggle();
+  assert.deepEqual(plain.calls, ['fallback:true', 'fallback:false']);
+});
+
+test('un film paysage verrouille l\'écran en paysage le temps du plein écran', t => {
+  const locks = [];
+  const orientation = { lock: kind => { locks.push(kind); return Promise.resolve(); }, unlock: () => locks.push('unlock') };
+  const { grant, doc, listeners } = rig(t, { display: { width: 900, height: 620, orientation },
+    media: { videoWidth: 1920, videoHeight: 1080 } });
+  grant();
+  assert.deepEqual(locks, ['landscape']);
+  doc.fullscreenElement = null;
+  for (const fn of listeners.fullscreenchange) fn();
+  assert.deepEqual(locks, ['landscape', 'unlock']);
+  const portrait = rig(t, { display: { width: 900, height: 620, orientation }, media: { videoWidth: 1080, videoHeight: 1920 } });
+  portrait.grant();
+  assert.deepEqual(locks, ['landscape', 'unlock']);
 });

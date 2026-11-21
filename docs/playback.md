@@ -331,14 +331,21 @@ silence — aucune erreur, aucun quota — et la lecture gèle définitivement �
 endroit. Aucune option de muxing testée n'évite ce clamp.
 
 Après le packaging, `prepareMovie` scanne donc les tables `trun` de chaque
-segment (`src/hls-pts.js`, en-têtes seulement) et décale le `cto` de
-l'échantillon en collision d'une milliseconde — `round(timescale/1000)` ticks,
-le timescale étant lu dans le `mdhd` de l'init. Seul ce champ de 4 octets est
-réécrit, en place et atomiquement ; un second passage ne change rien.
+segment (`src/hls-pts.js`, en-têtes seulement). La keyframe ramenée laisse un
+trou de deux images à sa vraie place, et Chrome sautait une image à chaque
+jointure (une saccade toutes les 4 s sur un HEVC open GOP). Son `cto` est donc
+réécrit pour qu'elle retrouve ce trou, le pas étant la durée médiane des
+échantillons. Sans trou net (VFR, plusieurs images manquantes), le repli décale
+le `cto` de l'échantillon en collision d'une milliseconde, soit
+`round(timescale/1000)` ticks, le timescale étant lu dans le `mdhd` de l'init.
+Seuls des champs de 4 octets sont réécrits, en place et atomiquement. Un second
+passage ne change rien. Un segment réparé par l'ancien décalage d'1 ms est
+reconnu (deux PTS à moins d'un quart d'image et un trou de deux images) et
+remis sur sa grille par `--fix`.
 
 Pour vérifier ou réparer une bibliothèque déjà préparée :
 
-    node scripts/repair-hls-pts.mjs --check data/movies   # lecture seule, exit 1 si doublon
+    node scripts/repair-hls-pts.mjs --check data/movies   # lecture seule, exit 1 si quelque chose à réparer
     node scripts/repair-hls-pts.mjs --fix --journal rep.jsonl data/movies
 
 ### Jointures entre fragments

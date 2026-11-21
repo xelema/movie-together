@@ -127,7 +127,7 @@ const expectSubtitleSize = page => expect.poll(async () => page.locator('#video'
   const css = parseFloat(getComputedStyle(video.parentElement).getPropertyValue('--subtitle-size'));
   const captions = document.querySelector('.color-captions');
   const overlay = captions ? parseFloat(getComputedStyle(captions).fontSize) : css;
-  return picture > 0 && Math.abs(css - Math.max(18, picture * 38.4 / 720)) < 1 && Math.abs(overlay - css) < 1;
+  return picture > 0 && Math.abs(css - Math.max(14, picture * 38.4 / 720)) < 1 && Math.abs(overlay - css) < 1;
 })).toBe(true);
 
 // A member stall freezes its element while the room still broadcasts
@@ -629,6 +629,19 @@ test('the picture layout holds across viewports and fullscreen', async () => {
       if (width === 390) await expect.poll(() => guest.locator('#video').evaluate(video =>
         Array.from(video.textTracks).some(track => Array.from(track.activeCues ?? []).some(cue => cue.line < 80)))).toBe(true);
       await guest.screenshot({ path: `test-results/watch-${name}.png`, fullPage: true });
+      if (width !== 390) continue;
+      // iPhone has no element Fullscreen API: Plyr's CSS fallback must cover
+      // the viewport, lock the page scroll, and come back out on the next tap.
+      await guest.evaluate(() => { document.getElementById('screen').requestFullscreen = undefined; });
+      const box = () => guest.evaluate(() => {
+        const rect = document.getElementById('screen').getBoundingClientRect();
+        return [rect.width, rect.height, getComputedStyle(document.body).overflow];
+      });
+      await clickControl(guest, '[data-plyr=fullscreen]', async () => (await box())[1] === height);
+      expect(await box()).toEqual([width, height, 'hidden']);
+      await clickControl(guest, '[data-plyr=fullscreen]', async () => (await box())[1] < height);
+      expect((await box())[2]).not.toBe('hidden');
+      await guest.evaluate(() => { delete document.getElementById('screen').requestFullscreen; });
     }
     // A track switch is local to the viewer: it must not pause the room.
     await clickControl(guest, '#open-settings', () => guest.locator('#player-settings').isVisible());

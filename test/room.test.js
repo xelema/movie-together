@@ -54,6 +54,27 @@ test('seek rejects stale reports and commands, and waits for both seeks to compl
   report('a'); report('b'); assert.equal(room.phase, 'playing');
 });
 
+test('a start acknowledgement delayed by a slow link does not restart the room', () => {
+  const { room, command, report, advance } = setup();
+  command('play'); report('a', { ackStartsAt: null }); report('b', { ackStartsAt: null });
+  assert.equal(room.startsAt, 1000);
+  report('a');
+  advance(1300); room.tick();
+  assert.equal(room.phase, 'playing');
+  report('b');
+  advance(500); room.tick();
+  assert.equal(room.phase, 'playing');
+});
+
+test('a member that never acknowledges the start still freezes the room', () => {
+  const { room, command, report, advance } = setup();
+  command('play'); report('a', { ackStartsAt: null }); report('b', { ackStartsAt: null });
+  report('a');
+  advance(1600); room.tick();
+  assert.equal(room.phase, 'buffering');
+  assert.equal(room.cause, 'no-ack');
+});
+
 test('missing heartbeats pause playback even without new network messages', () => {
   const { room, start, advance } = setup(); start();
   advance(3000); room.tick(); assert.equal(room.phase, 'buffering');
@@ -107,13 +128,6 @@ test('near the end, readiness only requires the remaining movie', () => {
   report('a', { bufferedUntil: 120 }); report('b', { bufferedUntil: 120 });
   advance(3000); room.tick();
   assert.equal(room.position, 120); assert.equal(room.phase, 'paused');
-});
-
-test('cancels a scheduled start if a participant has not acknowledged it', () => {
-  const { room, command, report, advance } = setup();
-  command('play'); report('a'); report('b'); report('a');
-  advance(700); room.tick();
-  assert.equal(room.phase, 'buffering');
 });
 
 test('a pause from a slightly outdated participant still stops the group', () => {

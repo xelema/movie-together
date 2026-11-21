@@ -196,7 +196,10 @@ export class Room {
     if (this.phase === 'playing') {
       const stuck = [...this.members.keys()].find(id => !healthy(this.members.get(id).report, this.lowBuffer));
       if (stuck) this.freeze(cause ?? this.memberStatus(stuck).reason ?? 'unknown');
-      else if (time >= this.startsAt - 300 && !reports.every(report => report.ackStartsAt === this.startsAt)) {
+      // The ack only proves a member armed its start timer. A slow link (Seoul on 4G) can land it after the start
+      // itself, which is harmless: the member still starts on time or catches up through drift correction. Waiting
+      // until after the start keeps one slow member from restarting the room in a loop.
+      else if (time >= this.startsAt + 500 && !reports.every(report => report.ackStartsAt === this.startsAt)) {
         this.freeze('no-ack');
       }
     } else if (this.wantsPlay && this.duration !== null && reports.length &&

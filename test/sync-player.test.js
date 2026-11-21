@@ -3,6 +3,22 @@ import assert from 'node:assert/strict';
 import { SyncPlayer } from '../public/sync-player.js';
 import { Room } from '../src/sync/room.js';
 
+test('an engine without the dynamic-range query probes the decoder instead of forcing the shader', () => {
+  const colorPath = media => {
+    const calls = [];
+    const player = Object.assign(Object.create(SyncPlayer.prototype), {
+      rendition: { color: { version: 1, transfer: 'smpte2084', primaries: 'bt2020', matrix: 'bt2020nc', bitDepth: 10 } },
+      hdrScreen: { matches: false, media }, loadToken: 1, setShader: on => calls.push(on),
+    });
+    const saved = globalThis.navigator;
+    Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true, writable: true });
+    try { player.updateColorPath(); } finally { Object.defineProperty(globalThis, 'navigator', { value: saved, configurable: true, writable: true }); }
+    return { calls, probing: player.probing };
+  };
+  assert.deepEqual(colorPath('(dynamic-range: high)'), { calls: [true], probing: undefined });
+  assert.deepEqual(colorPath('not all'), { calls: [], probing: true });
+});
+
 // Minimal DOM for a real SyncPlayer: recorded listeners, a scriptable media
 // element and a socket whose sent messages the test reads back.
 function fakeDom(t) {
@@ -184,4 +200,32 @@ test('an automatic activation that stalls asks for a click instead of loading fo
   assert.equal(player.activating, false);
   assert.equal(player.activationBlocked, true);
   assert.equal(activations.at(-1), false);
+});
+
+test('after a server restart the player stops retrying once the room is gone', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const { create } = fakeDom(t);
+  const { player } = create();
+  const statuses = [], asked = [];
+  player.onStatus = message => statuses.push(message);
+  const saved = globalThis.fetch;
+  t.after(() => { globalThis.fetch = saved; });
+  let status = 503;
+  globalThis.fetch = url => { asked.push(url); return Promise.resolve({ status }); };
+  player.ws.onclose({ code: 1006 });
+  assert.deepEqual(asked, []);
+  t.mock.timers.tick(2000);
+  player.ws.onclose({ code: 1006 });
+  await new Promise(setImmediate);
+  assert.deepEqual(asked, ['/api/rooms/room']);
+  assert.equal(player.failure, undefined);
+  t.mock.timers.tick(4000);
+  status = 401;
+  player.ws.onclose({ code: 1006 });
+  await new Promise(setImmediate);
+  assert.equal(player.failure, 'Room fermée ou session expirée.');
+  assert.equal(statuses.at(-1), 'Room fermée ou session expirée.');
+  const sockets = asked.length;
+  t.mock.timers.tick(60_000);
+  assert.equal(asked.length, sockets);
 });

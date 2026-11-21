@@ -513,14 +513,33 @@ export class ColorRenderer {
       this.listen(video.textTracks, 'change', () => this.updateCaptions());
       this.listen(video.textTracks, 'addtrack', event => this.watchTrack(event.track));
       for (const track of video.textTracks) this.watchTrack(track);
+      // Chrome perd des rappels rVFC quand la cadence du film approche celle de
+      // l'écran (60p sur 60 Hz : ~42 images/s). Au-delà de ~36 i/s le rendu
+      // échantillonne chaque vsync, 4 ms après, quand l'image du vsync est prête.
+      this.sampleVotes = 0;
       const frame = (now, metadata) => {
         if (this.disposed || this.failed) return;
         this.draw(false, metadata?.presentedFrames);
+        if (this.fastFilm(metadata?.mediaTime)) { this.sampled(); return; }
         this.callback = video.requestVideoFrameCallback ? video.requestVideoFrameCallback(frame) : requestAnimationFrame(frame);
       };
       frame();
     } catch (error) { this.dispose(); throw error; }
     finally { for (const shader of shaders) gl.deleteShader(shader); }
+  }
+  fastFilm(mediaTime) {
+    const step = mediaTime - this.lastMediaTime;
+    this.lastMediaTime = mediaTime;
+    if (step > 0 && step < 0.1) this.period = Math.min(this.period ?? Infinity, step);
+    return this.period < 0.027 && ++this.sampleVotes >= 30;
+  }
+  sampled() {
+    const tick = () => {
+      if (this.disposed || this.failed) return;
+      this.raf = requestAnimationFrame(tick);
+      if (!this.video.paused) { clearTimeout(this.timer); this.timer = setTimeout(() => this.draw(false), 4); }
+    };
+    tick();
   }
   listen(target, event, handler) { target.addEventListener(event, handler); this.listeners.push(() => target.removeEventListener(event, handler)); }
   watchTrack(track) { this.listen(track, 'cuechange', () => this.updateCaptions()); this.updateCaptions(); }
@@ -540,8 +559,12 @@ export class ColorRenderer {
     this.captions.replaceChildren(...cues.map(cue => {
       const line = document.createElement('div'); line.append(cue.getCueAsHTML()); return line;
     }));
-    const line = cues[0]?.line;
-    this.captions.style.bottom = `${typeof line === 'number' && !cues[0].snapToLines ? 100 - line : 16}%`;
+    const line = cues[0]?.line, bottom = typeof line === 'number' && !cues[0].snapToLines ? 100 - line : 16;
+    this.captions.style.bottom = `${bottom}%`;
+    // Lifted over the control bar of a short phone picture, a long cue grows
+    // past the top edge: it stops there and overlaps the bar instead.
+    const top = cues.length ? this.captions.offsetTop : 0;
+    if (top < 0) this.captions.style.bottom = `calc(${bottom}% + ${top}px)`;
   }
   render(width, height) {
     const { gl, u } = this;
@@ -619,13 +642,19 @@ export class ColorRenderer {
         // bugzilla 1884282). On détecte la frame uniforme et la vidéo native reprend le relais.
         // Une frame en pause peut être légitimement unie : le test n'a de sens qu'en lecture.
         // La vidéo native affiche alors ses propres sous-titres : l'overlay se tait aussi.
-        if (!video.paused && !this.importVerified) {
+        // Un film commence souvent par plusieurs secondes de noir : un tirage noir uni ne
+        // prouve rien et la sonde continue. Masquer le canvas là-dessus laissait voir la
+        // vidéo native délavée sur la première vraie image. Un import resté noir 30 s
+        // (15 sondes) est quand même traité comme mort.
+        const sample = !video.paused && !this.importVerified ? this.deadImport() : null;
+        this.blackStreak = sample === 'black' ? (this.blackStreak || 0) + 1 : 0;
+        if (sample !== null && (sample !== 'black' || this.blackStreak >= 15)) {
           // Un seul tirage uniforme peut etre une frame noire du film : on ne
           // bascule sur la video native qu'apres deux checks morts d'affilee,
           // sinon le canvas clignote sur les imports intermittents. Un tirage
           // non uniforme prouve l'import : readPixels ne sert alors plus jamais
           // jusqu'à la fin de la lecture.
-          const deadFrame = this.deadImport();
+          const deadFrame = sample !== false;
           this.deadStreak = deadFrame ? (this.deadStreak || 0) + 1 : 0;
           if (deadFrame) {
             const dead = this.deadStreak >= 2;
@@ -660,12 +689,13 @@ export class ColorRenderer {
       if (!reference) reference = [...pixel];
       else if (pixel[0] !== reference[0] || pixel[1] !== reference[1] || pixel[2] !== reference[2]) return false;
     }
-    return true;
+    return reference[0] <= 3 && reference[1] <= 3 && reference[2] <= 3 ? 'black' : true;
   }
   dispose() {
     this.disposed = true; clearTimeout(this.retryTimer); this.listeners.forEach(remove => remove());
     this.resizeObserver?.disconnect();
     if (this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.callback); else cancelAnimationFrame(this.callback);
+    if (this.raf) { cancelAnimationFrame(this.raf); clearTimeout(this.timer); }
     if (this.gl) {
       for (const tex of [this.texture, this.toneTex, this.featureTex, this.featureLowTex, this.gamutTex, this.ditherTex])
         if (tex) this.gl.deleteTexture(tex);

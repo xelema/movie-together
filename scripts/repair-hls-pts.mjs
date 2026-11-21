@@ -50,20 +50,20 @@ async function timescaleOf(file) {
   return timescales[variant] ?? Object.values(timescales)[0] ?? null;
 }
 
-let seen = 0, dupSegments = 0, dupTotal = 0, patchedFields = 0, left = 0;
+let seen = 0, holes = 0, dupSegments = 0, dupTotal = 0, patchedFields = 0, left = 0;
 const variants = new Map();
 for (const target of targets) {
   for (const file of await segments(target)) {
     seen++;
     const timescale = await timescaleOf(file);
-    const { patches = [], collisions, remaining = [] } = fix
+    const { patches = [], collisions, hole, remaining = [] } = fix
       ? await repairFile(file, { timescale, dryRun })
-      : { collisions: (await scanFile(file)).collisions };
-    dupTotal += collisions.length; left += remaining.length; patchedFields += patches.length;
-    if (collisions.length) {
+      : await scanFile(file);
+    dupTotal += collisions.length; left += remaining.length; patchedFields += patches.length; holes += hole ? 1 : 0;
+    if (collisions.length || hole) {
       dupSegments++;
       const pairs = collisions.map(c => `${c.i}<->${c.j} pts=${c.pts}`).join(', ');
-      console.log(`${file}: ${collisions.length} doublon(s) [${pairs}]` +
+      console.log(`${file}: ${collisions.length} doublon(s) [${pairs}]${hole ? ', keyframe hors de sa place' : ''}` +
         (fix ? ` -> ${patches.length} cto décalé(s)${dryRun ? ' (dry-run)' : ''}` : ''));
       if (journal && patches.length && !dryRun) {
         for (const p of patches) await appendFile(journal, JSON.stringify({ file, ...p }) + '\n');
@@ -76,7 +76,7 @@ for (const target of targets) {
     variants.get(variant).push(file);
   }
 }
-console.log(`${seen} segment(s), ${dupSegments} avec PTS dupliquées (${dupTotal} doublon(s))` +
+console.log(`${seen} segment(s), ${dupSegments} à réparer (${dupTotal} doublon(s), ${holes} keyframe(s) hors de sa place)` +
   (fix ? `, ${patchedFields} champ(s) cto réécrit(s)${dryRun ? ' — dry-run, rien écrit' : ''}` : ''));
 
 let seamTotal = 0, seamFields = 0, seamLeft = 0;
@@ -93,4 +93,4 @@ for (const files of variants.values()) {
 }
 console.log(`${seamTotal} jointure(s) débordante(s)` +
   (fix ? `, ${seamFields} champ(s) de jointure réécrit(s)${dryRun ? ' — dry-run, rien écrit' : ''}` : ''));
-process.exit(fix ? (left || seamLeft ? 1 : 0) : (dupTotal || seamTotal ? 1 : 0));
+process.exit(fix ? (left || seamLeft ? 1 : 0) : (dupSegments || seamTotal ? 1 : 0));

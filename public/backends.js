@@ -99,11 +99,13 @@ export class HlsJsBackend {
   recoversErrors = true;
   clock = () => performance.now();
 
-  constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 8, bitrate } = {},
+  constructor(video, url, { timelineOffset = 0, bufferSeconds = 30, minBuffer = 8, bitrate, startPosition = -1 } = {},
     { onTracksChanged, onBuffered, onStalled, onFatal, onEvent } = {}) {
     this.video = video; this.timelineOffset = timelineOffset; this.bitrate = bitrate; this.minBuffer = minBuffer;
     this.mediaRecoveries = 0; this.networkRecoveries = 0; this.recoveredAt = -Infinity;
-    this.hls = new window.Hls({ maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
+    // startPosition lets a late joiner fetch the segment at the room position first, instead of the
+    // opening minutes it would throw away after its first seek.
+    this.hls = new window.Hls({ startPosition, maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
       maxBufferSize: bufferBytes(bufferSeconds, bitrate), backBufferLength: 60,
       startFragPrefetch: true, enableWorker: true,
       maxBufferHole: 0.5, highBufferWatchdogPeriod: 2, nudgeMaxRetry: 5, nudgeOffset: 0.1,

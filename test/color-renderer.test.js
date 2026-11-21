@@ -91,6 +91,35 @@ test('renderer falls back to the native video while the texture import is dead',
   assert.equal(renderer.captions.style.display, '');
 });
 
+test('a black intro keeps the renderer visible and probing until a real image arrives', t => {
+  t.mock.method(performance, 'now', () => now);
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = { hidden: false }; globalThis.window = { devicePixelRatio: 1 };
+  let now = 0;
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+    }
+  });
+  const gl = new Proxy({ NO_ERROR: 0, getParameter: () => 8192, getError: () => 0,
+    readPixels(x, y, w, h, f, t, pixel) { pixel.fill(0); pixel[3] = 255; } },
+    { get: (target, prop) => (prop in target ? target[prop] : /^[A-Z_0-9]+$/.test(String(prop)) ? 0 : () => {}) });
+  const renderer = Object.assign(Object.create(ColorRenderer.prototype), {
+    canvas: { width: 800, height: 400, dataset: {}, style: {} }, captions: { style: {} },
+    video: { readyState: 4, videoWidth: 800, videoHeight: 400, currentTime: 1, paused: false },
+    gl,
+  });
+  for (let probe = 0; probe < 10; probe++) {
+    now += 2000; renderer.video.currentTime += 2; renderer.draw();
+    assert.notEqual(renderer.canvas.style.visibility, 'hidden', `probe ${probe}`);
+  }
+  assert.equal(renderer.importVerified, undefined);
+  renderer.gl.readPixels = (x, y, w, h, f, t, pixel) => { pixel[0] = x & 255; };
+  now += 2000; renderer.draw();
+  assert.equal(renderer.importVerified, true);
+  assert.equal(renderer.canvas.style.visibility, '');
+});
+
 test('captions deduplicate cues shared by several showing tracks', t => {
   const previous = { document: globalThis.document };
   globalThis.document = { hidden: false, createElement: () => ({ append() {} }) };
@@ -149,6 +178,56 @@ test('renderer skips an already-presented frame and stays silent during resume g
   // La pause conserve sa sonde, inoffensive sur une image figée.
   renderer.video.paused = true; renderer.draw();
   assert.equal(errors, 2); assert.equal(reads, 2);
+});
+
+test('a long cue lifted over the controls stops at the top of the picture', () => {
+  const cue = { startTime: 1, endTime: 3, text: '긴 자막', line: 36, snapToLines: false, getCueAsHTML: () => '긴 자막' };
+  const previous = globalThis.document;
+  globalThis.document = { createElement: () => ({ append() {} }) };
+  try {
+    const renderer = Object.assign(Object.create(ColorRenderer.prototype), {
+      video: { textTracks: [{ mode: 'showing', kind: 'subtitles', activeCues: [cue] }] },
+      captions: { style: {}, offsetTop: 4, replaceChildren() {} },
+    });
+    renderer.updateCaptions();
+    assert.equal(renderer.captions.style.bottom, '64%');
+    renderer.captions.offsetTop = -30;
+    renderer.updateCaptions();
+    assert.equal(renderer.captions.style.bottom, 'calc(64% + -30px)');
+  } finally { if (previous === undefined) delete globalThis.document; else globalThis.document = previous; }
+});
+
+test('a 50 or 60 fps film moves from video-frame callbacks to a vsync-sampled draw', t => {
+  const votes = fps => {
+    const renderer = Object.assign(Object.create(ColorRenderer.prototype), { sampleVotes: 0 });
+    for (let i = 0, time = 0; i < 40; i++, time += (1 + i % 2) / fps) if (renderer.fastFilm(time)) return i;
+    return null;
+  };
+  assert.equal(votes(24), null);
+  assert.equal(votes(30), null);
+  assert.ok(votes(50) > 20);
+  assert.ok(votes(60) > 20);
+  const frames = [], timers = [], draws = [];
+  const saved = { requestAnimationFrame: globalThis.requestAnimationFrame, cancelAnimationFrame: globalThis.cancelAnimationFrame };
+  globalThis.requestAnimationFrame = callback => frames.push(callback);
+  globalThis.cancelAnimationFrame = () => {};
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.after(() => Object.assign(globalThis, saved));
+  const renderer = Object.assign(Object.create(ColorRenderer.prototype), {
+    video: { paused: true }, draw: force => draws.push(force) });
+  renderer.sampled();
+  t.mock.timers.tick(10);
+  assert.deepEqual(draws, []);
+  renderer.video.paused = false;
+  frames.at(-1)();
+  t.mock.timers.tick(3);
+  assert.deepEqual(draws, []);
+  t.mock.timers.tick(1);
+  assert.deepEqual(draws, [false]);
+  renderer.disposed = true;
+  frames.at(-1)();
+  t.mock.timers.tick(10);
+  assert.equal(draws.length, 1);
 });
 
 test('the WebGL context is requested on the high-performance GPU', t => {

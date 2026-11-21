@@ -32,7 +32,7 @@ const clean = segment([{ dur: 40, size: 8, cto: 80 }, { dur: 40, size: 8, cto: 0
 const dup = segment([{ dur: 40, size: 8, cto: 0x1000027 }, { dur: 40, size: 8, cto: 0xffffff }, { dur: 40, size: 8, cto: 50 }]);
 
 test('scanSegment : segment sain ok, collision PTS détectée', () => {
-  assert.deepEqual(scanSegment(clean), { timescale: null, count: 3, collisions: [], ok: true });
+  assert.deepEqual(scanSegment(clean), { timescale: null, count: 3, collisions: [], hole: false, ok: true });
   const scan = scanSegment(dup);
   assert.equal(scan.count, 3);
   assert.equal(scan.ok, false);
@@ -61,6 +61,31 @@ test('repairSegment : le pas suit le timescale (1 ms) et itère les collisions e
   const repaired = repairSegment(pile);
   assert.equal(repaired.patches.length, 6);
   assert.ok(scanSegment(repaired.buf).ok);
+});
+
+// Open GOP coupé sur une keyframe : K (vraie PTS 4480) ramenée sur L0 (3200),
+// L1 à 3840, puis P et B. Le trou de deux images est en 4480.
+const openGop = (nudge = 0) => segment([
+  { dur: 640, size: 8, cto: 3200 }, { dur: 640, size: 8, cto: 3200 }, { dur: 640, size: 8, cto: 1920 + nudge },
+  { dur: 640, size: 8, cto: 3200 }, { dur: 640, size: 8, cto: 3200 }]);
+
+test('repairSegment : la keyframe retourne à sa place, les images leading gardent la leur', () => {
+  const { buf, patches, collisions, hole } = repairSegment(openGop());
+  assert.equal(collisions.length, 1); assert.equal(hole, true);
+  assert.deepEqual(patches.map(({ before, after }) => [before, after]), [[3200, 4480]]);
+  assert.deepEqual(presentationTimes(buf), [4480, 3840, 3200, 5120, 5760]);
+  assert.ok(scanSegment(buf).ok);
+  assert.equal(repairSegment(buf).patches.length, 0);
+});
+
+test('repairSegment : un segment déjà décalé d\'1 ms retrouve une grille régulière', () => {
+  const nudged = openGop(16);
+  assert.deepEqual(scanSegment(nudged).collisions, []);
+  assert.equal(scanSegment(nudged).ok, false);
+  const { buf, patches } = repairSegment(nudged);
+  assert.equal(patches.length, 2);
+  assert.deepEqual(presentationTimes(buf), [4480, 3840, 3200, 5120, 5760]);
+  assert.ok(scanSegment(buf).ok);
 });
 
 test('scanFile lit la même table que le buffer complet', async t => {
