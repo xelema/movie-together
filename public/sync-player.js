@@ -376,7 +376,10 @@ export class SyncPlayer {
   updateColorPath() {
     const color = this.rendition?.color;
     if (!color || !colorNeedsRenderer(color)) { this.setShader(false); return; }
-    if (this.forceShader || !this.hdrScreen.matches || this.hdrPipeline === false) { this.setShader(true); return; }
+    // An engine that does not know the dynamic-range query (older TV browsers) says nothing about the
+    // screen: it goes through the decoder probe like an HDR screen instead of the 4K shader a weak SoC cannot hold.
+    const sdrScreen = !this.hdrScreen.matches && this.hdrScreen.media !== 'not all';
+    if (this.forceShader || sdrScreen || this.hdrPipeline === false) { this.setShader(true); return; }
     if (this.hdrPipeline === true) { this.setShader(false); return; }
     if (this.probing) return;
     this.probing = true; const token = this.loadToken;

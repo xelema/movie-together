@@ -3,6 +3,22 @@ import assert from 'node:assert/strict';
 import { SyncPlayer } from '../public/sync-player.js';
 import { Room } from '../src/sync/room.js';
 
+test('an engine without the dynamic-range query probes the decoder instead of forcing the shader', () => {
+  const colorPath = media => {
+    const calls = [];
+    const player = Object.assign(Object.create(SyncPlayer.prototype), {
+      rendition: { color: { version: 1, transfer: 'smpte2084', primaries: 'bt2020', matrix: 'bt2020nc', bitDepth: 10 } },
+      hdrScreen: { matches: false, media }, loadToken: 1, setShader: on => calls.push(on),
+    });
+    const saved = globalThis.navigator;
+    Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true, writable: true });
+    try { player.updateColorPath(); } finally { Object.defineProperty(globalThis, 'navigator', { value: saved, configurable: true, writable: true }); }
+    return { calls, probing: player.probing };
+  };
+  assert.deepEqual(colorPath('(dynamic-range: high)'), { calls: [true], probing: undefined });
+  assert.deepEqual(colorPath('not all'), { calls: [], probing: true });
+});
+
 // Minimal DOM for a real SyncPlayer: recorded listeners, a scriptable media
 // element and a socket whose sent messages the test reads back.
 function fakeDom(t) {
