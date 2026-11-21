@@ -619,13 +619,19 @@ export class ColorRenderer {
         // bugzilla 1884282). On détecte la frame uniforme et la vidéo native reprend le relais.
         // Une frame en pause peut être légitimement unie : le test n'a de sens qu'en lecture.
         // La vidéo native affiche alors ses propres sous-titres : l'overlay se tait aussi.
-        if (!video.paused && !this.importVerified) {
+        // Un film commence souvent par plusieurs secondes de noir : un tirage noir uni ne
+        // prouve rien et la sonde continue. Masquer le canvas là-dessus laissait voir la
+        // vidéo native délavée sur la première vraie image. Un import resté noir 30 s
+        // (15 sondes) est quand même traité comme mort.
+        const sample = !video.paused && !this.importVerified ? this.deadImport() : null;
+        this.blackStreak = sample === 'black' ? (this.blackStreak || 0) + 1 : 0;
+        if (sample !== null && (sample !== 'black' || this.blackStreak >= 15)) {
           // Un seul tirage uniforme peut etre une frame noire du film : on ne
           // bascule sur la video native qu'apres deux checks morts d'affilee,
           // sinon le canvas clignote sur les imports intermittents. Un tirage
           // non uniforme prouve l'import : readPixels ne sert alors plus jamais
           // jusqu'à la fin de la lecture.
-          const deadFrame = this.deadImport();
+          const deadFrame = sample !== false;
           this.deadStreak = deadFrame ? (this.deadStreak || 0) + 1 : 0;
           if (deadFrame) {
             const dead = this.deadStreak >= 2;
@@ -660,7 +666,7 @@ export class ColorRenderer {
       if (!reference) reference = [...pixel];
       else if (pixel[0] !== reference[0] || pixel[1] !== reference[1] || pixel[2] !== reference[2]) return false;
     }
-    return true;
+    return reference[0] <= 3 && reference[1] <= 3 && reference[2] <= 3 ? 'black' : true;
   }
   dispose() {
     this.disposed = true; clearTimeout(this.retryTimer); this.listeners.forEach(remove => remove());

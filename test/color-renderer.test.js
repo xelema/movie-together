@@ -91,6 +91,35 @@ test('renderer falls back to the native video while the texture import is dead',
   assert.equal(renderer.captions.style.display, '');
 });
 
+test('a black intro keeps the renderer visible and probing until a real image arrives', t => {
+  t.mock.method(performance, 'now', () => now);
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = { hidden: false }; globalThis.window = { devicePixelRatio: 1 };
+  let now = 0;
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+    }
+  });
+  const gl = new Proxy({ NO_ERROR: 0, getParameter: () => 8192, getError: () => 0,
+    readPixels(x, y, w, h, f, t, pixel) { pixel.fill(0); pixel[3] = 255; } },
+    { get: (target, prop) => (prop in target ? target[prop] : /^[A-Z_0-9]+$/.test(String(prop)) ? 0 : () => {}) });
+  const renderer = Object.assign(Object.create(ColorRenderer.prototype), {
+    canvas: { width: 800, height: 400, dataset: {}, style: {} }, captions: { style: {} },
+    video: { readyState: 4, videoWidth: 800, videoHeight: 400, currentTime: 1, paused: false },
+    gl,
+  });
+  for (let probe = 0; probe < 10; probe++) {
+    now += 2000; renderer.video.currentTime += 2; renderer.draw();
+    assert.notEqual(renderer.canvas.style.visibility, 'hidden', `probe ${probe}`);
+  }
+  assert.equal(renderer.importVerified, undefined);
+  renderer.gl.readPixels = (x, y, w, h, f, t, pixel) => { pixel[0] = x & 255; };
+  now += 2000; renderer.draw();
+  assert.equal(renderer.importVerified, true);
+  assert.equal(renderer.canvas.style.visibility, '');
+});
+
 test('captions deduplicate cues shared by several showing tracks', t => {
   const previous = { document: globalThis.document };
   globalThis.document = { hidden: false, createElement: () => ({ append() {} }) };
