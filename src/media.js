@@ -415,8 +415,9 @@ export async function prepareMovie(store, movie, audioIndices, subtitleIndices, 
   await run(process.env.FFMPEG_PATH || 'ffmpeg', args, { cwd: directory, onProgress: seconds => options.onProgress?.({ stage: 'packaging', percent: Math.min(95, Math.round(seconds / movie.probe.duration * 95)) }) });
   // ffmpeg clamps a fragment's first sample cto onto the fragment's smallest
   // PTS: on an open-GOP boundary the keyframe lands on a leading picture's
-  // PTS and Chrome's MSE silently drops the whole append. Shift the colliding
-  // cto by 1 ms in place — idempotent, no media bytes touched. docs/playback.md
+  // PTS and Chrome's MSE silently drops the whole append. Put the keyframe back
+  // in the hole at its real slot (1 ms nudge as fallback), in place and
+  // idempotent, no media bytes touched. docs/playback.md
   let scannedSegments = 0, repairedSegments = 0;
   for (const rendition of renditions) {
     const init = await readFile(path.join(directory, `init_${rendition.streamIndex}.mp4`)).catch(() => null);
