@@ -192,6 +192,7 @@ html[lang=ko] #screen .track-controls strong,html[lang=ko] #participants span:no
 #watch[data-chrome=false] .watch-top,#watch[data-chrome=false] .watch-info,#watch[data-chrome=false] #playback-status{opacity:0;transform:translateY(5px);pointer-events:none}
 
 #screen{position:relative;background:#000;border-radius:8px;overflow:hidden;border:1px solid var(--line-soft)}
+#screen.plyr--fullscreen-fallback{position:fixed;inset:0;z-index:10;width:100%;height:100%}
 #screen:focus-visible{outline-offset:-2px}
 .video-stage{position:relative;min-height:180px}
 video{display:block;width:100%;max-height:72vh;object-fit:contain}
@@ -237,7 +238,7 @@ video{display:block;width:100%;max-height:72vh;object-fit:contain}
 #screen .plyr__time{font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:.02em;color:#d4d4da}
 #screen input[type=range]{min-height:0}
 #screen .plyr--full-ui video::-webkit-media-text-track-container{display:block}
-#screen .plyr__control--overlaid{width:74px;height:74px;background:rgba(10,10,12,.62);color:var(--white);border:1px solid rgba(255,255,255,.18);
+#screen .plyr__control--overlaid{z-index:4;width:74px;height:74px;background:rgba(10,10,12,.62);color:var(--white);border:1px solid rgba(255,255,255,.18);
   box-shadow:none;transition:background .25s var(--ease),opacity .3s var(--ease)}
 #screen .plyr__control--overlaid:hover{background:rgba(10,10,12,.82)}
 #screen .plyr__control--overlaid svg{margin:auto}

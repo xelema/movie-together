@@ -12,7 +12,8 @@ const EXIT_MS = 800, STALE_MS = 400, ENTER_MS = 1500;
 
 export function attachFullscreen({ screen, player, onEvent = () => {} }) {
   const fallbackClass = player.config?.classNames?.fullscreen?.fallback ?? 'plyr--fullscreen-fallback';
-  const usingFallback = () => player.elements.container.classList.contains(fallbackClass);
+  // Plyr pose la classe de repli sur son conteneur plein écran, ici #screen.
+  const usingFallback = () => screen.classList.contains(fallbackClass);
   // `screen` nomme ici le conteneur du lecteur : l'écran physique se lit sur le
   // global, jamais sur le paramètre.
   const display = () => globalThis.screen ?? {};
@@ -76,8 +77,13 @@ export function attachFullscreen({ screen, player, onEvent = () => {} }) {
 
   // Le repère se prend là où le plein écran est accordé, et se lève quand il est
   // soldé : c'est lui qui distingue une sortie subie d'un état normal.
+  // Un téléphone en portrait sans rotation auto garderait le film en bandeau.
   const onChange = () => {
-    grantedAt = document.fullscreenElement === screen ? { w: innerWidth, h: innerHeight } : null;
+    const entered = document.fullscreenElement === screen;
+    grantedAt = entered ? { w: innerWidth, h: innerHeight } : null;
+    const orientation = display().orientation, video = player.media;
+    if (entered && video && !(video.videoHeight > video.videoWidth)) orientation?.lock?.('landscape')?.catch?.(() => {});
+    else if (!entered) { try { orientation?.unlock?.(); } catch {} }
     reconcile();
   };
 
