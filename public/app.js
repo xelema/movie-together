@@ -187,16 +187,21 @@ playbackUI.elements.controls.addEventListener('mouseleave', event => {
     mic.contains(event.relatedTarget) || mic.matches(':hover') || mic.matches(':focus-visible'));
   if (!playbackUI.touch && held) playbackUI.elements.controls.hover = true;
 });
+// Spatial navigation on a TV parks on the bare video, which no shortcut reads.
+$('video').addEventListener('focus', () => $('screen').focus({ preventScroll: true }));
 // Route transport shortcuts through the shared clock, not Plyr's local playback.
 $('screen').addEventListener('keydown', event => {
   if (!player || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
       event.target.closest('input, select, textarea, button, [contenteditable=true]')) return;
   const key = event.key.toLowerCase();
-  if (![' ', 'k', 'j', 'l', 'c', 'arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'm', 'f'].includes(key)) return;
+  if (![' ', 'k', 'enter', 'j', 'l', 'c', 'arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'm', 'f'].includes(key)) return;
   event.preventDefault();
   if (event.repeat) return;
   const seek = delta => { const to = Math.max(0, Math.min(player.state?.duration || 0, player.position() + delta)); act('seek', Math.round(to)); player.command('seek', to); };
-  if (key === ' ' || key === 'k') { act($('video').paused ? 'play' : 'pause'); player.togglePlayback().catch(error => notice(error)); }
+  // Enter is the OK button of a TV remote: it starts the film and shows the bar.
+  if (key === ' ' || key === 'k' || key === 'enter') {
+    act($('video').paused ? 'play' : 'pause'); player.togglePlayback().catch(error => notice(error)); playbackUI.toggleControls(true);
+  }
   else if (key === 'arrowleft' || key === 'j') seek(-10);
   else if (key === 'arrowright' || key === 'l') seek(10);
   else if (key === 'arrowup') { playbackUI.muted = false; playbackUI.volume = Math.min(1, playbackUI.volume + 0.05); }
@@ -263,8 +268,10 @@ function translate() {
 function updatePlayback(controller) {
   if (!controller) return;
   const phase = controller.state?.phase;
-  const waiting = roomMessage?.members.filter(member => member.waiting)
-    .map(member => member.reason ? `${member.name} (${why(member)})` : member.name) ?? [];
+  // The viewer never waits for themself: their own wait reads as loading.
+  const blockers = roomMessage?.members.filter(member => member.waiting) ?? [];
+  const waiting = blockers.filter(member => member.id !== controller.memberId)
+    .map(member => member.reason ? `${member.name} (${why(member)})` : member.name);
   const needsSound = controller.activationBlocked;
   // A paused room waiting on the viewer's click is not loading: the overlay
   // would hide the central play button under an endless spinner.
@@ -272,7 +279,7 @@ function updatePlayback(controller) {
   const message = controller.failure ? label(controller.failure) : navigator.onLine === false ? t('Connexion perdue. Séance en pause.', '연결이 끊겨 일시정지되었습니다.') : !phase ? t('Reconnexion…', '다시 연결 중…') :
     needsSound ? t('Un clic pour activer le son', '클릭하여 소리를 켜세요') :
     loading ? t('Chargement du film…', '영화를 불러오는 중…') :
-    phase === 'buffering' ? waiting.length ? t(`En attente de ${waiting.join(', ')}…`, `${waiting.join(', ')} 님을 기다리는 중…`, `Đang chờ ${waiting.join(', ')}…`) : t('La séance va commencer…', '곧 재생됩니다…', 'Buổi xem sắp bắt đầu…') : '';
+    phase === 'buffering' ? waiting.length ? t(`En attente de ${waiting.join(', ')}…`, `${waiting.join(', ')} 님을 기다리는 중…`, `Đang chờ ${waiting.join(', ')}…`) : blockers.length ? t('Chargement du film…', '영화를 불러오는 중…') : t('La séance va commencer…', '곧 재생됩니다…', 'Buổi xem sắp bắt đầu…') : '';
   const overlay = !!message;
   const playing = controller.activated && ['playing', 'buffering'].includes(phase);
   const key = JSON.stringify([message, controller.failure, needsSound, phase, playing, language()]);
@@ -804,6 +811,7 @@ async function enterRoom(id, name, context = {}) {
   $('voice-mic').hidden = $('voice-local').hidden = $('voice-result').hidden = true;
   $('webcam-toggle').hidden = $('webcam-overlay').hidden = true;
   $('entry').hidden = true; $('library').hidden = true; $('watch').hidden = false; $('choose-film').hidden = !session.admin;
+  $('screen').focus({ preventScroll: true });
   // La dérogation #telemetry=off est reportée dans le hash : la télémétrie la lit
   // à l'attache, donc une réécriture qui l'efface la rendrait sans effet.
   const keep = new URLSearchParams(location.hash.slice(1)).get('telemetry');
