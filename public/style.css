@@ -512,3 +512,18 @@ dialog button{width:100%}
   #timing-edit input{width:84px}
   .timing-offset .check{margin-left:0;flex-basis:100%}
 }
+
+/* viewport-fit=cover laisse l'encoche d'un téléphone en paysage par-dessus les bords : les marges latérales la
+   contournent. Sous 16 px, iOS zoome sur un champ qui prend le focus et peut rester zoomé, d'où 16 px au doigt. */
+header{padding-left:max(20px,calc((100vw - 1160px)/2),env(safe-area-inset-left));padding-right:max(20px,calc((100vw - 1160px)/2),env(safe-area-inset-right))}
+main{padding-left:max(20px,env(safe-area-inset-left));padding-right:max(20px,env(safe-area-inset-right))}
+#screen:is(:fullscreen,.plyr--fullscreen-fallback) .plyr__controls{padding-left:max(18px,env(safe-area-inset-left));padding-right:max(18px,env(safe-area-inset-right))}
+#screen:is(:fullscreen,.plyr--fullscreen-fallback) :is(#voice-mic,#webcam-toggle,.track-controls){right:max(14px,env(safe-area-inset-right))}
+#screen:is(:fullscreen,.plyr--fullscreen-fallback) #bandwidth-badge{right:max(12px,env(safe-area-inset-right))}
+@media(max-width:700px){
+  header,main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
+  #screen:is(:fullscreen,.plyr--fullscreen-fallback) .plyr__controls{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}
+}
+@media(pointer:coarse){
+  input:not([type=checkbox]):not([type=range]),select,.language-picker select{font-size:16px}
+}
