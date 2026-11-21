@@ -120,6 +120,10 @@ test('hls.js is configured for stall-free resume and deep segment reuse', () => 
     assert.equal(config.startFragPrefetch, true);
     assert.equal(config.progressive, false);
     assert.ok(config.maxBufferSize >= 128 * 1024 ** 2);
+    assert.equal(config.startPosition, -1);
+    // A late joiner starts loading at the room position, not at the first segment.
+    new HlsJsBackend({}, 'u', { startPosition: 4200.5 });
+    assert.equal(config.startPosition, 4200.5);
   } finally {
     saved === undefined ? delete globalThis.window : globalThis.window = saved;
     restoreObserver();

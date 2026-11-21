@@ -93,8 +93,9 @@ export class SyncPlayer {
       if (this.pendingPauses) { this.pendingPauses--; return; }
       if (this.state?.phase === 'playing' && this.serverTime() > this.state.startsAt) this.command('pause');
     });
+    // A seek before the first decoded frame is the engine's own jump to its start position, never the viewer's.
     this.listen(video, 'seeking', () => {
-      if (!selfCaused(performance.now(), this.internalUntil) && this.state) this.command('seek', this.position());
+      if (this.decoded && !selfCaused(performance.now(), this.internalUntil) && this.state) this.command('seek', this.position());
     });
     this.listen(document, 'visibilitychange', () => {
       if (!document.hidden && this.activated) this.acquireWakeLock();
@@ -356,9 +357,10 @@ export class SyncPlayer {
     this.hdrPipeline = undefined; this.probing = false; this.updateColorPath();
     if (this.failure) return;
     const url = `/media/${movie.id}/${this.rendition.manifest}`;
+    const timelineOffset = this.rendition.timelineOffset ?? 0;
     this.backend = createBackend(this.video, url,
-      { timelineOffset: this.rendition.timelineOffset ?? 0, bufferSeconds: this.bufferSeconds,
-        minBuffer: this.sync.minBuffer, bitrate: movie.bitrate },
+      { timelineOffset, bufferSeconds: this.bufferSeconds, minBuffer: this.sync.minBuffer, bitrate: movie.bitrate,
+        startPosition: this.target() > 0 ? this.target() + timelineOffset : -1 },
       { onTracksChanged: () => { this.applyTrackChoices(); this.tracks(); },
         onBuffered: () => { if (this.video.readyState >= 3) this.recovering = false; },
         onStalled: () => { this.pauseLocal(); this.report(false); this.recovering = true; },
