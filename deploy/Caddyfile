@@ -7,6 +7,16 @@
 }
 
 {$DOMAIN} {
+    # Scripts, styles and playlists only: a 300 ms link pays ~1 MB less on a
+    # cold load, and video segments stay byte-exact for Range requests.
+    encode zstd gzip {
+        match {
+            header Content-Type text/*
+            header Content-Type application/json*
+            header Content-Type application/vnd.apple.mpegurl*
+            header Content-Type image/svg+xml*
+        }
+    }
     reverse_proxy app:3000 {
         flush_interval -1
     }

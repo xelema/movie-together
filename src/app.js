@@ -661,8 +661,8 @@ export function createApplication({ dataDir = path.join(ROOT, 'data'), password,
   });
   app.get('/vendor/hls.js', (req, res) => res.sendFile(path.join(ROOT, 'node_modules/hls.js/dist/hls.min.js'), { maxAge: '1d' }));
   app.get('/admin', (req, res) => res.sendFile(path.join(ROOT, 'public/index.html')));
-  for (const file of ['plyr.js', 'plyr.css', 'plyr.svg']) app.get(`/vendor/${file}`, (req, res) =>
-    res.sendFile(path.join(ROOT, 'node_modules/plyr/dist', file), { maxAge: '1d' }));
+  for (const [file, source] of [['plyr.js', 'plyr.min.js'], ['plyr.css', 'plyr.css'], ['plyr.svg', 'plyr.svg']]) app.get(`/vendor/${file}`, (req, res) =>
+    res.sendFile(path.join(ROOT, 'node_modules/plyr/dist', source), { maxAge: '1d' }));
   app.use('/fonts', express.static(path.join(ROOT, 'public/fonts'), { maxAge: '30d' }));
   app.use(express.static(path.join(ROOT, 'public')));
   app.use((req, res) => res.status(404).json({ error: 'Page introuvable.' }));
