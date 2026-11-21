@@ -1,0 +1,6 @@
+{"profile":"seoul-congested","cc":"cubic","path":"direct","mode":"seq","timeout":true,"realtime":0}
+{"profile":"seoul-congested","cc":"bbr","path":"direct","mode":"seq","mbps":30.8,"warmMbps":38.3,"first":7.35,"worst":2.79,"realtime":1.28}
+{"profile":"seoul-congested","cc":"bbr","path":"direct","mode":"par4","mbps":38.9,"warmMbps":45.9,"first":5.11,"worst":2.17,"realtime":1.53}
+{"profile":"seoul-congested","cc":"bbr","path":"direct","mode":"par8","mbps":37.7,"warmMbps":41.8,"first":4.3,"worst":2.83,"realtime":1.39}
+{"profile":"seoul-congested","cc":"bbr","path":"edge-miss","mode":"seq","mbps":38,"warmMbps":40.4,"first":3.56,"worst":3.11,"realtime":1.35}
+{"profile":"seoul-congested","cc":"bbr","path":"edge-hit","mode":"seq","mbps":54,"warmMbps":54.4,"first":1.87,"worst":1.98,"realtime":1.81}
