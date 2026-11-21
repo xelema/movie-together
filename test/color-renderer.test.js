@@ -180,6 +180,39 @@ test('renderer skips an already-presented frame and stays silent during resume g
   assert.equal(errors, 2); assert.equal(reads, 2);
 });
 
+test('a 50 or 60 fps film moves from video-frame callbacks to a vsync-sampled draw', t => {
+  const votes = fps => {
+    const renderer = Object.assign(Object.create(ColorRenderer.prototype), { sampleVotes: 0 });
+    for (let i = 0, time = 0; i < 40; i++, time += (1 + i % 2) / fps) if (renderer.fastFilm(time)) return i;
+    return null;
+  };
+  assert.equal(votes(24), null);
+  assert.equal(votes(30), null);
+  assert.ok(votes(50) > 20);
+  assert.ok(votes(60) > 20);
+  const frames = [], timers = [], draws = [];
+  const saved = { requestAnimationFrame: globalThis.requestAnimationFrame, cancelAnimationFrame: globalThis.cancelAnimationFrame };
+  globalThis.requestAnimationFrame = callback => frames.push(callback);
+  globalThis.cancelAnimationFrame = () => {};
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.after(() => Object.assign(globalThis, saved));
+  const renderer = Object.assign(Object.create(ColorRenderer.prototype), {
+    video: { paused: true }, draw: force => draws.push(force) });
+  renderer.sampled();
+  t.mock.timers.tick(10);
+  assert.deepEqual(draws, []);
+  renderer.video.paused = false;
+  frames.at(-1)();
+  t.mock.timers.tick(3);
+  assert.deepEqual(draws, []);
+  t.mock.timers.tick(1);
+  assert.deepEqual(draws, [false]);
+  renderer.disposed = true;
+  frames.at(-1)();
+  t.mock.timers.tick(10);
+  assert.equal(draws.length, 1);
+});
+
 test('the WebGL context is requested on the high-performance GPU', t => {
   const previous = { document: globalThis.document, window: globalThis.window, ResizeObserver: globalThis.ResizeObserver };
   t.after(() => {

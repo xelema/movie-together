@@ -513,14 +513,33 @@ export class ColorRenderer {
       this.listen(video.textTracks, 'change', () => this.updateCaptions());
       this.listen(video.textTracks, 'addtrack', event => this.watchTrack(event.track));
       for (const track of video.textTracks) this.watchTrack(track);
+      // Chrome perd des rappels rVFC quand la cadence du film approche celle de
+      // l'écran (60p sur 60 Hz : ~42 images/s). Au-delà de ~36 i/s le rendu
+      // échantillonne chaque vsync, 4 ms après, quand l'image du vsync est prête.
+      this.sampleVotes = 0;
       const frame = (now, metadata) => {
         if (this.disposed || this.failed) return;
         this.draw(false, metadata?.presentedFrames);
+        if (this.fastFilm(metadata?.mediaTime)) { this.sampled(); return; }
         this.callback = video.requestVideoFrameCallback ? video.requestVideoFrameCallback(frame) : requestAnimationFrame(frame);
       };
       frame();
     } catch (error) { this.dispose(); throw error; }
     finally { for (const shader of shaders) gl.deleteShader(shader); }
+  }
+  fastFilm(mediaTime) {
+    const step = mediaTime - this.lastMediaTime;
+    this.lastMediaTime = mediaTime;
+    if (step > 0 && step < 0.1) this.period = Math.min(this.period ?? Infinity, step);
+    return this.period < 0.027 && ++this.sampleVotes >= 30;
+  }
+  sampled() {
+    const tick = () => {
+      if (this.disposed || this.failed) return;
+      this.raf = requestAnimationFrame(tick);
+      if (!this.video.paused) { clearTimeout(this.timer); this.timer = setTimeout(() => this.draw(false), 4); }
+    };
+    tick();
   }
   listen(target, event, handler) { target.addEventListener(event, handler); this.listeners.push(() => target.removeEventListener(event, handler)); }
   watchTrack(track) { this.listen(track, 'cuechange', () => this.updateCaptions()); this.updateCaptions(); }
@@ -672,6 +691,7 @@ export class ColorRenderer {
     this.disposed = true; clearTimeout(this.retryTimer); this.listeners.forEach(remove => remove());
     this.resizeObserver?.disconnect();
     if (this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.callback); else cancelAnimationFrame(this.callback);
+    if (this.raf) { cancelAnimationFrame(this.raf); clearTimeout(this.timer); }
     if (this.gl) {
       for (const tex of [this.texture, this.toneTex, this.featureTex, this.featureLowTex, this.gamutTex, this.ditherTex])
         if (tex) this.gl.deleteTexture(tex);
