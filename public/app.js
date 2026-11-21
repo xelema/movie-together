@@ -208,6 +208,7 @@ $('screen').addEventListener('keydown', event => {
       : (lastSubtitle = Number(select.value), '-1');
     select.value = next;
     act('track-subs', Number(next));
+    rememberTrack('subtitles');
     player.changeTrack('subtitles', Number(next));
   }
   else if (key === 'm') playbackUI.muted = !playbackUI.muted;
@@ -816,7 +817,7 @@ async function enterRoom(id, name, context = {}) {
     onTracks: (audio, subtitles) => {
       selectOptions($('audio'), audio.length ? audio.map(track => [track.index, trackName(track)]) : [[-1, t('Sans son', '음성 없음')]]); $('audio').disabled = audio.length < 2;
       selectOptions($('subtitles'), [[-1, t('Sans sous-titres', '자막 없음')], ...subtitles.map(track => [track.index, trackName(track)])]); $('subtitles').disabled = !subtitles.length;
-      if (player) { $('audio').value = String(audio.length ? player.audioChoice : -1); $('subtitles').value = String(player.subtitleChoice); }
+      if (player) { $('audio').value = String(audio.length ? player.audioChoice : -1); $('subtitles').value = String(player.subtitleChoice); restoreTracks(); }
       updateFilmMeta();
     },
     onState: (message, controller) => {
@@ -934,11 +935,39 @@ document.addEventListener('drop', event => {
   const transfer = new DataTransfer(); transfer.items.add(event.dataTransfer.files[0]);
   $('upload-file').files = transfer.files; $('upload-file').dispatchEvent(new Event('change'));
 });
-$('audio').addEventListener('change', () => { act('track-audio', Number($('audio').value)); player?.changeTrack('audio', Number($('audio').value)); });
+// A phone that reloads or rejoins (Safari evicts background tabs) keeps the viewer's last audio and subtitle
+// choice. The choice is stored by track name, the same across films, and restored once per film.
+const trackKeys = { audio: 'track-audio', subtitles: 'track-subs' };
+let trackRestore = { movie: undefined, pending: new Set() };
+function rememberTrack(type) {
+  trackRestore.pending.delete(type);
+  const select = $(type);
+  try { localStorage.setItem(trackKeys[type], select.value === '-1' ? '' : select.selectedOptions[0]?.textContent ?? ''); } catch { }
+}
+function restoreTracks() {
+  if (trackRestore.movie !== player.movie?.id) trackRestore = { movie: player.movie?.id, pending: new Set(['audio', 'subtitles']) };
+  for (const type of [...trackRestore.pending]) {
+    let saved = null;
+    try { saved = localStorage.getItem(trackKeys[type]); } catch { }
+    if (!saved) { trackRestore.pending.delete(type); continue; }
+    const option = [...$(type).options].find(option => option.value !== '-1' && option.textContent === saved);
+    if (!option) continue;
+    trackRestore.pending.delete(type);
+    $(type).value = option.value;
+    if (type === 'subtitles') lastSubtitle = Number(option.value);
+    player.changeTrack(type, Number(option.value));
+  }
+}
+$('audio').addEventListener('change', () => {
+  act('track-audio', Number($('audio').value));
+  rememberTrack('audio');
+  player?.changeTrack('audio', Number($('audio').value));
+});
 $('subtitles').addEventListener('change', () => {
   const value = Number($('subtitles').value);
   act('track-subs', value);
   if (value !== -1) lastSubtitle = value;
+  rememberTrack('subtitles');
   player?.changeTrack('subtitles', value);
 });
 // A per-viewer multiplier on the picture-based size, shared by subtitles and the translated supertitle.
