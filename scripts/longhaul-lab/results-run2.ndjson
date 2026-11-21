@@ -18,6 +18,3 @@
 {"profile":"seoul-4g-bad","cc":"bbr","path":"direct","mode":"par4","mbps":20.8,"warmMbps":22.2,"first":6.65,"worst":4.67,"realtime":0.74}
 {"profile":"seoul-4g-bad","cc":"bbr","path":"direct","mode":"par8","mbps":21.1,"warmMbps":22,"first":5.88,"worst":5.53,"realtime":0.73}
 {"profile":"seoul-4g-bad","cc":"bbr","path":"edge-hit","mode":"seq","mbps":26.8,"warmMbps":27,"first":3.75,"worst":3.77,"realtime":0.9}
-{"profile":"seoul-4g-bad","cc":"bbr","path":"direct","mode":"par4","timeout":true,"realtime":0}
-{"profile":"seoul-4g-bad","cc":"bbr","path":"direct","mode":"par8","timeout":true,"realtime":0}
-{"profile":"seoul-4g-bad","cc":"bbr","path":"edge-hit","mode":"seq","timeout":true,"realtime":0}
