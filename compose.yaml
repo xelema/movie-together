@@ -43,6 +43,8 @@ services:
       net.ipv4.tcp_slow_start_after_idle: 0
       net.ipv4.tcp_rmem: "4096 87380 16777216"
       net.ipv4.tcp_wmem: "4096 65536 16777216"
+      # Without it a seek waits behind megabytes of abandoned reserve already queued in the socket.
+      net.ipv4.tcp_notsent_lowat: 131072
     environment:
       DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
     ports:
