@@ -77,8 +77,10 @@ Valider un petit film puis un original de taille habituelle avec la
 
 ### Lecture depuis la Corée du Sud
 
-Le lecteur HLS.js garde 30 à 60 secondes d'avance dans un budget de 60 Mio.
-Safari natif gère lui-même cette réserve.
+Le lecteur HLS.js garde 30 à 60 secondes d'avance dans le tampon MSE. Une
+réserve en mémoire télécharge en plus jusqu'à 5 minutes au-delà (96 à
+768 Mio selon la mémoire de l'appareil) et se remplit aussi pendant les
+pauses. Safari natif gère lui-même son tampon, sans réserve.
 Les segments peuvent être réutilisés depuis le cache privé du navigateur après
 vérification des droits auprès du serveur ; les listes de lecture ne sont pas
 conservées. Cela évite de retransférer les mêmes données lors d'un retour en arrière.

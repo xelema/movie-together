@@ -30,6 +30,10 @@ vocabulaire partage.
   la seance en `buffering`. Ce sont les seuls reglages dynamiques : un
   changement admin est repris par les seances ouvertes et publie aux
   clients connectes dans `welcome` et chaque `state`.
+- **Reserve** : segments telecharges en memoire au-dela du tampon du
+  lecteur, jusqu'a 5 minutes de film, remis au lecteur sans reseau quand il
+  les demande. Elle ne compte pas dans `minBuffer`, qui mesure le tampon
+  reellement decodable.
 - **Freeze** : la seance fige sa position et repasse en `paused` ou `buffering`.
   Tout rapport anterieur est invalide : la preparation recommence a zero.
 - **Seance instrumentee** (probe) : une seance creee avec le drapeau `probe`.
