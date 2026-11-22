@@ -19,6 +19,16 @@ export const PROFILES = {
     bandwidthMbps: 18,
     lossRate: 0.015, // 1.5%
   },
+  // Soirée coréenne : le transit international s'effondre plus d'une minute.
+  // Les pertes sont laissées à TCP (débit réduit), pas simulées en requêtes avortées.
+  'seoul-evening': {
+    name: 'Seoul Evening Congestion Dip',
+    rtt: 260,
+    jitter: 15,
+    bandwidthMbps: 30,
+    lossRate: 0,
+    dip: { from: 60, to: 135, mbps: 4 },
+  },
   'poor-connection': {
     name: 'Poor / Flaky Long-Haul Link',
     rtt: 220, // ms
@@ -115,7 +125,25 @@ export async function runBenchmarkScenario({
 
     // Track segment downloads
     const segmentDownloads = [];
-    const bytesPerSec = (profile.bandwidthMbps * 1_000_000) / 8;
+    // One shared link: concurrent responses queue behind each other instead of
+    // each getting the full rate, so parallel fetching gains nothing for free.
+    const linkStart = performance.now();
+    let linkFreeAt = linkStart;
+    const rateAt = t => {
+      const s = (t - linkStart) / 1000, dip = profile.dip;
+      return (dip && s >= dip.from && s < dip.to ? dip.mbps : profile.bandwidthMbps) * 1e6 / 8 / 1000;
+    };
+    const transferEnd = (begin, bytes) => {
+      let t = begin, left = bytes;
+      while (left > 0) {
+        const dip = profile.dip;
+        const edge = dip ? [dip.from, dip.to].map(x => linkStart + x * 1000).find(x => x > t) : undefined;
+        const room = edge === undefined ? Infinity : (edge - t) * rateAt(t);
+        if (room >= left) return t + left / rateAt(t);
+        left -= room; t = edge;
+      }
+      return t;
+    };
 
     // HTTP Route throttling: simulate network latency, jitter, loss & bandwidth limit on media segments
     await context.route('**/*', async (route, request) => {
@@ -154,9 +182,9 @@ export async function runBenchmarkScenario({
       const delayRes = halfDelay();
 
       if (body.length > 1000) {
-        // Bandwidth throttling: time to transfer body bytes
-        const transferTimeMs = (body.length / bytesPerSec) * 1000;
-        await new Promise(r => setTimeout(r, delayRes + transferTimeMs));
+        const begin = Math.max(performance.now(), linkFreeAt);
+        linkFreeAt = transferEnd(begin, body.length);
+        await new Promise(r => setTimeout(r, linkFreeAt - performance.now() + delayRes));
         const totalDuration = performance.now() - startTime;
         const mbps = (body.length * 8) / ((totalDuration / 1000) * 1e6);
         segmentDownloads.push({
@@ -178,6 +206,8 @@ export async function runBenchmarkScenario({
     page.on('response', resp => {
       if (!resp.ok()) console.log('RESP FAILED:', resp.status(), resp.url());
     });
+
+    if (process.env.RESERVE === 'off') await page.addInitScript(() => { localStorage.movieReserve = 'off'; });
 
     // Emulate WebSocket latency & jitter via addInitScript
     await page.addInitScript(
@@ -244,6 +274,7 @@ export async function runBenchmarkScenario({
       let startHandshakeMs = null;
       let startFreezeCount = 0;
       let prevPhase = null;
+      let sentPlay = false;
 
       // Monitor loop
       while (performance.now() - startTime < durationSeconds * 1000) {
@@ -281,11 +312,17 @@ export async function runBenchmarkScenario({
             paused: video?.paused,
             readyState: video?.readyState,
             hlsBufferSize: player.backend?.hls?.bufferController?.mediaBufferSize || null,
+            reserve: player.backend?.reserve && { s: player.backend.reserve.seconds, n: player.backend.reserve.entries.size,
+              urgent: player.backend.reserve.urgent, hits: player.backend.reserve.hits, misses: player.backend.reserve.misses },
           });
 
           // If room wants to play, trigger play command if not yet done
           if (!player.activated) {
             try { player.activate?.(); } catch {}
+          }
+          if (!sentPlay && phase === 'paused' && player.activated) {
+            sentPlay = true;
+            try { player.command('play'); } catch {}
           }
         }
         await wait(250);
@@ -321,6 +358,8 @@ export async function runBenchmarkScenario({
     const clockCalibrationTimeMs = clockCalibrated ? clockReadySamples[0].t : null;
 
     const stalls = metrics.samples.filter((s, i) => i > 0 && s.phase === 'playing' && s.bufferedAhead <= 0.1).length;
+    const firstPlaying = metrics.samples.findIndex(s => s.phase === 'playing');
+    const waitingAfterStart = firstPlaying < 0 ? 0 : metrics.samples.slice(firstPlaying).filter(s => s.phase !== 'playing').length;
 
     const totalBytes = segmentDownloads.reduce((acc, s) => acc + s.bytes, 0);
     const totalSegDuration = segmentDownloads.reduce((acc, s) => acc + s.durationMs, 0);
@@ -354,6 +393,9 @@ export async function runBenchmarkScenario({
       driftP95Ms: Math.round(p95(drifts) * 1000),
       stallsCount: stalls,
       freezesCount: metrics.startFreezeCount,
+      firstPlayingSeconds: firstPlaying < 0 ? null : +(metrics.samples[firstPlaying].t / 1000).toFixed(1),
+      waitingAfterStartSeconds: waitingAfterStart / 4,
+      playheadAtEnd: metrics.samples.at(-1)?.currentTime ?? null,
     };
   } finally {
     if (browser) await browser.close();
@@ -370,7 +412,8 @@ if (process.argv[1] && process.argv[1].endsWith('benchmark-network.mjs')) {
   const result = await runBenchmarkScenario({
     profileKey: targetProfile,
     deviceKey: targetDevice,
-    durationSeconds: 12,
+    durationSeconds: Number(process.argv[4] ?? 12),
+    minBuffer: Number(process.argv[5] ?? 8),
   });
   console.log(JSON.stringify(result, null, 2));
 }

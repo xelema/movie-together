@@ -28,11 +28,50 @@ coupure, et plus largement comment ouvrir le service au monde entier ?
 | Étape | Contenu | Coût | Effort | Effet attendu à Séoul |
 | --- | --- | --- | --- | --- |
 | 0 | Séance instrumentée sur Amsterdam, 10 min en 4G à 21 h KST, rapport `telemetry-report.js` | 0 | 30 min | Débit réel par segment, coupures réelles |
-| 1 | Réserve hors MSE : un `fLoader` garde 2 à 5 minutes de segments d'avance en mémoire (selon `deviceMemory`) | 0 | 1 à 2 jours | Les creux de soirée de moins de quelques minutes ne coupent plus |
+| 1 (fait) | Réserve hors MSE : un `fLoader` garde jusqu'à 5 minutes de segments d'avance en mémoire (selon `deviceMemory`), voir plus bas | 0 | fait | Attente divisée par 2 sur une coupure de 75 s |
 | 2 | CDN Bunny devant `/media` avec jeton par dossier, activé pour les spectateurs dont le RTT dépasse 150 ms | environ 4 $/mois | 1 jour | Départ et seeks 2 à 4 fois plus rapides, trajet international porté par le CDN |
 | 3 | Copie du film préparé vers Bunny Storage (Francfort + Tokyo) | +0,60 $ par film et par mois | 1 jour | Plus aucun segment ne traverse la Corée-Europe pendant la séance |
 | 4 | Plusieurs flux par segment (domaines `m1..m4`, HTTP/1.1) | 0 | 1 jour | +20 % seulement si le lien international est saturé, sinon rien |
 | Plan B | Relais Vultr Séoul 5 à 6 $/mois, ou rendu 1080p réencodé | 5 à 6 $/mois | moyen à élevé | Si le CDN ne suffit pas ou si la 4G réelle est sous le débit du film |
+
+## Réserve hors MSE
+
+`public/reserve.js` remplace le chargeur de fragments de hls.js. Dès que
+hls.js a reçu un segment, la réserve télécharge les suivants (vidéo et
+piste audio choisie, dans l'ordre du film, deux à la fois pour ne jamais
+laisser le lien inactif entre deux requêtes) et les garde en mémoire. Quand
+hls.js les réclame, ils lui sont remis sans réseau, avec leurs vrais temps
+de téléchargement.
+
+| Règle | Valeur |
+| --- | --- |
+| Horizon | 300 s au-delà du dernier segment demandé par hls.js |
+| Budget mémoire | 768 Mio si `deviceMemory` vaut 8, 384 Mio à 4 ou inconnu (Firefox, Safari), 96 Mio à 2, coupée en dessous |
+| Priorité | Un segment que hls.js charge lui-même (départ, seek hors réserve) passe seul, la réserve attend |
+| Seek | Ce qui sort de la nouvelle fenêtre est abandonné, un seek dans la réserve est immédiat |
+| Erreur | Le segment est oublié, hls.js le recharge avec ses propres reprises, la réserve attend 5 s |
+| Blocage | Un segment en cours que hls.js attend reçoit le même délai que hls.js, puis repasse au chargeur normal |
+| Désactivation | `localStorage.movieReserve = 'off'` pour un navigateur |
+| Hors champ | Safari en HLS natif (iPhone, iPad, Mac), qui gère seul son tampon |
+
+Mesure avec `scripts/benchmark-network.mjs seoul-evening pc 165 20` : film
+VP9 de 16,6 Mbit/s, trajet de 260 ms à 30 Mbit/s qui tombe à 4 Mbit/s
+pendant 75 s (de la 60e à la 135e seconde), `minBuffer` de production
+(20 s). Le banc partage désormais un seul lien entre requêtes simultanées,
+pour que la réserve ne gagne rien gratuitement.
+
+| Mesure | Sans réserve | Avec réserve |
+| --- | --- | --- |
+| Tampon de départ prêt | 15,5 s | 14,1 s |
+| Gels de la séance après le départ | 2 | 1 |
+| Temps passé à attendre après le départ | 38,3 s | 17,5 s |
+| Position atteinte après 165 s | 107,6 s | 130,9 s |
+| Avance maximale dans le tampon MSE | 38 s | 60 s |
+
+La coupure coûte 57 s de film (75 s à un quart du débit nécessaire). Avec
+44 s de bon réseau avant elle, la réserve n'avait pu en gagner que 35 : le
+reste est de la physique. Plus la séance dure avant un creux, plus la
+réserve l'absorbe entièrement.
 
 ## Banc d'essai longue distance
 
