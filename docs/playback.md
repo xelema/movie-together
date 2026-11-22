@@ -298,7 +298,8 @@ Cette API fonctionne sur le thread principal et ne garantit pas une livraison
 | OffscreenCanvas, WebCodecs, WebGPU | Déplacement ou remplacement du rendu à envisager si les optimisations simples ne suffisent pas. La gestion des images, leur transfert et la disponibilité du décodeur HEVC demanderaient un autre pipeline |
 | Table de conversion couleur pré calculée | Pourrait réduire les calculs du shader, au prix d'interpolation, de mémoire et de nouveaux tests HDR. Aucun gain garanti face au coût de l'import vidéo |
 | Cache et serveur | Les segments privés sont déjà réutilisables après contrôle d'accès et validation ETag. Aucun changement de confidentialité pour gagner une requête |
-| Préchargement massif ou téléchargement parallèle personnalisé | Augmente mémoire, concurrence réseau et complexité. Le chargement et les reprises restent confiés à Hls.js |
+| Préchargement massif | Adopté en novembre 2026 sous forme de réserve hors MSE (`public/reserve.js`), voir `docs/global-delivery.md`. Les reprises et les erreurs restent confiées à Hls.js |
+| Téléchargement parallèle d'un même segment | Rien à gagner avec BBR sur le banc longue distance, sauf sur un lien saturé (+20 %). Non retenu |
 | Variation de vitesse ou interpolation d'images | Non ajoutées : l'audio doit rester à vitesse normale et les images d'origine doivent être conservées |
 
 Références : [configuration Hls.js](https://github.com/video-dev/hls.js/blob/master/docs/API.md),

@@ -3,6 +3,7 @@
 // Each owns track enumeration, track selection, fatal-error recovery and the
 // media-PTS anchor (timelineOffset) that maps séance positions onto media time.
 import { HLS_EVENTS, hlsErrorPayload, hlsEventPayload } from './hls-events.js';
+import { Reserve, reserveBudget, reserveLoader } from './reserve.js';
 
 // Native HLS lists chapters and metadata alongside subtitles in textTracks.
 const subtitleTracks = video => Array.from(video.textTracks ?? []).filter(track => ['subtitles', 'captions'].includes(track.kind));
@@ -103,9 +104,19 @@ export class HlsJsBackend {
     { onTracksChanged, onBuffered, onStalled, onFatal, onEvent } = {}) {
     this.video = video; this.timelineOffset = timelineOffset; this.bitrate = bitrate; this.minBuffer = minBuffer;
     this.mediaRecoveries = 0; this.networkRecoveries = 0; this.recoveredAt = -Infinity;
+    const emit = (type, fields) => { try { onEvent?.(type, fields); } catch { } };
+    const Loader = window.Hls.DefaultConfig?.loader;
+    const off = (() => { try { return localStorage.movieReserve === 'off'; } catch { return false; } })();
+    const budget = off ? 0 : reserveBudget(globalThis.navigator?.deviceMemory);
+    this.reserve = Loader && budget ? new Reserve({ budget, fragments: (type, level) =>
+      (type === 'main' ? this.hls.levels : this.hls.audioTracks)?.[level]?.details?.fragments }) : null;
+    const fLoader = this.reserve && reserveLoader(Loader, this.reserve, (frag, entry) => {
+      if (frag.type === 'main') emit('reserve', { sn: frag.sn, hit: entry ? (entry.data ? 'ready' : 'pending') : 'miss',
+        s: Math.round(this.reserve.seconds), mb: Math.round(this.reserve.bytes / 1024 ** 2) });
+    });
     // startPosition lets a late joiner fetch the segment at the room position first, instead of the
     // opening minutes it would throw away after its first seek.
-    this.hls = new window.Hls({ startPosition, maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
+    this.hls = new window.Hls({ ...(fLoader && { fLoader }), startPosition, maxBufferLength: bufferSeconds, maxMaxBufferLength: bufferSeconds * 2,
       maxBufferSize: bufferBytes(bufferSeconds, bitrate), backBufferLength: 60,
       startFragPrefetch: true, enableWorker: true,
       maxBufferHole: 0.5, highBufferWatchdogPeriod: 2, nudgeMaxRetry: 5, nudgeOffset: 0.1,
@@ -141,7 +152,6 @@ export class HlsJsBackend {
     // Journal de la chaîne MSE : les événements du cycle de vie passent par le
     // traducteur pur de hls-events.js ; une erreur de lecture ne peut pas
     // remonter dans le moteur.
-    const emit = (type, fields) => { try { onEvent?.(type, fields); } catch { } };
     for (const name of HLS_EVENTS) {
       this.hls.on(window.Hls.Events[name], (event, data) => {
         try { const fields = hlsEventPayload(name, data, this.hls); if (fields) emit('hls', fields); } catch { }
@@ -178,7 +188,7 @@ export class HlsJsBackend {
       this.hls.subtitleDisplay = subtitles >= 0;
     }
   }
-  destroy() { this.trackNodes.disconnect(); URL.revokeObjectURL(this.subtitleVtt); this.hls.destroy(); }
+  destroy() { this.trackNodes.disconnect(); URL.revokeObjectURL(this.subtitleVtt); this.reserve?.destroy(); this.hls.destroy(); }
 }
 
 export class NativeHlsBackend {

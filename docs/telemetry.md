@@ -219,6 +219,12 @@ entière reste sans journal.
   `buffer-codecs`. Les événements `buffer-flushing`/`buffer-flushed` et
   `frag-buffered` portent les plages par piste avant/après (`tracks`) : c'est
   ce qui sépare un ajout refusé d'un fragment marqué puis sauté.
+- `reserve` — chaque segment vidéo réclamé par hls.js : `{sn, hit, s, mb}`.
+  `hit` vaut `ready` (servi depuis la réserve), `pending` (encore en
+  téléchargement par la réserve) ou `miss` (hls.js le charge lui-même),
+  `s` et `mb` donnent la réserve restante après la remise, en secondes de
+  film contiguës et en Mio. Absent sur Safari natif et quand la réserve est
+  coupée (`localStorage.movieReserve = 'off'`).
 - `mediaError` — erreur hls.js (fatale ou non) : `{type, details, fatal, reason,
   errmsg, level, sn, start, end, bytes, ranges, sbranges, bufferLen}`.
 - `video-<événement>` — `loadedmetadata`, `loadeddata`, `canplay`, `playing`,
